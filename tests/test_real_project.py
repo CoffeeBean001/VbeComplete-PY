@@ -644,32 +644,36 @@ def main():
         c.trigger()
         return (ui.shown, c.current_matches())
 
-    # 声明行：能匹配到已定义的就提示，只剩"正在输入的那个词本身"才安静
+    # 声明行：★v105 起【整个静默】—— 造名字的位置不出任何候选（IDEA 口径）。
     #
-    # 【v37 语义变更】"打全名 -> 不提示自己" 这三条的期望已按用户要求反转：
-    #   旧规则（v31~v36）：正在声明的名字，打全名时一律剔除 -> 列表整个消失。
-    #   问题（用户报的 bug）：工程里已经有 `Function test()`，你在 `Sub test`
-    #     这一行把 test 打全，那不是"自己的回声"，是货真价实的同名函数，
-    #     却被打全名那一刻清空了列表 —— 输入 tes 提示、输入 test 反而没了。
-    #   新规则：只看"这个名字在工程里真实存在吗"。存在就提示（含打全名），
-    #     不存在（纯幻影 zzq、回退出来的 numA）才剔除。
-    # 下面的 gUserName / gCalc / numArr 在 ids 里都是【已定义】的，故打全名照常提示。
-    check("公共变量：打全名 -> 照常提示（v37）",
+    # 【语义变更史】
+    #   * v31~v36：正在声明的名字打全名时一律剔除 -> 列表整个消失。
+    #   * v37：改成"只看这个名字在工程里真实存在吗"，存在就照常提示（含打全名）。
+    #   * ★v105：**整体反转**回"声明位置不出候选"。用户口径（原话）："在定义
+    #     变量名，函数名或过程名时，会出提示词列表框。我用 idea 是不提示的吧，
+    #     你帮我改成 IDEA 那种。" —— 造新名字的地方没有"既有符号"可补，任何候选
+    #     都是噪音（还会盖住他刚敲的字），v37 的"打全名要提示"只在**用法行**成立。
+    #   下面这 4 条断言因此从 (True, [...]) 反转为 (False, [])。
+    check("公共变量（声明行）：不弹候选（v105）",
           [trig("Public gUserName", 17, True, decl_names=["gUserName"])],
-          expect_contain=[(True, ["gUserName"])])
-    check("公共变量：打前缀 -> 提示已有的 gUserName",
+          expect_contain=[(False, [])])
+    check("公共变量（声明行）：打前缀也不弹（v105）",
           [trig("Public gUser", 13, True, decl_names=["gUserName"])],
-          expect_contain=[(True, ["gUserName"])])
-    check("函数名：打全名 -> 照常提示（v37）",
+          expect_contain=[(False, [])])
+    check("函数名（声明行）：不弹候选（v105）",
           [trig("Public Function gCalc", 22, True, decl_names=["gCalc"])],
-          expect_contain=[(True, ["gCalc"])])
-    check("函数名：打前缀 -> 提示已有的 gCalc",
+          expect_contain=[(False, [])])
+    check("函数名（声明行）：打前缀也不弹（v105）",
           [trig("Public Function gCal", 21, True, decl_names=["gCalc"])],
-          expect_contain=[(True, ["gCalc"])])
+          expect_contain=[(False, [])])
     check("非声明行：照常提示",
           [trig("    gUser", 10, False)], expect_contain=[(True, ["gUserName"])])
 
-    # ---- 11.6 Bug1：声明行上输入 num 同时提醒 num 与 numArr（前缀补全不再误杀）----
+    # ---- 11.6 Bug1：声明行【静默】（v105 反转；前缀补全改由用法行覆盖）----
+    # 【v105】原先这两条断言"声明行上输入 num 要同时提醒 num 与 numArr"（v37 口径）。
+    # 用户要求改成 IDEA 那种：**造名字的位置不弹**。故这里反转为 (False, [])。
+    # ⚠️ "前缀补全不被误杀"这条语义没有丢 —— 由下面 11.8 的**用法行**那两条
+    #    （`    num` / in_decl_position=False）覆盖（`(True, ["num","numArr"])`）。
     bug1_code = "\n".join([
         "Public num As Long",
         "Public numArr() As Long",
@@ -686,12 +690,9 @@ def main():
          "decl_names": ["numArr"], "proc_name": None, "module_name": "M1"},
         b1_recs), ui_b1)
     c_b1.trigger()
-    check("Bug1: 声明行输入 num 同时提醒 num 与 numArr",
+    check("Bug1(声明行): 输入 num -> 不弹候选（v105）",
           [(ui_b1.shown, sorted(c_b1.current_matches()))],
-          expect_contain=[(True, ["num", "numArr"])])
-    # 打全 numArr（声明行完整名字）-> v37 起【照常提示】：numArr 是本模块真实
-    # 声明过的 Public 名字，打全它不属于"自我提示"，用户正需要看到它
-    # （与用户报的"输入 test 打全了要提示 test"是同一条规则）。
+          expect_contain=[(False, [])])
     ui_b1b = _UI2()
     c_b1b = E.Completer(_B2(
         {"line_no": 2, "caret_col": len("Public numArr") + 1,
@@ -700,9 +701,9 @@ def main():
          "decl_names": ["numArr"], "proc_name": None, "module_name": "M1"},
         b1_recs), ui_b1b)
     c_b1b.trigger()
-    check("Bug1: 声明行打全 numArr -> 照常提示（v37）",
+    check("Bug1(声明行): 打全 numArr -> 不弹候选（v105）",
           [(ui_b1b.shown, sorted(c_b1b.current_matches()))],
-          expect_contain=[(True, ["numArr"])])
+          expect_contain=[(False, [])])
 
     # ---- 11.7 Bug2：回退删除后若唯一匹配等于所输入词，不提示自己 ----
     ui_b2 = _UI2()
@@ -803,12 +804,12 @@ def main():
     c_n2.move(-1)
     check("键盘: 首项按 ↑ 循环到末项", [c_n2.selected], expect_contain=[2])
 
-    # ---- 11.10 v32：真名集合必须剔除"光标所在声明行正在声明的名字" ----
-    # 回退删字（Dim numArr -> Dim numA）时，文本里此刻确实写着 Dim numA，
-    # 解析层会把它当成真实声明；若真名集合照单全收，"不是真名就剔除自身"
-    # 的防护就失效，numA 又被提示出来。这里模拟"真名集合已正确剔除光标行
-    # 声明名"（declared 只有 num / numArr），同时 decl_names 故意给空
-    # （模拟光标信息陈旧），验证引擎仍不提示 numA。
+    # ---- 11.10 v32 / v105：声明行一律静默（与"真名集合是否含它"无关）----
+    # 【v32 由来】回退删字（Dim numArr -> Dim numA）时，文本里此刻确实写着
+    # Dim numA，解析层会把它当真声明；若真名集合照单全收，"不是真名就剔除自身"
+    # 的防护就失效，numA 又被提示出来。v32 的修法是"真名集合剔除光标行声明名"。
+    # 【v105】声明行现在**整个静默**，与真名集合无关 —— 两条断言的期望值因此
+    # 都收敛成 (False, [])：无论 declared 里有没有 numA，声明行都不弹。
     ui_v32 = _UI2()
     c_v32 = E.Completer(_B2(
         {"line_no": 3, "caret_col": len("    Dim numA") + 1,
@@ -817,11 +818,11 @@ def main():
          "decl_names": [], "proc_name": "Foo", "module_name": "M1"},
         phantom_ids, declared=["num", "numArr"]), ui_v32)
     c_v32.trigger()
-    check("v32: 声明行回退出的 numA 不提示自己（真名集合已剔除光标行）",
+    check("v32/v105: 声明行（真名集合已剔除光标行）-> 静默",
           [(ui_v32.shown, sorted(c_v32.current_matches()))],
-          expect_contain=[(True, ["numArr"])])
-    # 反向：若真名集合【没有】剔除光标行声明名（旧行为），numA 就会漏出来。
-    # 这条是"修复前必然失败"的对照，锁住回归。
+          expect_contain=[(False, [])])
+    # 对照：真名集合【含】numA（旧行为会让它漏出来）—— v105 起同样静默，
+    # 因为声明行根本不进候选计算，numA 出不出得来与 declared 无关了。
     ui_v32b = _UI2()
     c_v32b = E.Completer(_B2(
         {"line_no": 3, "caret_col": len("    Dim numA") + 1,
@@ -830,9 +831,9 @@ def main():
          "decl_names": [], "proc_name": "Foo", "module_name": "M1"},
         phantom_ids, declared=["num", "numArr", "numA"]), ui_v32b)
     c_v32b.trigger()
-    check("v32 对照: 真名集合含 numA 时确实会漏出（旧行为基线）",
+    check("v32/v105 对照: 真名集合含 numA 时也静默（声明行不进候选计算）",
           [(ui_v32b.shown, sorted(c_v32b.current_matches()))],
-          expect_contain=[(True, ["numA", "numArr"])])
+          expect_contain=[(False, [])])
 
     # ---- 11.10b v33：已定义变量打全名，列表必须保留（用户反馈的回归）----
     # 场景：定义了 arr，输入 a / ar 都提示 arr；把 arr 打全后列表不能消失，
@@ -1686,14 +1687,15 @@ def main():
         check("20.14 输入 ds：命中位置仍为词首 [0,4]",
               [h14.get("dataSheet")], expect_contain=[[0, 4]])
 
-        # ---- 21. v37：函数名打全名要提示 + 回退删除后不漏（真实后端全链路）----
+        # ---- 21. 声明行静默（v105；v37 的"打全名要提示"只在用法行成立）----
         #
-        # 用户报的两个 bug，根因是同一条老规则：in_decl_position 时【无条件】
-        # 剔除"当前声明行正在声明的那个名字"。它把"打全名"整个清空了：
-        #   bug1 `Sub test` 行输入 test（工程里已有 Function test）-> 列表消失
-        #   bug2 在声明行回退 02 剩 test -> 同样消失
-        # v37 改为统一判据："这个名字在工程里真实存在吗"。
-        print("\n=== 21. 函数名打全名 / 回退删除（v37）===")
+        # 历史：v37 曾把"in_decl_position 时无条件剔除正在声明的名字"改成
+        #   "只看名字在工程里真实存在吗"（存在就提示，含打全名）。
+        # ★v105 整体反转：**声明行静默**（用户要 IDEA 那种）。
+        #   所以 21.1/21.2 的期望从 (True, [...]) 反转为 (False, [])。
+        #   ⚠️ v37 想保住的语义（真实的同名名字要能提示）没丢 —— 由下面 21.3
+        #     的**调用处**（非声明行）覆盖。
+        print("\n=== 21. 声明行静默 / 调用处照常提示（v105）===")
 
         def probe2(mods, active_mod, edit_line, indent, typed):
             comps, act = [], None
@@ -1716,7 +1718,7 @@ def main():
             cp.trigger(True)
             return (ui.shown, sorted(cp.current_matches()))
 
-        # 21.1 已有 Function test()，在新的 Sub 声明行上输入（bug1）
+        # 21.1 已有 Function test()，在新的 Sub 声明行上输入（v105：不弹）
         m_fn = [("Module1",
                  "Option Explicit\n"
                  "Function test() As Long\n"
@@ -1725,14 +1727,14 @@ def main():
                  "\n"
                  "<in>\n"
                  "End Sub", 1)]
-        check("21.1 声明行输入 tes：提示 test",
+        check("21.1 声明行输入 tes：不弹候选（v105）",
               [probe2(m_fn, "Module1", 6, "Sub ", "tes")],
-              expect_contain=[(True, ["test"])])
-        check("21.1 声明行输入 test（打全名）：仍提示 test  ← bug1",
+              expect_contain=[(False, [])])
+        check("21.1 声明行输入 test（打全名）：也不弹（v105）",
               [probe2(m_fn, "Module1", 6, "Sub ", "test")],
-              expect_contain=[(True, ["test"])])
+              expect_contain=[(False, [])])
 
-        # 21.2 test / test02 都在，声明行回退到 test 要两个都提示（bug2）
+        # 21.2 test / test02 都在，声明行输入（v105：不弹）
         m_two = [("Module1",
                   "Option Explicit\n"
                   "Function test() As Long\n"
@@ -1744,12 +1746,12 @@ def main():
                   "\n"
                   "<in>\n"
                   "End Sub", 1)]
-        check("21.2 声明行回退到 test：test 与 test02 同屏  ← bug2",
+        check("21.2 声明行输入 test：不弹候选（v105）",
               [probe2(m_two, "Module1", 10, "Sub ", "test")],
-              expect_contain=[(True, ["test", "test02"])])
-        check("21.2 声明行输入 test02：提示 test02",
+              expect_contain=[(False, [])])
+        check("21.2 声明行输入 test02：不弹候选（v105）",
               [probe2(m_two, "Module1", 10, "Sub ", "test02")],
-              expect_contain=[(True, ["test02"])])
+              expect_contain=[(False, [])])
 
         # 21.3 过程体内调用处回退（非声明行，属回归保护）
         m_call = [("Module1",
@@ -2884,17 +2886,21 @@ def main():
             "End Sub",
         ]
         # 31.1 旧行为确实会"提示自己"——证明这条回归确实有意义。
-        # v53 起引擎又多了一道"正在造名字的位置不提示自己"的语义护栏，它与
-        # 宽/窄窗口完全独立；对照必须【连它一起短路】，否则根本复现不出旧行为，
-        # 这条控制组就变成了恒真的空测。
+        # 现在有【两道】独立护栏会拦住它：
+        #   ① v53 的语义护栏（正在造名字的位置不提示自己）；
+        #   ② ★v105 的"声明位置整个静默"（E.DECL_POPUP 默认 False）。
+        # 对照必须【两道一起短路】，否则根本复现不出旧行为，这条控制组就恒真了。
         _orig_ml31 = E.Completer._module_level_names
+        _orig_dp31 = E.DECL_POPUP
         E.Completer._module_level_names = lambda _self: set(
             str(_r[0]).lower() for _r in _self.backend.get_identifiers())
+        E.DECL_POPUP = True          # 复原到 v105 之前：声明行照常出候选
         try:
             _ctl31 = _trig31(_leak31, force_broad=True)
         finally:
             E.Completer._module_level_names = _orig_ml31
-        check("31.1 对照：宽窗口 + 关掉 v53 护栏时形参重名会提示自己",
+            E.DECL_POPUP = _orig_dp31
+        check("31.1 对照：宽窗口 + 两道护栏都关掉时形参重名会提示自己",
               [_ctl31],
               expect_contain=[(True, ["username"])])
         # 31.2 修复后：不再提示自己
@@ -2921,15 +2927,18 @@ def main():
                   "Public Sub ProcedureB(ByVal usernam| As String)",
                   "End Sub"])],
               expect_contain=[(False, [])])
-        # 31.5 模块级名字仍是合法引用（v37 语义）——收窄不等于砍掉
-        check("31.5 形参同名于模块级过程名 -> 照常提示",
+        # 31.5 ★v105：形参位置（正在起新名字）**不再**提示模块级过程名。
+        # 旧口径（v37）是"模块级名字是合法引用，照常提示"；但形参位置也是在
+        # 造名字，按 IDEA 口径应静默 —— 用户点名要的就是这个。
+        # ⚠️ "模块级名字是合法引用"这条语义由 31.6（用法位置）继续覆盖。
+        check("31.5 形参同名于模块级过程名 -> 不提示（v105）",
               [_trig31([
                   "Public Sub updateValue()",
                   "End Sub",
                   "",
                   "Public Sub ProcedureB(ByVal updateValue| As String)",
                   "End Sub"])],
-              expect_contain=[(True, ["updateValue"])])
+              expect_contain=[(False, [])])
         # 31.6 回归：用法位置（不是在声明新名字）照常提示同过程的名字
         check("31.6 同过程内用法位置打前缀 -> 照常提示",
               [_trig31([
@@ -2938,8 +2947,8 @@ def main():
                   "    Debug.Print userna|",
                   "End Sub"])],
               expect_contain=[(True, ["username"])])
-        # 31.7 回归：模块级声明行打全名照常提示（gate 不生效的路径）
-        check("31.7 模块级声明行打全名 -> 照常提示",
+        # 31.7 ★v105：模块级声明行打全名 -> 不再提示（声明位置一律静默）
+        check("31.7 模块级声明行打全名 -> 不提示（v105）",
               [_trig31([
                   "Public gUserName As String",
                   "Sub Foo()",
@@ -2947,7 +2956,7 @@ def main():
                   "End Sub",
                   "",
                   "Public gUserName| As String"])],
-              expect_contain=[(True, ["gUserName"])])
+              expect_contain=[(False, [])])
         # 31.8 机制本身：现场证据的宽/窄两个窗口
         _c31, _k31 = _parse31(_HDR31 + _leak31)
         _cur31["code"] = _c31
@@ -3068,16 +3077,19 @@ def main():
         _nc32 = "\n".join(_ls32)
         _cur31["code"] = _nc32
         _ui32 = _UI31()
-        # 同理（见 31.1）：v53 的语义护栏也会挡住这一例，对照要把它一并关掉，
-        # 才能真正测出"没有 v52 这道门时会提示自己"。
+        # 同理（见 31.1）：v53 的语义护栏 + ★v105 的"声明位置静默"都会挡住这一例，
+        # 对照要把两道一起关掉，才能真正测出"没有 v52 这道门时会提示自己"。
         _orig_ml32 = E.Completer._module_level_names
+        _orig_dp32 = E.DECL_POPUP
         E.Completer._module_level_names = lambda _self: set(
             str(_r[0]).lower() for _r in _self.backend.get_identifiers())
+        E.DECL_POPUP = True
         try:
             _cp32 = E.Completer(_B31(_nc32, (_ln32, _col32 + 1)), _ui32)
             _cp32.trigger(True)
         finally:
             E.Completer._module_level_names = _orig_ml32
+            E.DECL_POPUP = _orig_dp32
         check("32.7 对照：两道门都关掉时会提示形参自身（本节没白测）",
               [_ui32.shown, sorted(_cp32.matches or [])],
               expect_contain=[True, ["username"]])
@@ -3273,26 +3285,31 @@ def main():
                                 "    Debug.Print username",
                                 "End Sub"], _paste33("username"))
         _orig_ml33 = E.Completer._module_level_names
+        _orig_dp33 = E.DECL_POPUP
         E.Completer._module_level_names = lambda _self: set(
             str(_r[0]).lower() for _r in _self.backend.get_identifiers())
+        E.DECL_POPUP = True          # ★v105：连同"声明位置静默"一起关掉
         try:
             _p_off = _poll33(_CODE33 + ["Public Sub ProcedureB(ByVal | )",
                                         "    Debug.Print username",
                                         "End Sub"], _paste33("username"))
         finally:
             E.Completer._module_level_names = _orig_ml33
-        check("33.9 对照：关掉 v53 护栏时会提示形参自身（本节没白测）",
+            E.DECL_POPUP = _orig_dp33
+        check("33.9 对照：两道护栏都关掉时会提示形参自身（本节没白测）",
               [_p_off[0], "username" in _p_off[1]],
               expect_contain=[True, True])
 
         # D) 防误杀：模块级真名字 / 前缀补全 / 用法位置都不许被砍
+        #    ★v105：形参/声明行这三条现在按 IDEA 口径【静默】，语义改由
+        #    「用法位置」那条（33.13）覆盖 —— 本组仍有意义：证明静默不是"砍掉能力"。
         _p = _poll33(["Public Sub updateValue()",
                       "End Sub",
                       "",
                       "Public Sub ProcedureB(ByVal updateValue| As String)",
                       "End Sub"], _back33)
-        check("33.10 形参同名于模块级过程名 -> 照常提示（v37 / 31.5）",
-              [_p[0], "updateValue" in _p[1]], expect_contain=[True, True])
+        check("33.10 形参同名于模块级过程名 -> 静默（v105）",
+              [_p[0], "updateValue" in _p[1]], expect_contain=[False, False])
 
         _p = _poll33(["Public Function test() As Long",
                       "    test = 1",
@@ -3300,16 +3317,16 @@ def main():
                       "",
                       "Public Sub |()",
                       "End Sub"], _paste33("test"))
-        check("33.11 Sub 行写全 test，工程里有 Function test() -> 照常提示",
+        check("33.11 Sub 行写全 test，工程里有 Function test() -> 静默（v105）",
               [_p[0], "test" in [x.lower() for x in _p[1]]],
-              expect_contain=[True, True])
+              expect_contain=[False, False])
 
         _p = _poll33(["Public Sub ProcedureB()",
                       "    Dim numArr As Long",
                       "    Dim | As Long",
                       "End Sub"], _paste33("num"))
-        check("33.12 局部声明行输入前缀 num -> 仍提示 numArr（不许误杀前缀）",
-              [_p[0], "numArr" in _p[1]], expect_contain=[True, True])
+        check("33.12 局部声明行输入前缀 num -> 静默（v105；前缀补全见 33.13/25）",
+              [_p[0], "numArr" in _p[1]], expect_contain=[False, False])
 
         _p = _poll33(["Public Sub ProcedureA()",
                       "    Dim username As String",
@@ -10494,14 +10511,16 @@ def main():
                   [_go66(_bk66c)],
                   expect_contain=[(False, [])])
 
-            # ---- 66.6 对照：标准模块里真存在的公共名，回退/打全照常提示 ----
+            # ---- 66.6 ★v105：`Public GNa` 也是声明行（正在起新名字）-> 静默 ----
+            # 旧口径（v37）是"别的标准模块里的 `GName` 是货真价实的存在，照常提示"；
+            # v105 把声明行整个静默了，故期望反转为 (False, [])。
+            # ⚠️ "跨模块 Public 是合法存在"这条语义由 66.3（纯判据）继续覆盖。
             _P66b = [("模块A", 1, "Public GName"),
                      ("类C", 2, "Public GNa")]
             _bk66d, _pane66d, _objs66d = _mk66(_P66b, "类C", (1, 12, 1, 12))
             _r66d = _go66(_bk66d)
-            check("66.6 对照：`Public GNa` 行尾触发 -> 别的标准模块里的公共名 "
-                  "`GName` 照常提示（跨模块 Public 是货真价实的存在）",
-                  [_r66d], expect_contain=[(True, ["GName"])])
+            check("66.6 声明行 `Public GNa` -> 静默（v105；跨模块存在性见 66.3）",
+                  [_r66d], expect_contain=[(False, [])])
 
             # ---- 66.7 两条路径同一口径：候选池隐藏的，证据侧也必须否认 ----
             _visA66 = set(n.lower() for n in E66.filter_identifiers_by_scope(
@@ -15781,6 +15800,147 @@ def main():
         import traceback as _tp86
         _tp86.print_exc()
         check("第 86 节异常: %s" % _e86, [True], expect_contain=[False])
+
+    # ==================================================================
+    # 87. ★v105：声明位置不弹候选（IDEA 口径）+ 判据锚定（修误判）
+    # ==================================================================
+    # 用户口径（原话）："在定义变量名，函数名或过程名时，会出提示词列表框。
+    # 我用 idea 是不提示的吧，你帮我改成 IDEA 那种。"
+    #
+    # 背景：parser.is_caret_in_declaration()（那边叫"第一道防线"）与后端的
+    # in_decl_position 早在 v22 就写好了，但**引擎从来没消费过这个字段** ——
+    # 实际行为退化成 v37/v53 的"只过滤掉正在输入的那个名字本身、其它候选照弹"。
+    # v105 把它接进 trigger()，同时修好判据里一个一直没被暴露的误判（见 87.2）。
+    print("\n=== 87. 声明位置不弹候选（v105）===")
+    try:
+        # ---- 87.1 纯判据：真声明行（含"名字还没敲"的中间态）----
+        _T87 = ["Dim x", "Dim", "Public gA As String", "Private m_x As Long",
+                "Global g As Long", "Static s As Long", "Const K = 1",
+                "Private Const K = 1", "Friend f As Long", "WithEvents b As Object",
+                "Private WithEvents btn As Button", "Dim a As Long, b As Long",
+                "Sub Foo", "Sub", "Public Sub", "Private Sub Foo()",
+                "Function", "Function F() As Long", "Property", "Property Get X()",
+                "Event", "Event E(ByVal x)", "Type", "Type T", "Enum",
+                "Public Enum E", "Dim arr(10) As Long"]
+        _bad87 = [c for c in _T87 if not P.is_caret_in_declaration(c, len(c))]
+        check("87.1 纯判据：真声明行（%d 条，含只敲了关键字的中间态）全部命中"
+              % len(_T87), [_bad87], expect_contain=[[]])
+
+        # ---- 87.2 ★纯判据反面：标识符恰好叫关键字的【用法行】不许误判 ----
+        # 旧实现 `_RE_CONST.search(line) or _RE_DECL.search(line)` 在**整行**里搜
+        # 关键字，下面这些行（标识符叫 Global / Public / Type / Sub…）实测全被判成
+        # "声明行"。以前没人消费这个字段所以无害，v105 一接上就把正常补全误静默
+        # （第 24.4 条实测就是这么红的）。v105 改成锚定语句开头。
+        _F87 = ["x = Global", "MsgBox Global", "    Global", "    Public = 5",
+                "GlobalData = 1", "SubTotal = 1", "PropertyValue = 3",
+                "FunctionCount = FunctionCount + 1", "TypeOf x Is Long",
+                "TypeName = x", "EventLog.Add 1", "DeclareMe x",
+                "    ReDim arr(1)", "ReDim arr(0)", "Option Explicit",
+                "End Sub", "End Function", "With obj", "    Set b = New Thing",
+                "arr(1) = 2", "Call Global", 'Attribute VB_Name = "M"']
+        _f87 = [c for c in _F87 if P.is_caret_in_declaration(c, len(c))]
+        check("87.2 ★纯判据反面：用法行（标识符叫 Global/Public/Type/Sub…）"
+              "一律不算声明行", [_f87], expect_contain=[[]])
+
+        # ---- 端到端：最小 UI / 后端（只给判据需要的接口）----
+        class _UI87:
+            def __init__(self):
+                self.shown = False
+            def show(self, *a, **k):
+                self.shown = True
+            def update_selection(self, *a, **k):
+                pass
+            def hide(self, *a, **k):
+                self.shown = False
+            def contains_point(self, *a, **k):
+                return False
+
+        class _B87:
+            def __init__(self, decl, in_type, ids=None, type_names=None,
+                         line_text="    cus", decl_names=None):
+                self._ctx = {"line_no": 1, "caret_col": len(line_text) + 1,
+                             "line_text": line_text, "in_string": False,
+                             "in_comment": False, "in_type_position": in_type,
+                             "in_decl_position": decl,
+                             "decl_names": (decl_names if decl_names is not None
+                                            else ["customerName"]),
+                             "proc_name": "Foo", "module_name": "M1"}
+                self._ids = ids if ids is not None else [
+                    ("customerName", "M1", "Foo", False),
+                    ("customerCode", "M1", "Foo", False)]
+                self._tn = type_names
+            def get_context(self):
+                return self._ctx
+            def get_identifiers(self):
+                return self._ids
+            def get_declared_names(self):
+                return [n[0] for n in self._ids]
+            def get_type_names(self):
+                return list(self._tn or ())
+
+        def _trig87(decl, in_type, manual=False, ids=None, types=None,
+                    line_text="    cus"):
+            _ui = _UI87()
+            _c = E.Completer(_B87(decl, in_type, ids, types, line_text), _ui)
+            _c.trigger(manual=manual)
+            return (_ui.shown, sorted(_c.current_matches()))
+
+        # ---- 87.3 声明行 -> 不弹 ----
+        check("87.3 声明行（in_decl=True，非类型位置）-> 不弹候选",
+              [_trig87(True, False)], expect_contain=[(False, [])])
+
+        # ---- 87.4 `As` 类型位置 -> 仍然提示类型名（v22/v93 不许退化）----
+        # 行是 `    Dim x As My`（正在填类型名），in_decl 与 in_type 同时为真 ——
+        # 此时【必须放行】，把候选收窄到类型名。
+        check("87.4 `As` 类型位置（in_decl=True + in_type=True）-> 照常提示类型名",
+              [_trig87(True, True, ids=[("MyType", "M1", None, False)],
+                       types=["MyType"], line_text="    Dim x As My")],
+              expect_contain=[(True, ["MyType"])])
+
+        # ---- 87.5 用法行不受影响 ----
+        check("87.5 非声明行 -> 照常提示",
+              [_trig87(False, False)],
+              expect_contain=[(True, ["customerCode", "customerName"])])
+
+        # ---- 87.6 Ctrl+Space（点名）在声明行也照弹 ----
+        check("87.6 Ctrl+Space（manual）在声明行照弹（点名的列表不拦）",
+              [_trig87(True, False, manual=True)],
+              expect_contain=[(True, ["customerCode", "customerName"])])
+
+        # ---- 87.7 开关：DECL_POPUP=True -> 恢复旧行为 ----
+        _orig_dp87 = E.DECL_POPUP
+        E.DECL_POPUP = True
+        try:
+            _r87 = _trig87(True, False)
+        finally:
+            E.DECL_POPUP = _orig_dp87
+        check("87.7 开关 DECL_POPUP=True -> 恢复旧行为（声明行照常出候选）",
+              [_r87], expect_contain=[(True, ["customerCode", "customerName"])])
+
+        # ---- 87.8 源码护栏：接线 + 锚定判据 + 开关名 ----
+        _esrc87 = io.open(os.path.join(ROOT, "engine.py"),
+                          encoding="utf-8").read()
+        _psrc87 = io.open(os.path.join(ROOT, "parser.py"),
+                          encoding="utf-8").read()
+        # ⚠️ parser 里新注释**引用了**旧实现那行源码，直接子串检查会被注释绊倒
+        #    ⇒ 先剥掉注释再断言"旧实现已不在"。
+        import re as _re87
+        _psrc87_nc = _re87.sub(r"#[^\n]*", "", _psrc87)
+        check("87.8 源码护栏：trigger 读 in_decl_position 且放行 in_type；"
+              "parser 用锚定判据（_RE_ACCESS_MODIFIER / _RE_PROC_HEAD），"
+              "整行 search 的旧实现已删除；开关读 VBECOMPLETE_DECL_POPUP",
+              [('ctx.get("in_decl_position")' in _esrc87
+                and "and not in_type" in _esrc87,
+                "VBECOMPLETE_DECL_POPUP" in _esrc87,
+                "_RE_ACCESS_MODIFIER.match(s)" in _psrc87
+                and "_RE_PROC_HEAD.match(s)" in _psrc87,
+                "_RE_CONST.search(line) or _RE_DECL.search(line)"
+                not in _psrc87_nc)],
+              expect_contain=[(True, True, True, True)])
+    except Exception as _e87:
+        import traceback as _tp87
+        _tp87.print_exc()
+        check("第 87 节异常: %s" % _e87, [True], expect_contain=[False])
 
     print("\n" + "=" * 60)
     print("结果: %d PASS, %d FAIL" % (PASS, FAIL))

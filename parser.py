@@ -690,6 +690,29 @@ _RE_NOT_VAR_DECL = re.compile(
     r"^\s*(?:Sub|Function|Property|Type|Enum|Declare|Event|With|End|Option|"
     r"Implements|Attribute|ReDim|Rem\b|#|Def[A-Za-z]*\b)", re.I)
 
+# ★v105：变量声明判据的【锚定】版本（配合 is_caret_in_declaration）。
+#
+# 只剥【纯访问修饰词】：Public / Private / Global / Friend / Static / WithEvents。
+# 注意**不含 Dim / Const** —— 它们是"声明关键字"本身，剥掉就分不清
+# `Dim x`（声明）与 `Public x`（也是声明但靠修饰词+名字识别）了。
+_RE_ACCESS_MODIFIER = re.compile(
+    r"^\s*(?:Public|Private|Global|Friend|Static|WithEvents)\s+", re.I)
+# 剥完修饰词后，语句头是这些关键字之一 -> 是变量/常量声明：
+#   Dim / Const      —— 直接声明；
+#   Static / WithEvents —— 单独作关键字时（`Static s As Long` / `WithEvents b As X`）；
+#   ⚠️ 不含 ReDim（由 _RE_NOT_VAR_DECL 拦下：那里要提示已有数组名）。
+_RE_DECL_HEAD = re.compile(r"^\s*(?:Dim|Const|Static|WithEvents)\b", re.I)
+
+# ★v105：过程 / 属性 / 事件 / 类型 / API 声明的【语句头】。
+#
+# 与 _RE_SUB / _RE_PROP / _RE_EVENT / _RE_TYPE / _RE_ENUM 的区别：那几个要求
+# **名字已经存在**（后面跟着标识符）；这一条只要求关键字出现在语句头，于是能认出
+# "名字还没开始敲"的中间态 —— `Sub ` / `Public Function ` / `Property `。用户
+# 敲完 `Sub ` 正要起过程名，那一刻同样属于"造名字"，必须一起静默。
+# 负向先行断言 `(?![A-Za-z0-9_])` 保证关键字是**整词**：`SubTotal = 1` 不误伤。
+_RE_PROC_HEAD = re.compile(
+    r"^\s*(?:Sub|Function|Property|Event|Type|Enum|Declare)(?![A-Za-z0-9_])", re.I)
+
 
 
 def _logical_line_at(lines, idx):
@@ -839,9 +862,15 @@ def is_caret_in_declaration(line_text, caret_col=None):
     于是出现"输入函数名/公共变量名时提示出它自己"。
 
     覆盖：Dim / Static / Const / Public|Private|Global 变量与常量、
-    Sub / Function / Property / Declare / Event / Type / Enum。
+    Sub / Function / Property / Declare / Event / Type / Enum
+    （**含**名字还没开始敲的中间态：`Sub ` / `Public Function ` / `Property `）。
     不覆盖：ReDim（那里要提示已有的数组名）、普通语句、Type 成员行
     （成员行由 decl_names_at_caret 兜底）。
+
+    ★v105 起判据**锚定语句开头**（先剥访问修饰词再看语句头）。旧实现在整行里
+    `search` 关键字，于是 `x = Global` / `MsgBox Global` / `Public = 5` 这类
+    "标识符恰好叫关键字"的**用法行**被误判成声明行 —— 以前没人消费这个字段所以
+    无害，接进引擎后会把正常补全误静默（第 24.4 条实测）。
 
     只依赖光标所在行，不需要整个模块文本，因此可在 get_context 里廉价调用。
     """
@@ -859,15 +888,43 @@ def is_caret_in_declaration(line_text, caret_col=None):
     if _RE_TYPE.match(line) or _RE_ENUM.match(line):
         return True
     # 3) 变量 / 常量声明
+    #
+    # ★v105：这里**必须锚定在语句开头判**，不能拿关键字在整行里 `search`。
+    # 旧实现是 `bool(_RE_CONST.search(line) or _RE_DECL.search(line))` —— 它在
+    # **整行**里搜关键字，于是"标识符恰好叫这些关键字"的**用法行**全被误判成
+    # 声明行。实测（v105 把它接进引擎前一直无害，接上后立刻伤人）：
+    #     `x = Global`      -> True（错：这是赋值，右边在**引用**变量 Global）
+    #     `MsgBox Global`   -> True（错：实参引用）
+    #     `    Public = 5`  -> True（错：变量名叫 Public 的赋值）
+    #     `    Global`      -> True（错：一句裸表达式）
+    # 接上引擎后这种误判会把用户的正常补全直接静默掉（第 24.4 条实测就是这么红的）。
+    #
+    # 正确口径：先剥掉**纯访问修饰词**（Public/Private/Global/Friend/Static/
+    # WithEvents），再看剩下的语句头：
+    #   * 以 Dim / Const / Static / WithEvents 开头 -> 是变量/常量声明；
+    #   * 以 ReDim 或其它关键字（Sub/Function/Type/Option/End…）开头 -> 不是；
+    #   * 以【标识符】开头时 —— 只有前面确实剥到了访问修饰词才算
+    #     （`Public gA As String` 是声明；`GlobalData = 1` 不是）。
     s = line
+    _mod_stripped = False
     for _ in range(4):
-        m = _RE_LEAD_MODIFIER.match(s)
+        m = _RE_ACCESS_MODIFIER.match(s)
         if not m:
             break
         s = s[m.end():]
+        _mod_stripped = True
+    # 3a) 过程 / 属性 / 事件 / 类型 / API 的【语句头】—— 含"只有关键字、名字还
+    #     没开始敲"的中间态（`Sub ` / `Public Function `）。上面第 1/2 档只认
+    #     "名字已经在文本里"的完整形态，这一档补上中间态（否则敲完 `Sub ` 开始
+    #     起名时列表照样冒出来 —— 正是用户报的那个现象）。
+    if _RE_PROC_HEAD.match(s):
+        return True
+    # 3b) 变量 / 常量声明
     if _RE_NOT_VAR_DECL.match(s):
         return False
-    return bool(_RE_CONST.search(line) or _RE_DECL.search(line))
+    if _RE_DECL_HEAD.match(s):
+        return True
+    return bool(_mod_stripped and _RE_LEADING_IDENT.match(s))
 
 
 def _caret_decl_names(code, caret):

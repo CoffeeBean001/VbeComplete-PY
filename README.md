@@ -36,6 +36,10 @@ the caret — press `Tab` to accept the highlighted one.
   keyword gets its own trailing space (`public `). Inside a `Function`, its **own** name is the
   return-value variable, so completing it there — `MyFunc = …` — inserts nothing
   (no `MyFunc() = …`).
+- **Quiet while you declare.** At a declaration — `Dim …`, `Const …`, `Sub …`, `Function …`,
+  `Property …`, `Type …` — the list stays closed, exactly like IDEA: you are *inventing* a name, so
+  there is nothing to complete. The type position after `As` / `New` is unaffected (there you *are*
+  referring to an existing type, so type names are still offered).
 - **Unicode identifiers.** Names such as `Dim 用户名 As String` are fully supported.
 - **Non-intrusive.** Suggestions appear only inside a VBE *code pane* — never in the Properties
   window, the Project explorer or the form designer.
@@ -147,6 +151,7 @@ semantic infrastructure.
 | Smart indentation and automatic block closers | ✅ |
 | Start a new line (`Shift+Enter`) | ✅ |
 | Trailing space for keywords; `()` after functions | ✅ |
+| No completion while declaring a new name | ✅ |
 | Type-aware member completion | Delegated to the VBE's native member list |
 
 **Deliberately not implemented**
@@ -167,6 +172,7 @@ Behaviour is tuned through environment variables (set them before launching):
 | `VBECOMPLETE_AUTO_PAREN` | on | `0` disables inserting `()` after procedures and functions. |
 | `VBECOMPLETE_AUTO_SPACE` | on | `0` disables the automatic trailing space after keywords. |
 | `VBECOMPLETE_MEMBER_POPUP` | off | `1` restores VbeComplete's own list after `object.` (off by default). |
+| `VBECOMPLETE_DECL_POPUP` | off | `1` restores suggesting inside declarations (off by default). |
 | `VBECOMPLETE_NO_SCOPE_RANK` | off | `1` disables scope-aware ranking. |
 | `VBECOMPLETE_NO_RECENT_RANK` | off | `1` disables recently-used ranking. |
 | `VBECOMPLETE_RECENT_MAX` | 64 | How many recently-used names are remembered. |

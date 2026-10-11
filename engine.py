@@ -120,6 +120,28 @@ except Exception:
 # 想恢复旧行为（出候选、并按声明类型收窄）：`set VBECOMPLETE_MEMBER_POPUP=1`。
 MEMBER_POPUP = (os.environ.get("VBECOMPLETE_MEMBER_POPUP", "0").strip() == "1")
 
+# ★v105：**声明位置**（正在"造一个新名字"）要不要弹候选。
+#
+# 用户口径（原话）："在定义变量名，函数名或过程名时，会出提示词列表框。我用 idea
+# 是不提示的吧，你帮我改成 IDEA 那种。"
+#
+# 默认 **False**（关）。理由与 MEMBER_POPUP 同源 —— **这个位置本来就轮不到我们**：
+# 用户在 `Dim cus|` / `Sub Do|` 这种地方是**造名字**，不是在**引用**名字，而我们的
+# 池子全是"已存在的名字"（变量 / 过程 / 关键字 / 内建函数）⇒ 出了就是噪音，还会
+# 盖住他刚敲的字。IDEA 同理：声明处没有可补全的既有符号，不弹。
+#
+# ⚠️ 只掐"名字位置"：`As` 之后的**类型名**位置（`Dim x As Inte|`）照常提示类型名 ——
+#    那里是在**引用**类型，是 v22/v93 特意做的能力，不在本条管辖范围内。
+# ⚠️ 覆盖范围由 parser.is_caret_in_declaration() 决定：Dim / Static / Const /
+#    Public|Private|Global 变量与常量、Sub / Function / Property / Declare / Event、
+#    Type / Enum。**刻意不含 ReDim**（那里要提示已有的数组名）。
+# ⚠️ Ctrl+Space（manual=True）例外：那是用户**点名**要列表，照弹（与 MEMBER_POPUP
+#    同口径：点名的列表照弹，否则就成了"按了没反应"）。
+#
+# 想恢复旧行为（声明行照常出候选、只过滤掉正在输入的那个词本身）：`set
+# VBECOMPLETE_DECL_POPUP=1`。
+DECL_POPUP = (os.environ.get("VBECOMPLETE_DECL_POPUP", "0").strip() == "1")
+
 # v73：让位的【宽限期】（秒）—— 见 Completer.trigger 里让位那段。
 #
 # 让位原来的假设是"我们让开，VBE 的成员列表就会顶上"。这个假设在 With 块里
@@ -1900,6 +1922,28 @@ class Completer:
         # 变量与过程名依旧静默（v22 的初衷：填类型名时冒出一堆变量名是噪音）。
         in_type = bool(ctx.get("in_type_position"))
         type_names = self._type_name_set() if in_type else None
+        # ★v105：声明位置（正在"造一个新名字"）不弹候选 —— 与 IDEA 一致。
+        #
+        # 后端 parser.is_caret_in_declaration()（那边称之为"第一道防线"）一直在算
+        # in_decl_position，但**引擎从来没读过这个字段** ⇒ 实际退化成 v37/v53 的
+        # "只把正在输入的那个名字本身过滤掉、其它候选照弹"。用户看到的正是：
+        # 定义变量 / 函数 / 过程时，旁边冒出一堆无关的变量名、过程名、关键字。
+        #
+        # 这里把它接上：造名字的地方没有"既有符号"可补，直接静默。
+        # ⚠️ 必须放行 `As` 之后的类型名位置（in_type）—— 那里是在【引用】类型，
+        #    不是造名字，要照常提示类型名（v22/v93 的能力，别一起掐掉）。
+        # ⚠️ 放在下面那段"让位 / 轮询触发"之前：声明位置上我们自己永远不弹，也就
+        #    没有"宽限期到、VBE 没弹、再把候选补回来"这回事（补位路径走 trigger
+        #    也会走到这里直接返回）。语法上 vbe_list_expected() 只认成员访问与
+        #    `As`/`New`，名字位置上本来就返回 False，所以提前返回不影响让位记账。
+        # ⚠️ Ctrl+Space（manual=True）例外：用户点名的列表照弹（同 MEMBER_POPUP）。
+        if ((not DECL_POPUP) and (not manual)
+                and ctx.get("in_decl_position") and not in_type):
+            _log("trigger: 声明位置（正在起新名字）-> 不出候选（v105）"
+                 " line=%r word=%r" % (ctx.get("line_text"),
+                                       ctx.get("decl_names")))
+            self.hide()
+            return
         # v55：光标停在 `标识符.` 之后输入成员名时，VBE 自己会弹「自动列出成员」
         # 列表 -> 我们让位，不跟它抢同一块地方（两个列表会互相遮挡、还抢键盘）。
         # 只拦【轮询自动触发】：手动 Ctrl+Space 是用户点名要我们的列表，照旧弹。
