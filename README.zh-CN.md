@@ -5,7 +5,7 @@
 > 中文完整版，保留了各功能的详细说明与历史版本标注；GitHub 首页展示的是精简英文版
 > [README.md](README.md)。
 
-![VbeComplete 实际效果：输入 "cus" 实时过滤候选，方向键切换选中项，Tab 确认补全](assets/demo.gif)
+![VbeComplete 实际效果：先定义 customerName，之后输入 "cus" 即弹出候选，Tab 确认补全](assets/demo.gif)
 
 在 VBE（VBA 编辑器）代码窗里输入变量/过程名的首字母（或中文首字），自动弹出候选列表，
 `Tab` 确认补全，`↑`/`↓` 选择，`Shift+↑`/`Shift+↓` 跳出列表并把光标上/下移一行，`Esc` 取消；
