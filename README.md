@@ -6,10 +6,11 @@
 
 ![VbeComplete in action: after `customerName` is defined, typing "cus" pops up the suggestion, and Tab accepts it](assets/demo.gif)
 
-VbeComplete brings modern, IDE-grade code completion to the VBA editor (VBE) shipped with
-Microsoft Office. Start typing a name and a live-filtered list of the variables, constants,
-procedures, keywords and built-in functions that are actually in scope pops up next to the caret
-— press `Tab` to accept the highlighted one.
+VbeComplete brings modern, IDE-grade code completion to the VBA editor (VBE) — the one shared by
+every **Microsoft Office** host (**Excel, Word, PowerPoint, Access, Visio**) and by **WPS Office**
+(Writer, Spreadsheets, Presentation). Start typing a name and a live-filtered list of the variables,
+constants, procedures, keywords and built-in functions that are actually in scope pops up next to
+the caret — press `Tab` to accept the highlighted one.
 
 > **The gap it fills.** The VBE only ever completes `object.member`; it never suggests *your own*
 > variable or procedure names. VbeComplete does exactly that, and layers a set of IDEA-style
@@ -56,16 +57,21 @@ procedures, keywords and built-in functions that are actually in scope pops up n
 
 ## Requirements
 
-1. **Windows** with Microsoft Office (Excel, Word, Access — any host that ships the VBE).
+1. **Windows** with any VBA host that ships the shared VBE — **Microsoft Office** (Excel, Word,
+   PowerPoint, Access, Visio) or **WPS Office** (Writer / Spreadsheets / Presentation). Any one of
+   them works; the tool auto-detects whichever host you are using.
 2. **Python** — 3.8 or newer; **3.10 – 3.12 recommended** (an official build from
    [python.org](https://www.python.org/downloads/); tick *Add python.exe to PATH* during setup).
    *Python 3.13 also works — `pip` simply pulls a newer `pywin32` build (≥ 308).*
-3. **"Trust access to the VBA project object model" must be enabled** — otherwise the tool cannot
-   read the project's code at all (this is a one-time switch in Office itself, **not** a macro
-   security level):
+3. **"Trust access to the VBA project object model" must be enabled in the host you use** —
+   otherwise the tool cannot read the project's code at all (this is a one-time switch in the
+   application itself, **not** a macro security level; the menu path is identical in every Office
+   host):
    *File → Options → Trust Center → Trust Center Settings → Macro Settings →*
-   *Trust access to the VBA project object model* → tick it, then **restart Excel**.
-   *(Chinese Office: 文件 → 选项 → 信任中心 → 信任中心设置 → 宏设置 → 勾选"信任对 VBA 工程对象模型的访问"，然后重启 Excel。)*
+   *Trust access to the VBA project object model* → tick it, then **restart the application**.
+   *(Chinese Office: 文件 → 选项 → 信任中心 → 信任中心设置 → 宏设置 → 勾选"信任对 VBA 工程对象模型的访问"，然后重启该应用。)*
+   *(WPS Office: it exposes the same "trust access to the VBA object model" switch under its own
+   options — enable it there, then restart WPS.)*
 
 ## Installation
 
@@ -182,9 +188,10 @@ Double-click `uninstall_autostart.bat` to remove it.
 run_tests.bat
 ```
 
-- Runs offline against a real 14-module sample project in `tests/testdata/` — **no Excel or COM required**.
-- Three cases read the Excel type library; on a machine without Excel they fail, so
-  `967 PASS / 3 FAIL` is expected there and is **not** a code fault.
+- Runs offline against a real 14-module sample project in `tests/testdata/` — **no Office or COM required**.
+- A few cases read the *live* type library and assert **Excel-specific** names. When the host detected
+  is not Excel they are **skipped automatically**; when no host is open at all they fail (a small,
+  expected count — **not** a code fault).
 - Use a Python interpreter that has `pywin32` installed.
 
 ## Project structure

@@ -1,8 +1,14 @@
 """
-VBE 后端：通过 pywin32 与正在运行的 Excel VBE 交互。
+VBE 后端：通过 pywin32 与正在运行的 VBA 宿主的 VBE 交互。
 
-只在这一层依赖 pywin32 / Excel，引擎层不依赖，方便单测。
-需要：Excel 已开启「信任对 VBA 工程对象模型的访问」。
+只在这一层依赖 pywin32 / 宿主，引擎层不依赖，方便单测。
+
+支持 Office 全家桶（Excel / Word / PowerPoint / Access / Visio）与 WPS 全家桶
+（文字 / 表格 / 演示）—— 它们共用同一个 VBE 与同一套 VBIDE 对象模型，差异只在
+外层 Application 的 ProgID，由 `_get_vbe()` 自动探测（详见那一节的说明）。
+
+需要：对应宿主已开启「信任对 VBA 工程对象模型的访问」（各宿主菜单路径一致：
+信任中心 → 宏设置 → 信任对 VBA 工程对象模型的访问）。
 """
 
 import difflib
@@ -1619,10 +1625,167 @@ def _skip_into_parens(actual, end0, orig_line, orig_caret_col):
     return end0
 
 
-def _get_vbe():
+# ---------------------------------------------------------------------------
+# v104：宿主探测 —— 不再写死 Excel
+# ---------------------------------------------------------------------------
+# VBE（VBA 集成开发环境）是微软交给【每个 Office 宿主】共用的组件：
+# Excel / Word / PowerPoint / Access / Visio 用的都是同一个 VBE、同一套
+# VBIDE 对象模型（VBProjects -> VBComponents -> CodeModule / ActiveCodePane）。
+# 所以本项目对宿主的依赖，实质只有"外面那层 Application 的 ProgID"一处；
+# 只要按当前宿主换一个 ProgID，其余全部复用。WPS 的 VBA 兼容环境同理。
+#
+# 候选宿主 ProgID 表。顺序 = 拿不到"前台线索"时的兜底优先级
+# （Excel 放第一，保持与旧版本一致的行为）。
+_HOST_PROGIDS = (
+    # ---- Microsoft Office ----
+    "Excel.Application",
+    "Word.Application",
+    "PowerPoint.Application",
+    "Access.Application",
+    "Visio.Application",
+    # ---- WPS Office（金山）—— ProgID 视版本有新旧两套写法，都试 ----
+    "KWPS.Application",   # WPS 文字（对应 Word）
+    "KET.Application",    # WPS 表格（对应 Excel）
+    "KWPP.Application",   # WPS 演示（对应 PowerPoint）
+    "WPS.Application",    # 旧版 WPS 文字
+    "ET.Application",     # 旧版 WPS 表格
+    "WPP.Application",    # 旧版 WPS 演示
+)
+
+# 进程可执行文件名 -> ProgID。用于"前台窗口属于哪个宿主进程"这条优先线索，
+# 让工具跟着【用户当前正在用的】那个宿主走（而不是候选表顺序）。
+_HOST_EXE_PROGID = {
+    "excel.exe": "Excel.Application",
+    "winword.exe": "Word.Application",
+    "powerpnt.exe": "PowerPoint.Application",
+    "msaccess.exe": "Access.Application",
+    "visio.exe": "Visio.Application",
+    "wps.exe": "KWPS.Application",
+    "et.exe": "KET.Application",
+    "wpp.exe": "KWPP.Application",
+}
+
+# 上次成功连上的宿主 ProgID —— 下次优先试它，省掉一轮无谓的 GetActiveObject。
+_host_progid_hint = {"progid": None}
+
+
+def _process_image_name(pid):
+    """PID -> 进程可执行文件名（小写，含 .exe）；拿不到返回 ""。纯 Win32。"""
+    import ctypes
+    import ctypes.wintypes
+    if not pid:
+        return ""
+    try:
+        k32 = ctypes.windll.kernel32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not h:
+            return ""
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = ctypes.wintypes.DWORD(len(buf))
+            if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                path = buf.value or ""
+                return path.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+        finally:
+            try:
+                k32.CloseHandle(h)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return ""
+
+
+def _foreground_hwnd():
+    """前台窗口句柄（取不到返回 0）。单独抽出来便于测试打桩。"""
+    try:
+        import ctypes
+        return int(ctypes.windll.user32.GetForegroundWindow() or 0)
+    except Exception:
+        return 0
+
+
+def _preferred_progid():
+    """用【前台窗口】所属进程猜用户正在用的宿主 -> ProgID；猜不到返回 None。
+
+    打字时光标在 VBE 里，前台窗口就是宿主进程（VBE 是进程内的）的窗口，所以
+    这条线索很准。纯 Win32，不碰 COM，可在钩子线程安全调用。
+    """
+    import ctypes
+    import ctypes.wintypes
+    try:
+        u32 = ctypes.windll.user32
+        hwnd = _foreground_hwnd()
+        if not hwnd:
+            return None
+        try:
+            root = u32.GetAncestor(hwnd, 2)   # GA_ROOT
+            if root:
+                hwnd = root
+        except Exception:
+            pass
+        pid = ctypes.wintypes.DWORD()
+        u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        exe = _process_image_name(pid.value)
+        if exe:
+            return _HOST_EXE_PROGID.get(exe)
+    except Exception:
+        pass
+    return None
+
+
+def _get_active_object(progid):
+    """取一个正在运行的 COM 服务器对象（拿不到则抛异常）。
+
+    单独抽出来是为了让宿主探测能离线测试（用例打桩这一层即可，无需真 COM）。
+    """
     import win32com.client
-    xl = win32com.client.GetActiveObject("Excel.Application")
-    return xl.VBE
+    return win32com.client.GetActiveObject(progid)
+
+
+def _get_vbe():
+    """连到【当前宿主】的 VBE —— 不再写死 Excel（v104）。
+
+    顺序：① 前台窗口所属进程（用户正在用的宿主）→ ② 上次成功的宿主 →
+    ③ 候选表兜底。取第一个能拿到 `.VBE` 的。
+
+    全都不行时，把最后一个异常抛出去 —— 与旧行为一致（宿主没开 / 没开信任时
+    GetActiveObject 会抛 com_error），交给 `_get_vbe_cached` 走 `_com_fail()`。
+    """
+    order = []
+    pref = None
+    try:
+        pref = _preferred_progid()
+    except Exception:
+        pref = None
+    for p in (pref, _host_progid_hint.get("progid")):
+        if p and p not in order:
+            order.append(p)
+    for p in _HOST_PROGIDS:
+        if p not in order:
+            order.append(p)
+
+    last = None
+    for progid in order:
+        try:
+            app = _get_active_object(progid)
+        except Exception as e:
+            last = e
+            continue
+        try:
+            vbe = app.VBE
+        except Exception as e:
+            last = e
+            continue
+        if vbe is not None:
+            if _host_progid_hint.get("progid") != progid:
+                _log("host: 已连到宿主 %s 的 VBE" % progid)
+            _host_progid_hint["progid"] = progid
+            return vbe
+    if last is not None:
+        raise last
+    return None
 
 
 def _caret_position(vbe):
@@ -1811,8 +1974,19 @@ _WINDOW_GATE_DISABLED = (
 _vbe_cache = {"obj": None, "at": 0.0}
 _wnd_state = {"seen": False, "miss": 0}
 
-# Excel 主窗口 / VBE 主窗口的类名
-_HOST_WINDOW_CLASSES = ("XLMAIN", "wndclass_desked_gsk")
+# 宿主主窗口 / VBE 主窗口的类名（用于"宿主还在不在"的门控与按进程过滤提示窗）。
+# ★v104：VBE 主窗类名 wndclass_desked_gsk 是各 Office 宿主【共用】的，放第一位；
+# 其后是各宿主自己的主窗类名。类名对不上的宿主（如 WPS）不会因此失效 ——
+# _host_window_alive() 有"从没见过就不拦"的兜底。
+_HOST_WINDOW_CLASSES = (
+    "wndclass_desked_gsk",   # VBE 主窗（Office 各宿主共用）
+    "XLMAIN",                # Excel
+    "OpusApp",               # Word
+    "PP12FrameClass",        # PowerPoint（2007+）
+    "screenClass",           # PowerPoint（更早版本）
+    "OMain",                 # Access
+    "VisioGuy",              # Visio
+)
 
 
 def _probe_host_window():
@@ -1963,7 +2137,7 @@ def _hwnd_alive(hwnd):
 
 
 def _host_process_id():
-    """宿主（Excel / VBE）进程 PID；找不到返回 0。纯 Win32，不碰 COM。"""
+    """宿主（Office/WPS 主窗或 VBE 主窗）进程 PID；找不到返回 0。纯 Win32，不碰 COM。"""
     import ctypes
     import ctypes.wintypes
     u32 = ctypes.windll.user32
@@ -2315,7 +2489,7 @@ def vbe_code_pane_focused():
 
 
 def _release_vbe_proxy(collect=False):
-    """丢弃缓存的 VBE/Excel COM 代理 —— 这是让 Excel 能真正退出的关键。
+    """丢弃缓存的 VBE/宿主 COM 代理 —— 这是让宿主能真正退出的关键。
 
     collect=True 时额外跑一次 gc.collect()：刚写过代码、或确认宿主已退出时
     用，确保 COM 包装对象被立刻回收而不是等 GC 想起来。
@@ -2387,13 +2561,13 @@ def _get_vbe_cached():
     所以这里直接拒绝，并【不记失败】，避免污染退避状态。
 
     注意与"长缓存"的取舍：复用代理确实省一次 GetActiveObject，但代价是我们
-    的进程会一直持有 Excel.Application —— 而只要持有它，Excel 就退不干净
+    的进程会一直持有宿主的 Application —— 而只要持有它，宿主就退不干净
     （关完又启动 Office），且 VBAProject 变脏时的写回会被拖成 3~10 秒。
 
-    所以这里只做**短缓存**：TTL（默认 1 秒）一到就丢弃，让 Excel 随时有
+    所以这里只做**短缓存**：TTL（默认 1 秒）一到就丢弃，让宿主随时有
     机会干净退出；重建成本只是一次 ROT 查询，对打字毫无影响。
 
-    取到后先访问一次 ActiveCodePane 验证仍可用；Excel/VBE 已关闭会抛异常，
+    取到后先访问一次 ActiveCodePane 验证仍可用；宿主/VBE 已关闭会抛异常，
     此时丢弃缓存并返回 None。
     """
     if not _on_main_thread():

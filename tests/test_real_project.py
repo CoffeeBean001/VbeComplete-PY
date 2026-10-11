@@ -5187,6 +5187,8 @@ def main():
         # 所以把开关临时打开 —— 断言强度不变；"默认关"由第 47 节单独把关。
         _saved_he44 = _VB44R.ENABLE_HOST_ENUMS
         _VB44R.ENABLE_HOST_ENUMS = True
+        _items44 = []
+        _excel44 = False
         try:
             _items44 = _VB44R.host_enum_constants()
             _mins44 = sorted({m for _n, m in _items44})
@@ -5197,6 +5199,11 @@ def main():
             _badfam44 = sorted(
                 f for f in _fams44
                 if not (2 <= len(f) <= 4 and f.isalnum() and f == f.lower()))
+            # ★v104「当前宿主是不是 Excel」：看清单里有没有成规模的 xl* 常量。
+            # 宿主探测上线后连到的可能是 Word/PPT/WPS，本节的 Excel 专属断言不适用
+            # —— 那种情况走下面的 else 分支优雅跳过（与 45.12 的跳过同一模式）。
+            _excel44 = (isinstance(_items44, list)
+                        and _nxl44 >= 1000 and _nms44 >= 1000)
             _ok44 = (isinstance(_items44, list)
                      and all(m >= 2 for _n, m in _items44)
                      and _nxl44 >= 1000 and _nms44 >= 1000
@@ -5212,7 +5219,16 @@ def main():
                                         _nxl44, _nms44, _mins44))
         except Exception as _e44:
             _ok44, _desc44 = "异常: %s" % _e44, ""
-        check("44.8 真机：枚举出 %s" % (_desc44,), [_ok44], expect_contain=[True])
+        if _excel44:
+            check("44.8 真机：枚举出 %s" % (_desc44,), [_ok44],
+                  expect_contain=[True])
+        elif _items44:
+            check("44.8 真机：当前宿主非 Excel（%s）—— 跳过 Excel 专属断言"
+                  "（v104 宿主探测生效；换台开着 Excel 的机器即恢复校验）"
+                  % (_desc44,), [True], expect_contain=[True])
+        else:
+            check("44.8 真机：枚举出 %s" % (_desc44,), [_ok44],
+                  expect_contain=[True])
 
         _hm44 = None
         try:
@@ -5221,8 +5237,15 @@ def main():
                        and _hm44.get("msotrue") == 3)
         except Exception as _e44b:
             _okhm44 = "异常: %s" % _e44b
-        check("44.9 后端 get_host_enum_names() -> 小写名到最短长度的字典",
-              [_okhm44], expect_contain=[True])
+        if _excel44:
+            check("44.9 后端 get_host_enum_names() -> 小写名到最短长度的字典",
+                  [_okhm44], expect_contain=[True])
+        elif _items44:
+            check("44.9 后端 get_host_enum_names()：当前宿主非 Excel —— 跳过",
+                  [True], expect_contain=[True])
+        else:
+            check("44.9 后端 get_host_enum_names() -> 小写名到最短长度的字典",
+                  [_okhm44], expect_contain=[True])
         # 复原（后面 44.10+ 走桩后端，与这个开关无关）
         _VB44R.ENABLE_HOST_ENUMS = _saved_he44
 
@@ -5541,11 +5564,19 @@ def main():
             _items45 = []
         _real45 = [(n, "宿主库", None, False) for n, _m in _items45]
         _rhost45 = dict((n.lower(), m) for n, m in _items45)
+        # ★v104：当前宿主是不是 Excel（清单里有没有成规模的 xl*）。宿主探测上线后
+        # 连到的可能是 Word/PPT/WPS —— 那 45.12~45.14 的 Excel 专属断言不适用。
+        _excel45 = len([1 for n, _m in _items45
+                        if n.lower().startswith("xl")]) >= 1000
 
         if not _items45:
             check("45.12 真机：拿不到宿主枚举清单（Excel 未开？）"
                   "—— 跳过 45.12~45.14",
                   [True], expect_contain=[True])
+        elif not _excel45:
+            check("45.12~45.14 真机：当前宿主非 Excel（清单 %d 条里没有 xl*）"
+                  "—— 跳过 Excel 专属断言（v104 宿主探测生效）"
+                  % len(_items45), [True], expect_contain=[True])
         else:
             _m45 = _trig45("xlworkfaul", pool=_real45, host=_rhost45)[0]
             check("45.12 ★真机 %d 条：xlworkfaul 唯一命中 xlWorkbookDefault"
@@ -5719,15 +5750,26 @@ def main():
 
             _tb46 = _best46(_t_gate46)
             _tp46 = _best46(_t_pre46)
-            check("46.5 性能护栏：%d 条锚定候选，预筛 %.2fms < 全量模糊 %.2fms"
-                  % (len(_anch46), _tp46 * 1000, _tb46 * 1000),
-                  [_tp46 < _tb46 * 0.8], expect_contain=[True])
+            # ★v104：46.5 的锚定候选、46.6 的命中都锚在 Excel 的 xlworkfaul 上，
+            # 宿主非 Excel（如 Word/PPT/WPS）时这两条不适用 —— 跳过。
+            _excel46 = len([1 for n, _m in _items46
+                            if n.lower().startswith("xl")]) >= 1000
+            if _excel46:
+                check("46.5 性能护栏：%d 条锚定候选，预筛 %.2fms < 全量模糊 %.2fms"
+                      % (len(_anch46), _tp46 * 1000, _tb46 * 1000),
+                      [_tp46 < _tb46 * 0.8], expect_contain=[True])
 
-            # 端到端（真引擎 + 真实清单）：预筛没把用户要的候选弄丢
-            check("46.6 端到端：xlworkfaul -> 唯一 xlWorkbookDefault"
-                  "（预筛不误杀；真引擎 + %d 条）" % len(_items46),
-                  [_trig45("xlworkfaul", pool=_real45, host=_rhost45)[0]],
-                  expect_contain=[["xlWorkbookDefault"]])
+                # 端到端（真引擎 + 真实清单）：预筛没把用户要的候选弄丢
+                check("46.6 端到端：xlworkfaul -> 唯一 xlWorkbookDefault"
+                      "（预筛不误杀；真引擎 + %d 条）" % len(_items46),
+                      [_trig45("xlworkfaul", pool=_real45, host=_rhost45)[0]],
+                      expect_contain=[["xlWorkbookDefault"]])
+            else:
+                check("46.5 真机：当前宿主非 Excel —— 跳过性能护栏"
+                      "（锚定输入 xlworkfaul 不适用）", [True],
+                      expect_contain=[True])
+                check("46.6 真机：当前宿主非 Excel —— 跳过 xlworkfaul 端到端",
+                      [True], expect_contain=[True])
     except Exception as _e46:
         check("第 46 节异常: %s" % _e46, [True], expect_contain=[False])
 
@@ -15602,6 +15644,143 @@ def main():
         import traceback as _tp85
         _tp85.print_exc()
         check("第 85 节异常: %s" % _e85, [True], expect_contain=[False])
+
+    # ==================================================================
+    # 86. ★v104 宿主探测：不再写死 Excel —— 自动认 Office 全家桶
+    #     （Excel / Word / PowerPoint / Access / Visio）与 WPS 全家桶
+    #     （文字 / 表格 / 演示）。COM 全用打桩替身，离线可测（不依赖本机开着谁）。
+    # ==================================================================
+    print("\n=== 86. 宿主探测（v104：Office + WPS 全家桶）===")
+    try:
+        import importlib.util as _iu86
+        _spec86 = _iu86.spec_from_file_location(
+            "vbe_bridge_fresh86",
+            os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "vbe_bridge.py"))
+        VB86 = _iu86.module_from_spec(_spec86)
+        _spec86.loader.exec_module(VB86)
+
+        # ---- 86.1 候选 ProgID 表：Office 五件套 + WPS 三件套都在 ----
+        _need86 = ["Excel.Application", "Word.Application",
+                   "PowerPoint.Application", "Access.Application",
+                   "Visio.Application", "KWPS.Application", "KET.Application",
+                   "KWPP.Application"]
+        _miss86 = [p for p in _need86 if p not in VB86._HOST_PROGIDS]
+        check("86.1 候选 ProgID 表含 Office 五件套 + WPS 三件套",
+              [_miss86], expect_contain=[[]])
+
+        # ---- 86.2 进程名 -> ProgID 映射（前台窗口线索要用）----
+        _keys86 = ("excel.exe", "winword.exe", "powerpnt.exe", "msaccess.exe",
+                   "visio.exe", "wps.exe", "et.exe", "wpp.exe")
+        _map86 = [VB86._HOST_EXE_PROGID.get(k) for k in _keys86]
+        check("86.2 进程名 -> ProgID 映射（excel/winword/powerpnt/msaccess/"
+              "visio/wps/et/wpp）", [_map86],
+              expect_contain=[["Excel.Application", "Word.Application",
+                               "PowerPoint.Application", "Access.Application",
+                               "Visio.Application", "KWPS.Application",
+                               "KET.Application", "KWPP.Application"]])
+
+        class _App86(object):
+            def __init__(self, vbe):
+                self._vbe = vbe
+
+            @property
+            def VBE(self):
+                return self._vbe
+
+        # ---- 86.3 无前台线索时逐个试候选，取第一个拿到 .VBE 的 ----
+        _tried86 = []
+
+        def _gao86(progid):
+            _tried86.append(progid)
+            if progid == "Word.Application":
+                return _App86({"vbe_of": "Word"})
+            raise OSError("not running: " + progid)
+
+        _sv86a = (VB86._get_active_object, VB86._preferred_progid,
+                  VB86._host_progid_hint.get("progid"))
+        VB86._get_active_object = _gao86
+        VB86._preferred_progid = lambda: None
+        VB86._host_progid_hint["progid"] = None
+        try:
+            _v86 = VB86._get_vbe()
+            _hint86a = VB86._host_progid_hint.get("progid")
+        finally:
+            VB86._get_active_object = _sv86a[0]
+            VB86._preferred_progid = _sv86a[1]
+            VB86._host_progid_hint["progid"] = _sv86a[2]
+        check("86.3 只有 Word 在跑时：_get_vbe 逐个试候选并返回 Word 的 VBE，"
+              "并记住宿主",
+              [(_v86, _tried86[0], "Word.Application" in _tried86, _hint86a)],
+              expect_contain=[({"vbe_of": "Word"}, "Excel.Application",
+                               True, "Word.Application")])
+
+        # ---- 86.4 前台窗口线索优先：用户在用 WPS 表格 -> 第一顺位就是 KET ----
+        _tried86b = []
+
+        def _gao86b(progid):
+            _tried86b.append(progid)
+            return _App86({"vbe_of": progid})
+
+        _sv86b = (VB86._get_active_object, VB86._preferred_progid,
+                  VB86._host_progid_hint.get("progid"))
+        VB86._get_active_object = _gao86b
+        VB86._preferred_progid = lambda: "KET.Application"
+        VB86._host_progid_hint["progid"] = None
+        try:
+            _v86b = VB86._get_vbe()
+            _hint86b = VB86._host_progid_hint.get("progid")
+        finally:
+            VB86._get_active_object = _sv86b[0]
+            VB86._preferred_progid = _sv86b[1]
+            VB86._host_progid_hint["progid"] = _sv86b[2]
+        check("86.4 前台线索优先：用户在用 WPS 表格时，第一顺位试的是 KET",
+              [(_tried86b[0], _v86b, _hint86b)],
+              expect_contain=[("KET.Application",
+                               {"vbe_of": "KET.Application"},
+                               "KET.Application")])
+
+        # ---- 86.5 一个宿主都没有 -> 抛异常（与旧行为一致，交给上层退避）----
+        _sv86c = (VB86._get_active_object, VB86._preferred_progid)
+        VB86._get_active_object = lambda progid: (_ for _ in ()).throw(
+            OSError("nothing running"))
+        VB86._preferred_progid = lambda: None
+        _raised86 = False
+        try:
+            VB86._get_vbe()
+        except Exception:
+            _raised86 = True
+        finally:
+            VB86._get_active_object, VB86._preferred_progid = _sv86c
+        check("86.5 候选全不可用时 _get_vbe 抛异常（-> 上层 _com_fail 退避）",
+              [_raised86], expect_contain=[True])
+
+        # ---- 86.6 前台窗口 -> 进程名 -> ProgID（纯函数级）----
+        _sv86d = (VB86._foreground_hwnd, VB86._process_image_name)
+        VB86._foreground_hwnd = lambda: 0x123
+        VB86._process_image_name = lambda pid: "winword.exe"
+        try:
+            _pref86 = VB86._preferred_progid()
+        finally:
+            VB86._foreground_hwnd, VB86._process_image_name = _sv86d
+        check("86.6 前台窗口属于 WINWORD.EXE -> 猜出 Word.Application",
+              [_pref86], expect_contain=["Word.Application"])
+
+        # ---- 86.7 源码护栏：_get_vbe 迭代候选表（不再只认 Excel）----
+        _vsrc86 = io.open(os.path.join(ROOT, "vbe_bridge.py"),
+                          encoding="utf-8").read()
+        check("86.7 源码护栏：`_get_vbe` 迭代候选表、不再写死 Excel；"
+              "窗口类名表含 Word/PPT/Access/Visio",
+              [("for progid in order" in _vsrc86,
+                "_HOST_PROGIDS = (" in _vsrc86,
+                '"Word.Application"' in _vsrc86,
+                '"OpusApp"' in _vsrc86 and '"OMain"' in _vsrc86,
+                '"wndclass_desked_gsk"' in _vsrc86)],
+              expect_contain=[(True, True, True, True, True)])
+    except Exception as _e86:
+        import traceback as _tp86
+        _tp86.print_exc()
+        check("第 86 节异常: %s" % _e86, [True], expect_contain=[False])
 
     print("\n" + "=" * 60)
     print("结果: %d PASS, %d FAIL" % (PASS, FAIL))
