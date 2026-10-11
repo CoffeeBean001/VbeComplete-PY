@@ -61,6 +61,33 @@ def _keyword_wants_space(name):
             _BUILTIN_KEYWORD_SPACE_LOW = frozenset()
     return str(name or "").strip().lower() in _BUILTIN_KEYWORD_SPACE_LOW
 
+
+def _is_own_proc_name(name, enclosing_proc):
+    """`name` 是不是【光标所在过程自己】的名字。纯函数。★v103d。
+
+    用途（用户口径，原话）："在 function 函数中，再给 function 赋返回值时，
+    此时后面不应该自动补全括号。" —— VBA 里函数名在**自己体内**代表的是
+    "返回值的那个变量"（`MyFunc = 5` 就是给返回值赋值），不是一次调用。
+    所以那个位置上补 `()` 会写成语法错误的 `MyFunc() = 5`（VBE 当场报
+    "不能给函数赋值"）。
+
+    ⚠️ `enclosing_proc` 可能是【作用域键】而不是纯名字：同一模块里出现同名
+    过程时，`vbe_bridge._proc_of_line` 会给第 2 次出现的那个带 `#序号`
+    （见 `parser._proc_scope_key`）⇒ 先按 `#` 切掉序号再比。VBA 标识符里
+    不可能出现 `#`，所以切分是安全的。
+    ⚠️ 取不到（在模块声明区 -> None / 空串 / 非字符串）一律返回 False ——
+    判据缺失就不动手，退到 v103c 的老口径（Function 补括号）。
+    """
+    try:
+        a = str(name or "").strip().lower()
+        b = str(enclosing_proc or "").strip().lower()
+    except Exception:
+        return False
+    if not a or not b:
+        return False
+    return a == b.split("#", 1)[0]
+
+
 # VBE 自带提示列表的让位开关（v55）。
 #
 # 光标停在 VBE 自己会弹「自动列出成员」的位置时我们让位（详见
@@ -1651,11 +1678,18 @@ class Completer:
                     and low not in self._builtin_type_names())
         return False
 
-    def _completion_followup(self, name):
+    def _completion_followup(self, name, enclosing_proc=None):
         """按 Tab 确认这个名字之后，后面该跟什么 —— 返回 (want_parens, want_space)。★v103c。
 
         用户口径（原话）："选中的提示词，如果是 sub 过程，按 tab 键不要补双括号，
         应该补空格；如果是 function 函数，按 tab 键要补双括号。"
+
+        ★v103d 补一条例外（用户口径，原话）："在 function 函数中，再给 function
+        赋返回值时，此时后面不应该自动补全括号。" —— `MyFunc = ...` 里的 MyFunc
+        是**返回值的变量**（VBA 里函数名在自己体内就代表它），不是一次调用，
+        补成 `MyFunc() = 5` 直接是语法错误。为此多收一个 `enclosing_proc`
+        （光标所在过程名，accept 从 ctx 的 `proc_name` 传进来）；判据是纯函数
+        `_is_own_proc_name`，只在"这个名字就是所在过程自己"时改口。
 
         这条正好与 VBA 语法一致（所以不只是迎合用户，方向是对的）：
           * `Sub`      —— 无返回值的**语句**，标准写法不带括号：
@@ -1681,6 +1715,10 @@ class Completer:
         if kind == "sub":
             return False, True
         if kind == "function":
+            # ★v103d：函数名在自己体内 = 返回值的变量，不是调用 ⇒ 不补括号、
+            # 也不补空格（用户接下来打的是 ` = ...`，我们不塞多余字符）。
+            if _is_own_proc_name(low, enclosing_proc):
+                return False, False
             return True, False
         if kind == "property":
             return False, False
@@ -2144,7 +2182,10 @@ class Completer:
                             _word100 = _word100[1:]
                         # ★v103c：这里也走同一个判据 —— 不再一律补括号：
                         # 若 VBE 插进来的是个 Sub，补的是空格（同 accept）。
-                        _wp100, _wsp100 = self._completion_followup(_word100)
+                        # ★v103d：过程名同样要传 —— 在 Function 体内给函数自己
+                        # 赋返回值时不能补括号（见 `_completion_followup`）。
+                        _wp100, _wsp100 = self._completion_followup(
+                            _word100, ctx.get("proc_name"))
                         if (_word100 and _ln100 > 0 and _ws100 > 0
                                 and (_wp100 or _wsp100)):
                             try:
@@ -2799,8 +2840,19 @@ class Completer:
             #   Property -> 都不补；语言自带的函数 -> 括号；语言关键字 -> 空格。
             # 引擎判"是什么"（纯函数、可离线钉死），后端只判"位置允不允许 +
             # 怎么补"（`_is_call_site` / `_in_call_stmt` / 注入空格）。
+            # ★v103d：把"光标所在过程名"一并交给判据 —— 在 Function 体内给
+            # 函数**自己**赋返回值（`MyFunc = ...`）时那个名字是返回值的变量、
+            # 不是调用，不能补括号（补了就是 `MyFunc() = 5`，语法错误）。
+            # ⚠️ 取的是 `_src`（= `_ctx_now`，trigger 开头挂上的**完整**上下文）
+            # 而不是 `self.ctx` —— 后者只有行号/列/词范围，**没有 proc_name**。
+            _encl_proc = ""
             try:
-                _want_parens, _want_space = self._completion_followup(chosen)
+                _encl_proc = str(_src.get("proc_name") or "")
+            except Exception:
+                _encl_proc = ""
+            try:
+                _want_parens, _want_space = self._completion_followup(
+                    chosen, _encl_proc)
             except Exception:
                 _want_parens, _want_space = False, False
             # ★v101 诊断：这一下 Tab 到底有没有走到 accept、以及"要不要补括号"
@@ -2809,10 +2861,10 @@ class Completer:
             # "真机上 chosen 与 _proc_names 的真值"这一眼。
             # 只在 VBECOMPLETE_LOG=1 时拼这串（默认 _log 直接 return）。
             _log("accept: line=%s ws=%s we=%s chosen=%r want_parens=%s"
-                 " want_space=%s"
+                 " want_space=%s encl_proc=%r"
                  " | kind=%s in_proc=%s builtin=%s is_func=%s is_type=%s"
                  % (ctx.get("line_no"), ctx.get("word_start_col"), end_col,
-                    chosen, _want_parens, _want_space,
+                    chosen, _want_parens, _want_space, _encl_proc,
                     (self._proc_kinds() or {}).get(str(chosen).lower()),
                     str(chosen).lower() in self._proc_names(),
                     str(chosen).lower() in self._builtin_names(),

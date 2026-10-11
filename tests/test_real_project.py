@@ -15101,10 +15101,12 @@ def main():
         check("83.5 源码护栏：`accept()` 必须经由 `_completion_followup` 得出"
               "「补括号 / 补空格」两个标志并一起传给 `apply_completion`"
               "（引擎判是什么、后端判位置），关键字那一档在它内部；"
-              "`main` 必须把注入函数交给后端",
-              [("_want_parens, _want_space = self._completion_followup(chosen)"
+              "`main` 必须把注入函数交给后端"
+              "（★v103d：判据多收一个「光标所在过程名」参数 —— 它要用来判"
+              "「这个名字是不是函数给自己赋返回值」，见第 85 节）",
+              [("_want_parens, _want_space = self._completion_followup("
                 in _esrc82,
-                "self._completion_followup(chosen)" in _esrc82,
+                "self._completion_followup(" in _esrc82,
                 "return False, _keyword_wants_space(low)" in _esrc82,
                 "def _keyword_wants_space(" in _esrc82,
                 "VbeBackend(send_char=send_char)" in _msrc83)],
@@ -15411,6 +15413,195 @@ def main():
         import traceback as _tp84
         _tp84.print_exc()
         check("第 84 节异常: %s" % _e84, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
+    # 85. ★v103d：在 Function 体内给函数**自己**赋返回值（`MyFunc = ...`）时，
+    #     这个名字代表的是"返回值的那个变量"、不是一次调用 ⇒ 不补括号
+    #     （补了就是语法错误的 `MyFunc() = 5`）。
+    #     用户口径（原话）："在 function 函数中，再给 function 赋返回值时，
+    #     此时后面不应该自动补全括号。"
+    #     本节一律**把多项打包成一个元组**再比（MEMORY 第 37 条：散着放布尔
+    #     + 全 True 的期望 ⇒ 必然假绿）。
+    # ------------------------------------------------------------------
+    try:
+        import engine as _E85
+
+        # ---- 85.1 纯判据（不碰 COM、不需要后端）----
+        #      ⚠️ 同时钉住"取不到就不动手"（None / 空串 / 空名字 -> False）
+        #      与"作用域键带 `#序号`"（同名过程时 _proc_of_line 给的就是这种键）。
+        check("85.1 `_is_own_proc_name`：名字等于所在过程名 -> True；不同名 / "
+              "取不到过程名（模块声明区 = None / 空串）-> False；大小写不敏感；"
+              "所在过程名是【作用域键】`name#序号` 时先剥序号再比",
+              [tuple(_E85._is_own_proc_name(n, p) for n, p in
+                     (("CalcValue", "CalcValue"),
+                      ("calcvalue", "CALCVALUE"),
+                      ("  CalcValue  ", "CalcValue"),
+                      ("CalcValue", "Other"),
+                      ("CalcValue", None),
+                      ("CalcValue", ""),
+                      ("CalcValue", "CalcValue#2"),
+                      ("", "CalcValue"),
+                      (None, "CalcValue")))],
+              expect_contain=[(True, True, True, False, False, False,
+                               True, False, False)])
+
+        # ---- 85.2 判据分档：新例外 + v103c 老口径都不回退 ----
+        class _B85(object):
+            """最小后端：只给 `get_proc_kinds` 一张表（判据只需要它）；
+            另外供 85.5 用来验证"语言自带函数"那一档没被新例外带偏。"""
+            _KINDS = {"calcvalue": "function", "dowork": "sub",
+                      "title": "property"}
+
+            def get_proc_kinds(self):
+                return dict(self._KINDS)
+
+            def get_builtin_names(self):
+                return {"msgbox", "left", "split"}
+
+        class _U85(object):
+            def show(self, *a, **k):
+                pass
+
+            def hide(self, *a, **k):
+                pass
+
+            def update_selection(self, *a, **k):
+                pass
+
+            def contains_point(self, *a, **k):
+                return False
+
+        _c85 = _E85.Completer(_B85(), _U85())
+        check("85.2 ★用户点名：`CalcValue` 在【CalcValue 自己体内】-> 不补括号"
+              "也不补空格 (False, False)；在【别的过程里】-> 照旧补括号 "
+              "(True, False)；没拿到过程名 -> 老口径 (True, False)；"
+              "Sub 在自己体内仍按 Sub 口径补空格；Property 仍什么都不补",
+              [(tuple(_c85._completion_followup("CalcValue", "CalcValue")),
+                tuple(_c85._completion_followup("CalcValue", "Other")),
+                tuple(_c85._completion_followup("CalcValue", None)),
+                tuple(_c85._completion_followup(
+                    "CalcValue", "CalcValue#2")),
+                tuple(_c85._completion_followup("DoWork", "DoWork")),
+                tuple(_c85._completion_followup("Title", "Title")))],
+              expect_contain=[((False, False), (True, False), (True, False),
+                               (False, False), (False, True), (False, False))])
+
+        # ---- 85.3 端到端（走 accept()，后端不碰 COM）----
+        #      ⚠️ `accept()` 取的是 `_ctx_now`（trigger 开头挂上的**完整**上下文）
+        #      里的 `proc_name`，而不是 `self.ctx` —— 后面那个只有行号/列/词范围。
+        #      这一条就是为了咬住"接线真的接上了"，否则 85.1/85.2 全绿而真机无效。
+        class _B85E(object):
+            def __init__(self, pool, ctx):
+                self._pool = list(pool)
+                self._ctx = dict(ctx)
+                self.last = None
+
+            def get_context(self):
+                return dict(self._ctx)
+
+            def get_identifiers(self):
+                return list(self._pool)
+
+            def get_proc_names(self):
+                return frozenset(["calcvalue"])
+
+            def get_proc_kinds(self):
+                return {"calcvalue": "function"}
+
+            def get_builtin_names(self):
+                return set()
+
+            def get_structural_names(self):
+                return []
+
+            def get_type_names(self):
+                return []
+
+            def get_host_enum_names(self):
+                return {}
+
+            def get_declared_names(self):
+                return [str(n).lower() for n, _m, _p, _v in self._pool]
+
+            def declared_elsewhere(self, name, module_name):
+                return str(name).lower() in self.get_declared_names()
+
+            def names_outside_caret(self, caret, scope_only=False):
+                return None
+
+            def apply_completion(self, *a, **k):
+                self.last = a
+                return None
+
+            def vbe_yield_visible(self):
+                return False
+
+            def vbe_popup_visible(self):
+                return False
+
+            def vbe_popup_info(self):
+                return []
+
+        def _run85(line_text, proc_name):
+            _ctx = {"line_no": 1, "line_text": line_text,
+                    "caret_col": len(line_text) + 1, "proc_name": proc_name,
+                    "module_name": "M1", "in_string": False,
+                    "in_comment": False, "in_type_position": False,
+                    "in_decl_position": False, "decl_names": []}
+            _b = _B85E([("CalcValue", "M1", None, False)], _ctx)
+            _c = _E85.Completer(_b, _U85())
+            _c.trigger(True)
+            _c.accept()
+            return _b.last
+
+        _own85 = _run85("    CalcVa", "CalcValue")
+        _expr85 = _run85("    x = CalcVa", "Other")
+        _expr_own85 = _run85("    y = CalcVa", "CalcValue")
+        check("85.3 ★端到端（走 `accept()` -> `apply_completion`）：在 CalcValue "
+              "体内写 `CalcVa` 按 Tab -> `(want_parens=False, want_space=False)`"
+              "（`MyFunc = ...` 那个位置补括号会写成语法错误）；在别的过程里写"
+              "`x = CalcVa` -> `(True, False)`；在 **CalcValue 自己体内** 写"
+              "`y = CalcVa`（读自己的返回值）-> 也不补（函数名在这里是变量）",
+              [(tuple((_own85[3], _own85[4], _own85[5])),
+                tuple((_expr85[3], _expr85[4], _expr85[5])),
+                tuple((_expr_own85[3], _expr_own85[4], _expr_own85[5])))],
+              expect_contain=[(("CalcValue", False, False),
+                               ("CalcValue", True, False),
+                               ("CalcValue", False, False))])
+
+        # ---- 85.4 源码护栏：接线三处都得在 ----
+        _esrc85 = io.open(os.path.join(ROOT, "engine.py"),
+                          encoding="utf-8").read()
+        _i85a = _esrc85.find("_encl_proc = str(_src.get(\"proc_name\") or \"\")")
+        _i85b = _esrc85.find("_want_parens, _want_space = self._completion_followup(")
+        _i85c = _esrc85.find("def _is_own_proc_name(")
+        _i85d = _esrc85.find("if _is_own_proc_name(low, enclosing_proc):")
+        check("85.4 源码护栏：① `accept()` 必须从 `_ctx_now`（不是 `self.ctx`）"
+              "读 `proc_name`；② 读出来的过程名必须【排在】那次 "
+              "`_completion_followup` 调用之前（否则参数是空的、判据永远不生效）；"
+              "③ 纯判据 `_is_own_proc_name` 与它在 `_completion_followup` 里的"
+              "早退都得在；④ VBE 成员列表补进名字的那一路（trigger 里 v100 那段）"
+              "也必须把过程名传进去（同一语义只有一份实现，不能只修 accept）",
+              [(_i85a >= 0, _i85b >= 0 and _i85a < _i85b, _i85c >= 0,
+                _i85d >= 0 and _i85c < _i85d,
+                "self._completion_followup(\n                            "
+                "_word100, ctx.get(\"proc_name\"))" in _esrc85)],
+              expect_contain=[(True, True, True, True, True)])
+
+        # ---- 85.5 反面：判据不许把"语言自带函数 / 关键字"也当成自家过程名 ----
+        #      内建函数名（如 MsgBox）永远不会等于用户的过程名，但这条要钉住
+        #      "新例外只对 kind=='function' 那一档生效" —— 关键字那档仍补空格。
+        check("85.5 反面：新例外只落在【Function 自己体内】这一档 —— "
+              "关键字（public）仍是「补空格不补括号」，内建函数（msgbox）"
+              "仍是「补括号不补空格」，即使过程名恰好被传成同一个词",
+              [(tuple(_c85._completion_followup("public", "public")),
+                tuple(_c85._completion_followup("msgbox", "msgbox")))],
+              expect_contain=[((False, True), (True, False))])
+
+    except Exception as _e85:
+        import traceback as _tp85
+        _tp85.print_exc()
+        check("第 85 节异常: %s" % _e85, [True], expect_contain=[False])
 
     print("\n" + "=" * 60)
     print("结果: %d PASS, %d FAIL" % (PASS, FAIL))

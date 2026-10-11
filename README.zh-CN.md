@@ -21,12 +21,18 @@
 
 ## 安装与运行
 
-1. 确保本机已安装 Python 3.8+（建议从 python.org 安装，并勾选"Add to PATH"）。
+1. 确保本机已安装 Python：**3.8+ 均可，推荐 3.10 ~ 3.12**（从
+   [python.org](https://www.python.org/downloads/) 装官方版，安装时勾选
+   "Add python.exe to PATH"）。Python 3.13 也能跑 —— `pip` 会自动装 ≥ 308 的
+   `pywin32`，不放心就先用 3.12。
 2. 首次运行会自动 `pip install` 依赖，请**以能联网的普通用户**双击 `run.bat`
    （后台静默运行）。若想看报错，在命令行运行 `python main.py`（带控制台）。
-3. 在 Excel 中开启权限（必须）：
+3. 在 Excel 中开启权限（**必须**，不勾选工具就完全读不到代码）：
    **文件 → 选项 → 信任中心 → 信任中心设置 → 宏设置 →**
-   **勾选"信任对 VBA 工程对象模型的访问"**。
+   **勾选"信任对 VBA 工程对象模型的访问"**，然后**重启 Excel**。
+   （注意这一项与"启用宏"是两回事，只改宏安全级别没用。）
+   *英文 Office：File → Options → Trust Center → Trust Center Settings →
+   Macro Settings → Trust access to the VBA project object model.*
 4. 打开 VBE（`Alt+F11`），在代码窗输入一个变量名的首字母，即可看到补全列表。
 
 ## 文件构成
@@ -43,7 +49,7 @@
 | `requirements.txt` | 依赖（`pywin32` / `pynput`） |
 | `run.bat` / `stop.bat` / `stop.ps1` | 启停 |
 | `install_autostart.ps1` / `uninstall_autostart.ps1`（及对应 `.bat`） | 开机自启的安装与卸载 |
-| `tests/` + `run_tests.bat` | **回归测试**（965 条），见下 |
+| `tests/` + `run_tests.bat` | **回归测试**（970 条），见下 |
 
 ### 跑回归测试
 
@@ -56,9 +62,9 @@ python tests\test_real_project.py
 - **不需要 Excel / COM**，用 `tests/testdata/` 里那份真实工程导出的 14 个模块
   作样本，纯解析层验证。
 - 但有 3 条用例会真读 Excel 的类型库（宿主枚举那批）；机器上没装 / 没开
-  Excel 时它们会红，其余 962 条照常。装了 Excel（含 Office 共享类型库）就全绿。
+  Excel 时它们会红，其余 967 条照常。装了 Excel（含 Office 共享类型库）就全绿。
 - ⚠️ **必须用装了 `pywin32` 的 Python 跑**（否则那 3 条真机用例必红，症状是
-  `962 PASS / 3 FAIL` —— **那不是代码坏了**）。
+  `967 PASS / 3 FAIL` —— **那不是代码坏了**）。
 - **改了代码请跑一遍。** 这个项目绝大多数坑（列语义、作用域口径、候选排序）
   都是"看起来对、真机或离线用例一跑就红"才发现的。
 
@@ -798,6 +804,7 @@ python tests\test_real_project.py
 | **最近使用优先**（recently used） | `Tab` 确认过的名字下次同分时排前 | **v103** |
 | **关键字后自动补空格** | 补全 `pub` → `public `（62 个关键字，排除法） | **v103b** |
 | **Sub 补空格 / Function 补括号** | Sub 是无返回值语句 → `DoWork `；Function → `GetName()`；Property 都不补 | **v103c** |
+| **函数给自己赋返回值时不补括号** | 在 `Function MyFunc` 体内写 `MyFunc = ...` → 不补 `()`（那里函数名代表返回值的变量，`MyFunc() = 5` 是语法错误） | **v103d** |
 | 自动配对括号 / 引号 | 打 `(` `[` `"` 自动补右半边，光标居中 | v84+ |
 | 退格删除成对符号 | 光标在空括号/空引号中间时一下删两端 | v99 |
 | 智能缩进 / 自动补收尾 | 回车时注释对齐、块头深一级、`Else`/`Case` 拉正、块头补 `End xxx` | v79~v86 |
@@ -1004,6 +1011,14 @@ IDEA 的这些能力**都建立在一个前提上：IDE 手里有整个工程的
     `main.py` 交给后端；开 `VBECOMPLETE_LOG=1` 看有没有
     `apply_completion: want_space=... AUTO_SPACE=... space_at=...` 这行即可定位。
   - **不想要**：`set VBECOMPLETE_AUTO_SPACE=0`（只关这一个功能，别的都不受影响）。
+- **在 `Function` 里给函数自己赋返回值（`MyFunc = ...`）时，`MyFunc` 后面没补 `()`**：
+  ★v103d 起这是**刻意的**（用户口径，原话："在 function 函数中，再给 function 赋返回值时，
+  此时后面不应该自动补全括号"）。VBA 里函数名在**自己体内**代表的是"返回值的那个变量"，
+  不是一次调用 ⇒ 补成 `MyFunc() = 5` 直接是语法错误（VBE 会报"不能给函数赋值"）。
+  判据是纯函数 `engine._is_own_proc_name`（补全词 == `ctx["proc_name"]`，比之前先剥掉
+  同名过程的 `#序号`）；在**别的过程里**写 `x = MyFunc` 照旧补 `()`。
+  想要回老行为：把 `engine._completion_followup` 里那句
+  `if _is_own_proc_name(low, enclosing_proc): return False, False` 去掉即可。
 - **补全 `Sub` 之后没补 `()`、只多了一个空格**：★v103c 起这是**刻意的** —— VBA 里
   `Sub` 是无返回值的语句，标准写法不带括号（`Sleep 1000`、`Foo 1, 2`），而且
   `Foo()` 里的空括号**会被 VBE 立刻删掉**（见上面 `Call` 那条实测表），补了等于白做；

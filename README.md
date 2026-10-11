@@ -32,7 +32,9 @@ procedures, keywords and built-in functions that are actually in scope pops up n
 - **Recently-used ranking** *(IDEA's "recently used")*. Names you just accepted are promoted on ties.
 - **Context-aware follow-up.** Accepting a `Sub` inserts a trailing space (`DoWork `), a `Function`
   inserts `()` with the caret placed inside (`GetName()`), a `Property` inserts nothing, and a
-  keyword gets its own trailing space (`public `).
+  keyword gets its own trailing space (`public `). Inside a `Function`, its **own** name is the
+  return-value variable, so completing it there — `MyFunc = …` — inserts nothing
+  (no `MyFunc() = …`).
 - **Unicode identifiers.** Names such as `Dim 用户名 As String` are fully supported.
 - **Non-intrusive.** Suggestions appear only inside a VBE *code pane* — never in the Properties
   window, the Project explorer or the form designer.
@@ -54,12 +56,16 @@ procedures, keywords and built-in functions that are actually in scope pops up n
 
 ## Requirements
 
-- Windows with Microsoft Office (any host that ships the VBE).
-- Python 3.8+ (a python.org build is recommended; tick *Add Python to PATH* during setup).
-- **"Trust access to the VBA project object model" must be enabled** — the tool reads the code
-  model over COM.
-  *File → Options → Trust Center → Trust Center Settings → Macro Settings →*
-  *Trust access to the VBA project object model.*
+1. **Windows** with Microsoft Office (Excel, Word, Access — any host that ships the VBE).
+2. **Python** — 3.8 or newer; **3.10 – 3.12 recommended** (an official build from
+   [python.org](https://www.python.org/downloads/); tick *Add python.exe to PATH* during setup).
+   *Python 3.13 also works — `pip` simply pulls a newer `pywin32` build (≥ 308).*
+3. **"Trust access to the VBA project object model" must be enabled** — otherwise the tool cannot
+   read the project's code at all (this is a one-time switch in Office itself, **not** a macro
+   security level):
+   *File → Options → Trust Center → Trust Center Settings → Macro Settings →*
+   *Trust access to the VBA project object model* → tick it, then **restart Excel**.
+   *(Chinese Office: 文件 → 选项 → 信任中心 → 信任中心设置 → 宏设置 → 勾选"信任对 VBA 工程对象模型的访问"，然后重启 Excel。)*
 
 ## Installation
 
@@ -76,6 +82,18 @@ Then open the VBE (`Alt+F11`) and start typing a name — the list should appear
 
 - `stop.bat` — stop the background process.
 - `run_tests.bat` — run the regression suite.
+
+### Quick start, step by step
+
+1. Install Python (see *Requirements* above) and confirm `python --version` works in a console.
+2. Turn on *Trust access to the VBA project object model* in Office, then restart Excel.
+3. Double-click `run.bat` once — it installs `pywin32` + `pynput` and starts the tool in the
+   background. (First run needs an internet connection; later runs start instantly.)
+4. Open the VBE with `Alt+F11`, click inside a code pane, and type the first letters of one of your
+   own variable or procedure names. The list pops up next to the caret.
+5. Use `↑` / `↓` to choose and `Tab` to accept. `Esc` dismisses the list.
+
+No popup? See *Troubleshooting* below — nine times out of ten it is step 2.
 
 ## Usage
 
@@ -166,7 +184,7 @@ run_tests.bat
 
 - Runs offline against a real 14-module sample project in `tests/testdata/` — **no Excel or COM required**.
 - Three cases read the Excel type library; on a machine without Excel they fail, so
-  `962 PASS / 3 FAIL` is expected there and is **not** a code fault.
+  `967 PASS / 3 FAIL` is expected there and is **not** a code fault.
 - Use a Python interpreter that has `pywin32` installed.
 
 ## Project structure
@@ -184,7 +202,8 @@ run_tests.bat
 
 ## Troubleshooting
 
-- **No popup appears** — make sure *Trust access to the VBA project object model* is enabled.
+- **No popup appears** — make sure *Trust access to the VBA project object model* is enabled
+  (step 2 above) **and that you restarted Excel after ticking it**.
 - **Is the tool running?** — look for `pythonw.exe` in Task Manager; if it is missing, run `run.bat` again.
 - **A list won't go away, or accepts everything** — you likely have stale instances: run `stop.bat`,
   then `run.bat`.
