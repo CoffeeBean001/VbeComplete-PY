@@ -48,11 +48,12 @@ autostart on login · `run_tests.bat` runs the offline regression suite.
 | `Shift+Enter` | Start a new line below, leaving the current one intact |
 | `Backspace` | Delete a whitespace-only line, or both halves of an empty pair |
 
-On accept a `Sub` gets a trailing space, a `Function` gets `()` with the caret inside, a keyword
-gets a space. Suggested: your variables, constants and procedures, plus modules, forms and control
-names, keywords and built-in functions / types (≈260) — enums (`vb*` / `xl*` / `mso*`) are excluded.
-While you *declare* a new name (`Dim …`, `Sub …`) the list stays closed, exactly like IDEA; after
-`As` / `New` it still offers types.
+On accept a `Sub` gets a trailing space, a `Function` gets `()` with the caret inside **and the
+VBE's own parameter info pops up** (so you can see the signature while filling in the arguments),
+and a keyword gets a space. Suggested: your variables, constants and procedures, plus modules, forms
+and control names, keywords and built-in functions / types (≈260) — enums (`vb*` / `xl*` / `mso*`)
+are excluded. While you *declare* a new name (`Dim …`, `Sub …`) the list stays closed, exactly like
+IDEA; after `As` / `New` it still offers types.
 
 **No popup?** Check note 3 first — that is it nine times out of ten. Then look for `pythonw.exe` in
 Task Manager; if a list won't close, run `stop.bat` then `run.bat`.

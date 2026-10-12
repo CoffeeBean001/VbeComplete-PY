@@ -193,6 +193,26 @@ def main():
     except Exception:
         pass
 
+    # ★v107c：进场先记下这些"各节会临时替换"的对象，供 §90 做猴补丁泄漏自查。
+    # 起因：§31 / §62 把 `_get_vbe_cached` 换成自己的假工程后忘了换回来，
+    # 于是从那一节起，后面**每一节**拿到手的都是别人的假模块 —— 凡是用
+    # "清 `_vbe_cache["obj"]` + 换 `_get_vbe`"搭装置的小节都会读到它，
+    # 症状是"写回悄悄落到别人的假模块上、自己那份一行没改"（§89 被这个坑了
+    # 两轮）。这种错**不会让任何一条用例变红**，只会让它们测的不是自己以为的
+    # 东西 —— 所以必须有一道专门的护栏。
+    try:
+        import vbe_bridge as _vb0
+        import ui as _ui0
+        _LEAK_WATCH = [(m, n, getattr(m, n)) for (m, n) in (
+            (_vb0, "_get_vbe"), (_vb0, "_get_vbe_cached"),
+            (_vb0, "_probe_host_window"), (_vb0, "_host_window_alive"),
+            (_vb0, "com_host_present"), (_vb0, "_vbe_cache"),
+            (_vb0, "_com_state"), (_vb0, "_wnd_state"),
+            (_ui0, "caret_screen_rect"), (_ui0, "screen_popup_rects"),
+        )]
+    except Exception:
+        _LEAK_WATCH = []
+
     # ⚠️★v103c：本回归网里凡是【成员位置】（`标识符.` / With 块里的 `.成员`）的
     #   用例 —— §34 / §49 / §50 / §53 / §71 / §72 / §77.3 —— 测的都是"点号后面
     #   出候选 + 按声明类型收窄 + 待定让位/补位 + 回声防护"这一整套机制，而它
@@ -1493,14 +1513,22 @@ def main():
                     if mn == active_mod:
                         act = c
                 vbe = _VBE(comps, act)
+                # ★v107c：补丁【用完就还原】。原先只换不还 —— 后果不是本节出错，
+                # 而是**从这一节起每一节**的 `_get_vbe_cached` 都停在这个假工程上
+                # （后面 §29/§31/§62 各自"还原"到的其实也是它），而不会有任何一条
+                # 用例变红。§90 有专门的自查护栏盯着这件事。
+                _sv_drive = VB._get_vbe_cached
                 VB._get_vbe_cached = lambda: vbe
-                bk = VB.VbeBackend()
-                ui = _UI()
-                cp = E.Completer(bk, ui)
-                col = len(indent + typed) + 1
-                vbe.ActiveCodePane.sel = (edit_line, col, edit_line, col)
-                cp.trigger(True)
-                out.append((typed, ui.shown, list(cp.current_matches())))
+                try:
+                    bk = VB.VbeBackend()
+                    ui = _UI()
+                    cp = E.Completer(bk, ui)
+                    col = len(indent + typed) + 1
+                    vbe.ActiveCodePane.sel = (edit_line, col, edit_line, col)
+                    cp.trigger(True)
+                    out.append((typed, ui.shown, list(cp.current_matches())))
+                finally:
+                    VB._get_vbe_cached = _sv_drive
             return out
 
         # 19.1 核心回归：**从未 Dim、只是到处在用** 的隐式变量 arr。
@@ -1555,15 +1583,20 @@ def main():
                 if mn == active_mod:
                     act = c
             vbe = _VBE(comps, act)
+            # ★v107c：补丁【用完就还原】（见 §90 的自查护栏）。
+            _sv_probe = VB._get_vbe_cached
             VB._get_vbe_cached = lambda: vbe
-            bk = VB.VbeBackend()
-            ui = _UI()
-            cp = E.Completer(bk, ui)
-            col = len(indent + typed) + 1
-            vbe.ActiveCodePane.sel = (edit_line, col, edit_line, col)
-            cp.trigger(True)
-            return (ui.shown, list(cp.current_matches()),
-                    dict(getattr(cp, "match_hits", None) or {}))
+            try:
+                bk = VB.VbeBackend()
+                ui = _UI()
+                cp = E.Completer(bk, ui)
+                col = len(indent + typed) + 1
+                vbe.ActiveCodePane.sel = (edit_line, col, edit_line, col)
+                cp.trigger(True)
+                return (ui.shown, list(cp.current_matches()),
+                        dict(getattr(cp, "match_hits", None) or {}))
+            finally:
+                VB._get_vbe_cached = _sv_probe
 
         m_two = [("Module1",
                   "Option Explicit\n"
@@ -1709,14 +1742,19 @@ def main():
                 if mn == active_mod:
                     act = c
             vbe = _VBE(comps, act)
+            # ★v107c：补丁【用完就还原】（见 §90 的自查护栏）。
+            _sv_probe2 = VB._get_vbe_cached
             VB._get_vbe_cached = lambda: vbe
-            bk = VB.VbeBackend()
-            ui = _UI()
-            cp = E.Completer(bk, ui)
-            col = len(indent + typed) + 1
-            vbe.ActiveCodePane.sel = (edit_line, col, edit_line, col)
-            cp.trigger(True)
-            return (ui.shown, sorted(cp.current_matches()))
+            try:
+                bk = VB.VbeBackend()
+                ui = _UI()
+                cp = E.Completer(bk, ui)
+                col = len(indent + typed) + 1
+                vbe.ActiveCodePane.sel = (edit_line, col, edit_line, col)
+                cp.trigger(True)
+                return (ui.shown, sorted(cp.current_matches()))
+            finally:
+                VB._get_vbe_cached = _sv_probe2
 
         # 21.1 已有 Function test()，在新的 Sub 声明行上输入（v105：不弹）
         m_fn = [("Module1",
@@ -3334,6 +3372,15 @@ def main():
                       "End Sub"], _paste33("m"))
         check("33.13 同过程内用法位置打前缀 -> 照常提示（31.6 语义不变）",
               [_p[0], "username" in _p[1]], expect_contain=[True, True])
+
+        # ★v107c 补：本节开头复用了 31 节那套脚手架，把 `_get_vbe_cached` 换成了
+        # `_VBE31(_cur31["code"])`，但一直到节尾都没换回来 —— 于是从这一节起，
+        # 后面**每一节**的 `_get_vbe_cached` 都是这个假工程。凡是用"清
+        # `_vbe_cache["obj"]` + 换 `_get_vbe`"搭装置的小节（如 §89）都会读到它，
+        # 症状是"写回悄悄落到别人的假模块上、自己那份一行没变"。
+        # 猴补丁一律在节尾还原；§90 还有一道全局自查专门抓这种泄漏。
+        VB31._get_vbe_cached = _orig_get31
+
     except Exception as _e33:
         check("第 33 节异常: %s" % _e33, [True], expect_contain=[False])
 
@@ -9572,6 +9619,14 @@ def main():
                 "cm, anchor, fixed_line + _raw[len(_ws):]" in _vbsrc62]],
               expect_contain=[[True] * 10])
 
+        # ★v107c 补：62.12 在上面把 `_get_vbe_cached` 换成了自己那份假工程，
+        # 忘了换回来 —— 后果不是"这一节出错"，而是**从这一节起，后面每一节**
+        # 都读到 `["Sub Foo()", "    Else"]` 这个假模块。凡是像 §14 那样用
+        # "清 `_vbe_cache["obj"]` + 换 `_get_vbe`"来搭装置的小节，写回会悄悄
+        # 落到别人的假工程上（§89 就是这么被坑的：行没变、唤出计数却是 1）。
+        # 教训：猴补丁一律在节尾还原，哪怕这一节看起来"后面没人用得到"。
+        VB62._get_vbe_cached = _orig62
+
     except Exception as _e62:
         check("第 62 节异常: %s" % _e62, [True], expect_contain=[False])
 
@@ -15170,7 +15225,7 @@ def main():
                 "self._completion_followup(" in _esrc82,
                 "return False, _keyword_wants_space(low)" in _esrc82,
                 "def _keyword_wants_space(" in _esrc82,
-                "VbeBackend(send_char=send_char)" in _msrc83)],
+                "VbeBackend(send_char=send_char" in _msrc83)],
               expect_contain=[(True, True, True, True, True)])
 
         _bsrc83 = io.open(os.path.join(ROOT, "vbe_bridge.py"),
@@ -16099,6 +16154,172 @@ def main():
         import traceback as _tp88
         _tp88.print_exc()
         check("第 88 节异常: %s" % _e88, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
+    # 89. ★v107c：Tab 确认函数名 -> 自动补 `()`、光标进括号 -> 顺手唤出 VBE
+    #     自己的【参数信息】窗（形参签名）。
+    #     用户口径（原话）："提示词选中了过程名或函数名，按 tab 键，当自动补充完
+    #     双括号后，光标落在双括号中间，再加个自动显示形参列表参数的功能。"
+    #
+    #     为什么测"有没有按那一下 Ctrl+Shift+I"，而不是测我们自己画了个窗：
+    #     形参信息用 VBE 原生的（v63 真机验证过 Ctrl+Shift+I 能唤出
+    #     PopupTipWndClass），我们只负责"替用户按一下"。所以这一节要钉死的是
+    #     【什么时候按、什么时候不按】。
+    # ------------------------------------------------------------------
+    print("\n=== 89. ★v107c：补完括号后自动唤出形参信息（Ctrl+Shift+I）===")
+    try:
+        VB89 = VB
+
+        class _FCM89:
+            """最小 CodeModule（只实现 apply_completion 真正用到的三个成员）。"""
+
+            def __init__(self, lines):
+                self.lines = list(lines)
+                self.Name = "Module1"
+
+            def Lines(self, start, count):
+                return self.lines[start - 1]
+
+            def ReplaceLine(self, line_no, text):
+                self.lines[line_no - 1] = text
+
+            @property
+            def CountOfLines(self):
+                return len(self.lines)
+
+        class _FPane89:
+            def __init__(self, cm):
+                self.CodeModule = cm
+                self.sel = (1, 1, 1, 1)
+
+            def GetSelection(self):
+                return self.sel
+
+            def SetSelection(self, sl, sc, el, ec):
+                self.sel = (sl, sc, el, ec)
+
+        class _FVBE89:
+            def __init__(self, pane):
+                self.ActiveCodePane = pane
+
+        _NOQI = object()
+
+        def run89(lines, line_no, start_col, caret_col, completion,
+                  want_parens=True, send=_NOQI):
+            """跑一次 apply_completion，返回 (写回后的行, 光标列, 唤出次数)。"""
+            cm = _FCM89(lines)
+            pane = _FPane89(cm)
+            calls = []
+
+            def _qi():
+                calls.append(1)
+                return True
+
+            kw = {"send_quick_info": _qi if send is _NOQI else send}
+            _old_vbe = VB89._get_vbe
+            _old_gate = VB89._WINDOW_GATE_DISABLED
+            VB89._get_vbe = lambda: _FVBE89(pane)
+            VB89._WINDOW_GATE_DISABLED = True      # 别让宿主窗口门插手
+            VB89._vbe_cache["obj"] = None          # 每个用例必须用自己那份假对象
+            VB89.com_reset()
+            try:
+                VB89.VbeBackend(**kw).apply_completion(
+                    line_no, start_col, caret_col, completion,
+                    want_parens=want_parens)
+            finally:
+                VB89._get_vbe = _old_vbe
+                VB89._WINDOW_GATE_DISABLED = _old_gate
+            return cm.lines[line_no - 1], pane.sel[3], len(calls)
+
+        # ---- 89.1 位置判据（纯函数，可离线钉死）----
+        _cip = VB89._caret_inside_parens
+        check("89.1 `_caret_inside_parens`：只有【光标左边紧邻 `(`】才算"
+              "「停在双括号中间」（越界 / 行尾 / 左边不是括号一律 False）",
+              [(_cip("    x = foo()", 12),        # 光标在 () 之间 -> True
+                _cip("    x = foo()", 11),        # 在 '(' 左侧 -> False
+                _cip("    x = foo()", 13),        # 整行末尾 -> False
+                _cip("    x = foo()", 14),        # 越界 -> False
+                _cip("", 0),
+                _cip("abc", -1),
+                _cip("(", 1))],
+              expect_contain=[(True, False, False, False, False, False, True)])
+
+        # ---- 89.2 调用点：补出 `()` + 光标进括号 + **按下那一下** ----
+        got89 = run89(["    x = getNa"], 1, 9, 14, "getUserName")
+        check("89.2 调用点确认函数名：写回 `x = getUserName()`、光标落在双括号"
+              "中间（第 21 列），并且**恰好唤出一次**形参信息",
+              [got89], expect_contain=[("    x = getUserName()", 21, 1)])
+
+        # ---- 89.3 ★反面：括号本来就有的调用点 -> 不补、也不唤出 ----
+        # 用户自己敲 `(` 的那一刻 VBE 早就弹过形参信息了，我们再来一下只会闪。
+        got89 = run89(["    x = getNa(1)"], 1, 9, 14, "getUserName")
+        check("89.3 ★反面：括号本来就存在的调用点 -> 不补括号、"
+              "**一次都不唤出**（VBE 早已自己弹过）",
+              [got89], expect_contain=[("    x = getUserName(1)", 20, 0)])
+
+        # ---- 89.4 ★反面：want_parens=False（Sub / Property / 变量那一档）----
+        got89 = run89(["    x = getNa"], 1, 9, 14, "getUserName",
+                      want_parens=False)
+        check("89.4 ★反面：want_parens=False（Sub 补空格、Property 补空的那些"
+              "档）-> 不补括号，也不唤出形参信息",
+              [got89], expect_contain=[("    x = getUserName", 20, 0)])
+
+        # ---- 89.5 ★反面：没有注入函数（旧式构造 / 离线后端）----
+        got89 = run89(["    x = getNa"], 1, 9, 14, "getUserName", send=None)
+        check("89.5 ★反面：拿不到注入函数（旧式构造 / 离线后端）-> "
+              "补全照常完成、静默跳过唤出，绝不因此出错",
+              [got89], expect_contain=[("    x = getUserName()", 21, 0)])
+
+        # ---- 89.6 开关 `VBECOMPLETE_NO_PARAM_INFO=1` 能关掉 ----
+        _old_ap89 = VB89.AUTO_PARAM_INFO
+        VB89.AUTO_PARAM_INFO = False
+        try:
+            got89 = run89(["    x = getNa"], 1, 9, 14, "getUserName")
+        finally:
+            VB89.AUTO_PARAM_INFO = _old_ap89
+        check("89.6 开关关掉后：括号照补、形参信息不弹（不影响补全本身）",
+              [got89], expect_contain=[("    x = getUserName()", 21, 0)])
+
+        # ---- 89.7 源码护栏：注入函数 + 接线 + 顺序 ----
+        _msrc89 = io.open(os.path.join(ROOT, "main.py"),
+                          encoding="utf-8").read()
+        _vsrc89 = io.open(os.path.join(ROOT, "vbe_bridge.py"),
+                          encoding="utf-8").read()
+        _i_judge89 = _vsrc89.find("_caret_inside_parens(param_line, end0)")
+        _i_send89 = _vsrc89.find('getattr(self, "_send_quick_info", None)')
+        check("89.7 源码护栏：① main 有 `send_quick_info` 且发的是 "
+              "Ctrl+Shift+I（缺 Shift 的那一下 VBE 没反应）；② main 把它交给"
+              "后端；③ vbe_bridge 有独立开关、先过位置判据再注入",
+              [("def send_quick_info(" in _msrc89,
+                "(VK_I, 0)" in _msrc89 and "(VK_I, KEYEVENTF_KEYUP)" in _msrc89,
+                "send_quick_info=send_quick_info" in _msrc89
+                and "VbeBackend(send_char=send_char," in _msrc89,
+                'AUTO_PARAM_INFO = not _env_flag("VBECOMPLETE_NO_PARAM_INFO"'
+                in _vsrc89,
+                "if added_parens and AUTO_PARAM_INFO" in _vsrc89,
+                "def _caret_inside_parens(" in _vsrc89,
+                0 < _i_judge89 < _i_send89)],
+              expect_contain=[(True, True, True, True, True, True, True)])
+    except Exception as _e89:
+        import traceback as _tp89
+        _tp89.print_exc()
+        check("第 89 节异常: %s" % _e89, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
+    # 90. ★v107c：测试网自查 —— 猴补丁必须还原
+    #     这不是在测产品代码，而是在测【测试网自己】：一节忘了还原，后面每一节
+    #     都会悄悄跑在别人的假对象上，而**不会有任何一条用例变红**。
+    #     v107c 实测抓到两处（§31 第 33 节复用、§62 的 62.12），都是
+    #     `_get_vbe_cached` 被换掉没换回来。
+    # ------------------------------------------------------------------
+    print("\n=== 90. ★v107c：测试网自查 —— 猴补丁必须还原 ===")
+    _leaked90 = ["%s.%s" % (m.__name__, n)
+                 for (m, n, _o) in _LEAK_WATCH
+                 if getattr(m, n, None) is not _o]
+    check("90.1 各节临时替换的函数 / 单例都在节尾还原了"
+          "（v107c 抓到过 §31 / §62 两处：它们让后面每一节的 "
+          "`_get_vbe_cached` 都指向别人的假工程）",
+          [(_leaked90,)], expect_contain=[([],)])
 
     print("\n" + "=" * 60)
     print("结果: %d PASS, %d FAIL" % (PASS, FAIL))

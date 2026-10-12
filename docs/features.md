@@ -26,6 +26,11 @@
   `Property …`, `Type …` — the list stays closed, exactly like IDEA: you are *inventing* a name, so
   there is nothing to complete. The type position after `As` / `New` is unaffected (there you *are*
   referring to an existing type, so type names are still offered).
+- **Parameter info on accept.** Accepting a `Function` inserts `()` with the caret inside, and
+  VbeComplete then presses `Ctrl+Shift+I` for you so the VBE's *own* parameter-info window appears —
+  the native signature bubble that highlights the argument you are filling in and follows your
+  commas. It only fires when *we* added the parentheses (typing `(` yourself already pops it). Use
+  `VBECOMPLETE_NO_PARAM_INFO=1` to turn it off.
 - **Unicode identifiers.** Names such as `Dim 用户名 As String` are fully supported.
 - **Non-intrusive.** Suggestions appear only inside a VBE *code pane* — never in the Properties
   window, the Project explorer or the form designer.
@@ -84,6 +89,7 @@ Behaviour is tuned through environment variables (set them before launching):
 | `VBECOMPLETE_LOG` | off | `1` writes a diagnostic log to `VbeComplete.log` (`VBECOMPLETE_LOG_FILE` relocates it). |
 | `VBECOMPLETE_AUTO_PAREN` | on | `0` disables inserting `()` after procedures and functions. |
 | `VBECOMPLETE_AUTO_SPACE` | on | `0` disables the automatic trailing space after keywords. |
+| `VBECOMPLETE_NO_PARAM_INFO` | off | `1` stops pressing `Ctrl+Shift+I` after auto-inserted `()`, i.e. no parameter-info popup. |
 | `VBECOMPLETE_MEMBER_POPUP` | off | `1` restores VbeComplete's own list after `object.` (off by default). |
 | `VBECOMPLETE_DECL_POPUP` | off | `1` restores suggesting inside declarations (off by default). |
 | `VBECOMPLETE_NO_SCOPE_RANK` | off | `1` disables scope-aware ranking. |

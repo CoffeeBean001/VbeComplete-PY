@@ -202,6 +202,26 @@ AUTO_PAREN_ON_COMPLETE = _env_flag("VBECOMPLETE_AUTO_PAREN", True)
 # `"    public S"` —— 正是用户要的效果。
 AUTO_SPACE_AFTER_KEYWORD = _env_flag("VBECOMPLETE_AUTO_SPACE", True)
 
+# ★v107c：按 Tab 确认函数名、自动补出 `()` 并把光标送进括号之后，顺手唤出
+# VBE 自己的【参数信息】窗（形参签名）。
+#
+# 用户口径（原话）："提示词选中了过程名或函数名，按 tab 键，当自动补充完双括号后，
+# 光标落在双括号中间，再加个自动显示形参列表参数的功能。"
+#
+# 为什么是"替用户按一下 Ctrl+Shift+I"、而不是我们画一个窗：形参信息本来就是
+# VBE 自带的能力 —— 它会**高亮当前正在填的那个参数**、跟着逗号往下走、按 Esc
+# 收起、跟着你继续改签名。我们手上只有 CodeModule 的纯文本，重画一遍既费事又
+# 做不到位（v103b 曾在详情行里显示过形参表，用户明确说不要那种）。
+# v63 真机实测过：Ctrl+Shift+I 之后 VBE 的 `PopupTipWndClass` 立刻可见、Esc
+# 立刻不可见 —— 确实有效的是带 Shift 那个。所以这里只是"替用户按一下"。
+#
+# ⚠️ 只在【我们自己补了括号】这条路上做（`added_parens`）：括号本来就是用户敲
+# 出来的那种情况，VBE 早就在他敲 `(` 的当下弹过了，我们再来一下只会让它闪一下。
+# ⚠️ 注入失败 / 拿不到注入函数一律静默跳过 —— 形参信息和"补全本身"无关，
+# 绝不能因为它没出来就影响补全（与 v103b 注入空格同一条规矩）。
+# 想关掉：`set VBECOMPLETE_NO_PARAM_INFO=1`。
+AUTO_PARAM_INFO = not _env_flag("VBECOMPLETE_NO_PARAM_INFO", False)
+
 def _co_free():
     """释放 pywin32 缓存的 COM 代理（仅在显式开启时才会真正调用）。
 
@@ -1623,6 +1643,29 @@ def _skip_into_parens(actual, end0, orig_line, orig_caret_col):
     except Exception:
         pass
     return end0
+
+
+def _caret_inside_parens(line_text, caret0):
+    """★v107c：光标此刻是否正停在【一对括号的中间】（纯函数）。
+
+    判据只有一条、且只此一份实现：光标左边紧邻的那个字符是 `(`。
+    对"我们刚补出来的那对空括号"来说，它恰好等价于"光标落在双括号中间" ——
+    要不要唤出参数信息只看这一个事实，不掺任何猜测。
+
+    为什么不能拿 `added_parens` 当同一件事：`_skip_into_parens` 有可能没把
+    光标送进去（VBE 把整行改写成了别的样子）。那时再按一下 Ctrl+Shift+I 是
+    没头没脑的一下，有了这道位置判据就宁可什么都不做。
+
+    line_text : 写回后的实际行文本
+    caret0    : 光标的 0-based 字符下标（= 光标左边内容的长度）
+    """
+    try:
+        i = int(caret0)
+        if i < 1 or i > len(line_text):
+            return False
+        return line_text[i - 1] == "("
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -3267,12 +3310,17 @@ def host_enum_constants():
 
 
 class VbeBackend:
-    def __init__(self, send_char=None):
+    def __init__(self, send_char=None, send_quick_info=None):
         # ★v103b：把字符"还给系统"的注入函数（main.send_char）。只在
         # "关键字补空格"这一处用到 —— 真机实测 VBE 会把 ReplaceLine 写进去的
         # 行尾空格 trim 掉，唯一可行的补法是注入一个空格按键。
         # 传 None（旧式构造 / 离线测试）时该功能静默不生效，绝不影响其它路径。
         self._send_char = send_char
+        # ★v107c：唤出 VBE 自己【参数信息】窗的注入函数（main.send_quick_info，
+        # 就是替用户按一下 Ctrl+Shift+I）。只在"我们刚补出一对 `()`、光标落在
+        # 括号中间"之后用一次 —— 参数信息是 VBE 原生能力，我们不重画。
+        # 同样地：传 None 就不做，绝不半途出错（见 AUTO_PARAM_INFO 处的说明）。
+        self._send_quick_info = send_quick_info
         self._cache = None
         self._cache_time = 0
         self._declared_names = set()
@@ -4449,6 +4497,9 @@ class VbeBackend:
                 end0 = _find_completion_end(actual, completion,
                                             end0 - len(completion), end0)
             end0 = min(end0, len(actual))
+            # ★v107c：留给下面"要不要唤出参数信息"用 —— 光标最终落在哪一行文本上。
+            # 若"二次确认"发现 VBE 又改写了这一行，下面会把它换成实际那一行。
+            param_line = actual
             # VBE 自动补的括号（`Function gCalc` -> `Function gCalc()`）：
             # 光标要落进括号里，否则停在左括号左侧还得手动右移一格。
             #
@@ -4520,6 +4571,7 @@ class VbeBackend:
             except Exception:
                 actual2 = actual
             if actual2 != actual:
+                param_line = actual2
                 end0b = _skip_into_parens(actual2, end0, line_text, end_col)
                 if end0b != end0:
                     end0 = min(end0b, len(actual2))
@@ -4527,6 +4579,26 @@ class VbeBackend:
                         _set_caret(actual2, end0)
                     except Exception:
                         pass
+            # ★v107c：光标已经在括号中间了 -> 替用户按一下 Ctrl+Shift+I，
+            # 让 VBE 弹它自己的【参数信息】窗（形参签名）。
+            # 三道条件缺一不可，且全部是"宁可不做"的方向：
+            #   ① `added_parens` —— 只有【我们补出来的】那对括号才管；
+            #      用户自己敲的 `(`，VBE 在敲下去的那一刻就弹过了；
+            #   ② 开关 `AUTO_PARAM_INFO`；
+            #   ③ 光标此刻**真的**停在 `(` 右边（位置判据只此一份实现）。
+            # 注入失败 / 没有注入函数 -> 静默跳过：形参信息与"补全本身"无关，
+            # 绝不能因为它没出来就影响补全（同 v103b 注入空格那条规矩）。
+            if added_parens and AUTO_PARAM_INFO \
+                    and _caret_inside_parens(param_line, end0):
+                try:
+                    _qi = getattr(self, "_send_quick_info", None)
+                    if callable(_qi):
+                        _ok = _qi()          # 先注入，再（可选地）记日志
+                        _log("apply_completion: 唤出参数信息 -> %s" % (_ok,))
+                    else:
+                        _log("apply_completion: 没有注入函数，跳过参数信息")
+                except Exception as _e107c:
+                    _log("apply_completion: 唤出参数信息异常 %r" % (_e107c,))
             return new_line
         except Exception:
             return None

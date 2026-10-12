@@ -98,6 +98,7 @@ VK_DOWN = 0x28
 VK_PROCESSKEY = 0xE5   # IME 组字过程中的按键（vkCode=229），不携带真实字符
 VK_CONTROL = 0x11
 VK_MENU = 0x12         # Alt
+VK_I = 0x49            # v107c：Ctrl+Shift+I = VBE 的「参数信息 / 快速信息」
 
 NAV_VKS = (VK_UP, VK_DOWN)
 
@@ -175,6 +176,44 @@ def send_vk(vk):
         n = ctypes.windll.user32.SendInput(
             2, ctypes.byref(evts), ctypes.sizeof(_INPUT))
         return int(n) == 2
+    except Exception:
+        return False
+
+
+def send_quick_info():
+    """替用户按一下 **Ctrl+Shift+I** —— VBE 自己的「参数信息 / 快速信息」。
+
+    ★v107c。用途：按 Tab 确认函数名、我们替他补出 `()` 并把光标送进括号之后，
+    再把形参签名弹出来（用户口径："自动补充完双括号后，光标落在双括号中间，
+    再加个自动显示形参列表参数的功能"）。
+
+    为什么是"替用户按一下"而不是我们画一个窗：形参信息本来就是 VBE 内置的能力，
+    它会高亮当前正在填的参数、跟着逗号往下走、Esc 收起、签名改了它还跟着变 ——
+    我们手上只有 CodeModule 的纯文本，重画一遍做不到这个程度。
+    v63 真机实测过：Ctrl+Shift+I 之后 VBE 的 `PopupTipWndClass` 立刻可见、
+    Esc 立刻不可见，而 Ctrl+I（不带 Shift）没有任何反应 —— 所以这里必须带 Shift。
+
+    注入的事件带 LLKHF_INJECTED，钩子会放行（v57 的规矩），不会自己截自己。
+    返回是否发送成功；调用方（`vbe_bridge.apply_completion`）拿不到就算了，
+    **形参信息弹不出来绝不影响补全本身**。
+    """
+    try:
+        # (虚拟键, 标志) 顺序很关键：先按下的修饰键必须后松开。
+        seq = ((VK_CONTROL, 0), (VK_SHIFT, 0), (VK_I, 0),
+               (VK_I, KEYEVENTF_KEYUP), (VK_SHIFT, KEYEVENTF_KEYUP),
+               (VK_CONTROL, KEYEVENTF_KEYUP))
+        evts = (_INPUT * len(seq))()
+        for i, (vk, flags) in enumerate(seq):
+            e = evts[i]
+            e.type = INPUT_KEYBOARD
+            e.u.ki.wVk = int(vk)
+            e.u.ki.wScan = 0
+            e.u.ki.dwFlags = flags
+            e.u.ki.time = 0
+            e.u.ki.dwExtraInfo = 0
+        n = ctypes.windll.user32.SendInput(
+            len(seq), ctypes.byref(evts), ctypes.sizeof(_INPUT))
+        return int(n) == len(seq)
     except Exception:
         return False
 
@@ -713,7 +752,8 @@ def main():
     try:
         root = tk.Tk()
         root.withdraw()
-        backend = VbeBackend(send_char=send_char)
+        backend = VbeBackend(send_char=send_char,
+                             send_quick_info=send_quick_info)
         popup = Popup(root)
         # 滚动窗口行数以 UI 为准（两边必须是同一个数，否则窗口会露出半行）
         completer = engine.Completer(backend, popup, view_rows=MAX_VISIBLE_ROWS)
