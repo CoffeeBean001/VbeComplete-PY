@@ -1245,3 +1245,87 @@ IDEA 的这些能力**都建立在一个前提上：IDE 手里有整个工程的
 - `stop.bat` / `stop.ps1` — 结束后台进程（更新版本前用）
 - `install_autostart.bat` / `install_autostart.ps1` — 加入开机启动
 - `uninstall_autostart.bat` / `uninstall_autostart.ps1` — 取消开机启动
+
+============================================================
+
+## 附：技术栈（原文）
+
+## 技术栈
+
+- **Python** + `pywin32`（驱动 VBA 编辑器 COM）+ `pynput`（全局键盘监听）+ `tkinter`（弹窗）
+- 核心解析与补全逻辑是纯 Python，不写任何日志文件。回归测试用真实工程样本
+    
+  离线跑（`run_tests.bat`，**不需要 Office / COM**）。
+
+## 附：文件构成（原文）
+
+## 文件构成
+
+| 文件                                                              | 作用                                   |
+| --------------------------------------------------------------- | ------------------------------------ |
+| `main.py`                                                       | 进程入口：全局键盘钩子、事件轮询、把各路判断接起来            |
+| `engine.py`                                                     | 补全引擎：候选打分、排序、过滤、弹窗收放                 |
+| `vbe_bridge.py`                                                 | VBE COM 桥接：读代码、读光标、写回、光标落点           |
+| `parser.py`                                                     | VBA 代码解析（语句、作用域、注释/字符串）              |
+| `vba_builtins.py`                                               | VBA 自带词汇清单（内建函数/类型/关键字/枚举），按开关在收集侧取舍 |
+| `ui.py`                                                         | 候选弹窗（tkinter）与避让逻辑                   |
+| `log.py`                                                        | 诊断日志开关（默认关闭、零开销），见下                  |
+| `requirements.txt`                                              | 依赖（`pywin32` / `pynput`）             |
+| `run.bat` / `stop.bat` / `stop.ps1`                             | 启停                                   |
+| `install_autostart.ps1` / `uninstall_autostart.ps1`（及对应 `.bat`） | 开机自启的安装与卸载                           |
+| `tests/` + `run_tests.bat`                                      | **回归测试**（985 条），见下                   |
+
+## 附：跑回归测试与 log.py 说明（原文）
+
+### 跑回归测试
+
+双击 `run_tests.bat`，或：
+
+```
+python tests\test_real_project.py
+```
+
+- **不需要 Office / COM**，用 `tests/testdata/` 里那份真实工程导出的 14 个模块
+    
+  作样本，纯解析层验证。
+- 有几条用例会真读【当前宿主】的类型库、并断言 Excel 专属常量名；宿主不是 Excel
+    
+  （如 Word / PPT / WPS）时会**自动跳过**；一个宿主都没开时才红（少量、预期内，见下）。
+- ⚠️ **必须用装了 `pywin32` 的 Python 跑**。一个宿主都没开时，Excel 专属那几条会红：
+    
+  那属预期（**不是代码坏了**）；换成开着 Word / PPT / WPS 的机器再跑，它们会自动跳过。
+- **改了代码请跑一遍。** 这个项目绝大多数坑（列语义、作用域口径、候选排序）
+    
+  都是"看起来对、真机或离线用例一跑就红"才发现的。
+
+⚠️ **`log.py` 不能删**：`engine.py` / `vbe_bridge.py` / `main.py` 都
+  
+`import` 它，删掉会直接 ImportError 起不来。留着它而不是把那约 60 处
+  
+`_log(...)` 调用逐个挖掉，是因为 `log()` 第一行就 `return` ⇒ 主循环里
+  
+`if _LOG_ENABLED:` 包着的诊断块（含额外的只读 COM 调用）自动整段跳过，
+  
+**行为与开销都与删掉一样**。
+
+**★v101 起这个后门是真能用的**（原先恒为 `False`，等于把排障设施彻底封死，
+  
+`Call` 那个故障查了两轮查不动，根因之一就是它）：启动前设 `set VBECOMPLETE_LOG=1`，
+  
+日志会写到项目目录下的 `VbeComplete.log`（可用 `VBECOMPLETE_LOG_FILE` 换路径），
+  
+关掉时仍是零开销（实测 10 万次调用 0.024 秒，那都是函数调用本身的开销）。
+  
+**下次再遇到"某处不生效"先开它**——日志里有一行
+  
+`accept: ... want_parens=... | in_proc=... is_func=... is_type=...`
+  
+把括号决策的**每一项输入**真值都打出来了，不用再靠猜。
+  
+⚠️ **加日志要加在"判据的输入"那一层**，不能只加一行"某某失败了"——
+  
+只打 `want_parens=False` 等于没有新信息。
+
+其余文件一行不动。配套的 `run_debug.bat` / `show_log.bat` 已随收尾移除，
+  
+现在直接手工设环境变量即可。
