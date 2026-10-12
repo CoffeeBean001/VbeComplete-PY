@@ -2008,6 +2008,10 @@ def _host_window_alive():
     刻意带"从未见过就别拦"的兜底：若这台机器上从来没探测到过 Excel/VBE
     窗口，很可能是类名不匹配的宿主（WPS 等），此时盲目拦截会让工具整个
     失效。只有"曾经见过、现在连续两次都看不到"才认定宿主真的退出了。
+
+    ★v106：本函数额外承担"宿主回来了就立刻解除 COM 退避"的职责 —— 所以
+    **调用方在退避期内也必须调它**（见 `_get_vbe_cached`）。这是"开机自启
+    后要等半分钟才有提示"的修法，详见下面 com_reset 那两行注释。
     """
     if _WINDOW_GATE_DISABLED:
         return True
@@ -2016,8 +2020,16 @@ def _host_window_alive():
     except Exception:
         return True
     if alive:
-        if _wnd_state["miss"] >= 2:
-            com_reset()               # 宿主回来了 -> 立刻解除退避
+        # 两种"宿主回来了"的证据，命中就【立刻】解除退避：
+        #   * miss >= 2 —— 曾经见过、又连续两次看不到，现在又出现了
+        #     （关掉 Excel 再打开）；
+        #   * 从没见过（seen=False）—— ★v106 新增，开机自启的典型路径：
+        #     工具随开机启动时 Excel 还没开，探测一直看不到 ⇒ 上面那条永远
+        #     等不到（miss 根本没机会累加，见下面 `if not seen: return True`），
+        #     而 COM 那一侧早已失败 5 次、退避升到 30 秒。用户这时才打开
+        #     Excel —— 不在这里解除退避就得白等满 30 秒。
+        if _wnd_state["miss"] >= 2 or not _wnd_state["seen"]:
+            com_reset()
         _wnd_state["seen"] = True
         _wnd_state["miss"] = 0
         return True
@@ -2512,6 +2524,21 @@ def _release_vbe_proxy(collect=False):
 #   - 文件关完之后 Excel/Office 又被 COM 唤醒启动一次。
 # 因此连续失败时按档退避（比早期版本更狠），成功后立刻恢复。
 _COM_BACKOFF = (1.0, 2.0, 5.0, 10.0, 30.0)
+
+# ★v106：宿主窗口门【不提供信息】时的退避上限（秒）。
+#
+# 什么时候算"不提供信息"：这台机器上从来没探到过任何已知宿主窗口
+# （`_wnd_state["seen"]` 一直是 False）—— 也就是 `_host_window_alive()` 判定
+# "别拦，可能是类名对不上的宿主（某些 WPS 版本）"的那种情况。
+# 那时【窗口门说"放行"、退避却说"不许"】，前后自相矛盾：净效果就是开机后
+# 干等最长 30 秒（工具随开机启动、宿主还没开 ⇒ COM 连续失败把退避顶到顶档）。
+# 所以门一旦不提供信息，退避也必须跟着松口。
+#
+# 松到 2 秒安全吗：实测一次失败的 `_get_vbe()`（逐个试 11 个 ProgID）约 1.5ms，
+# 2 秒一次 ≈ 0.08% CPU。而"宿主窗口门失效"这个前提本身就已经意味着我们放弃
+# 了"靠窗口判断宿主在不在"这条保护（见 _host_window_alive 的兜底说明）。
+_COM_BACKOFF_COLD_CAP = 2.0
+
 _com_state = {"fails": 0, "until": 0.0}
 
 
@@ -2524,6 +2551,31 @@ def com_reset():
     """重置退避状态（仅供测试 / 手动恢复使用）。"""
     _com_state["fails"] = 0
     _com_state["until"] = 0.0
+
+
+def _com_backoff_shorten(cap):
+    """把当前退避【缩短】到不超过 cap 秒（只缩短，绝不延长）。
+
+    与 com_reset() 的区别：com_reset 连"失败次数"一起清零（等于宣告
+    "这台机器没问题了"），而本函数只压这一次的等待时长，失败档位保留 ——
+    宿主真的在关闭时仍然能一路升到 30 秒（`_wnd_state["seen"]` 为真时
+    根本不会走到这里）。
+    """
+    now = time.time()
+    if _com_state["until"] > now + cap:
+        _com_state["until"] = now + cap
+
+
+def com_host_present():
+    """宿主（Excel/Word/PPT/WPS…）的窗口现在在不在 —— 纯 Win32，几微秒。
+
+    ★v106：公开入口，专门给**退避期内**的调用方用。它不只是"问一下"：
+    `_host_window_alive()` 里带**副作用** —— 宿主刚从"没有"变回"有"时会
+    立刻 `com_reset()` 解除退避。退避最长 30 秒，而用户完全可能是在退避
+    窗口【中途】才打开 Excel 的；那时候如果没人去探一下，我们就只能把
+    30 秒白等完（开机自启后首次使用就是这个症状）。
+    """
+    return _host_window_alive()
 
 
 def _com_ok():
@@ -2577,12 +2629,29 @@ def _get_vbe_cached():
             _warned_thread["n"] += 1
             _log("com: 非主线程请求 COM -> 拒绝（不记失败，请改在主线程调用）")
         return None
-    if com_backoff_remaining() > 0:
-        return None
+    # ★v106：宿主探测【必须排在退避检查之前】。
+    #
+    # `_host_window_alive()` 自带"宿主回来了就立刻解除退避"的副作用；排在
+    # 退避检查后面的话，退避期内根本调不到它，"用户打开了 Excel"这件事就
+    # 永远发现不了 —— 只能把最长 30 秒的退避熬完。"开机自启后要等半分钟
+    # 才出提示"就是这么来的：开机时 Excel 没开，COM 连续失败把退避顶到
+    # 30 秒，之后每个 30 秒窗口里我们连一次都不去看宿主在不在。
+    #
+    # 代价：退避期每轮多 11 次 FindWindowW（几微秒），可忽略。
     # 宿主窗口门【每次都查】：FindWindow 是纯 Win32 调用，开销可忽略。
     # 刻意放在缓存检查【之前】——只在新建立时才查的话，宿主已经退出、我们却
     # 还在用旧代理继续打 COM，照样会把正在退出的 Excel 拽住。
-    if not _host_window_alive():
+    host_alive = _host_window_alive()
+    if com_backoff_remaining() > 0:
+        # ★v106：宿主窗口门【不提供信息】时退避也要松口。
+        # "seen 一直是 False" = 这台机器上从没见过任何已知宿主窗口（很可能是
+        # 类名对不上的宿主）。那种情况下 `_host_window_alive` 的兜底已经判定
+        # "别拦"了，退避若还照旧卡 30 秒，等于把"打开宿主后要等半分钟"原样
+        # 留在 WPS 这类宿主上。
+        if not _wnd_state["seen"]:
+            _com_backoff_shorten(_COM_BACKOFF_COLD_CAP)
+        return None
+    if not host_alive:
         if _wnd_state["miss"] >= 2:
             _release_vbe_proxy(collect=True)
             _log("com: 宿主窗口已消失 -> 释放 COM 代理并暂停访问")

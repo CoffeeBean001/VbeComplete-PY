@@ -15942,6 +15942,164 @@ def main():
         _tp87.print_exc()
         check("第 87 节异常: %s" % _e87, [True], expect_contain=[False])
 
+    # ==================================================================
+    # 88. ★v106 开机自启后"要等半分钟才出提示"—— COM 退避没能及时解除
+    #
+    #     症状（用户报的）：工具随开机启动时 Excel 还没开，COM 连续失败把退避
+    #     升到顶档 30 秒；之后用户才打开 Excel、进 VBE 写代码，补全却还要等
+    #     30~60 秒才出来。
+    #
+    #     根因是【两处早退把"宿主回来了"这条路整个挡掉了】：
+    #       ① `_get_vbe_cached` 先判退避、后探宿主 ⇒ 退避期内根本不调
+    #          `_host_window_alive()`，而"解除退避"恰恰是它干的；
+    #       ② `main._com_allowed()` 同样先被退避挡住 ⇒ 连 snapshot 都不调，
+    #          `_get_vbe_cached` 连跑都跑不到。
+    #     另外 `_host_window_alive` 里"宿主回来了"的判据只有 `miss >= 2`，
+    #     而开机路径下 `seen` 一直是 False（下面那句 "从未见过就不拦" 直接
+    #     return，miss 根本累加不了）⇒ 这个判据永远等不到。
+    # ==================================================================
+    print("\n=== 88. 开机自启后启动慢：COM 退避及时解除（v106）===")
+    try:
+        import importlib.util as _iu88
+        _spec88 = _iu88.spec_from_file_location(
+            "vbe_bridge_fresh88",
+            os.path.join(ROOT, "vbe_bridge.py"))
+        VB88 = _iu88.module_from_spec(_spec88)
+        _spec88.loader.exec_module(VB88)
+
+        def _arm_backoff88(seen):
+            """摆出"已连续失败 5 次、退避顶到 30 秒"的现场。"""
+            VB88.com_reset()
+            VB88._com_state["fails"] = 5
+            VB88._com_state["until"] = time.time() + 30.0
+            VB88._wnd_state["seen"] = seen
+            VB88._wnd_state["miss"] = 2 if seen else 0
+            VB88._vbe_cache["obj"] = None
+            VB88._vbe_cache["at"] = 0.0
+
+        # ---- 88.1 首次看到宿主窗口 -> 立刻解除 30s 退避 ----
+        _arm_backoff88(seen=False)
+        VB88._probe_host_window = lambda: True
+        _r81 = VB88._host_window_alive()
+        check("88.1 首次看到宿主窗口（seen=False，开机路径）-> 立刻解除 30s 退避",
+              [(_r81, VB88.com_backoff_remaining() == 0,
+                VB88._wnd_state["seen"])],
+              expect_contain=[(True, True, True)])
+
+        # ---- 88.2 ★反面：宿主不在时【不许】解除退避 ----
+        # 退避期里每轮都会来探一次"宿主在不在"（见 _com_allowed / 88.3），
+        # 若宿主不在也顺手把退避清零，那退避就被这套探测自己刷没了，
+        # COM 会被 500ms 一轮猛打 —— 这正是当初加退避要避免的事。
+        _arm_backoff88(seen=False)
+        VB88._probe_host_window = lambda: False
+        _r82 = VB88._host_window_alive()
+        check("88.2 ★反面：宿主不在时不许解除退避（且'从未见过'仍不拦 COM）",
+              [(_r82, VB88.com_backoff_remaining() > 20)],
+              expect_contain=[(True, True)])
+
+        # ---- 88.3 ★核心：退避期内仍探宿主 -> 一次调用就恢复可用 ----
+        # A/B 照妖镜：把 `_get_vbe_cached` 里的宿主探测挪回退避检查【之后】
+        # （v105 的旧顺序），本用例立刻变红（探测次数 0、返回值 None、
+        # 退避仍然是 30s）。
+        _arm_backoff88(seen=False)
+        _probe88 = []
+
+        def _probe88_fn():
+            _probe88.append(1)
+            return True
+
+        class _FakeVbe88(object):
+            ActiveCodePane = "pane"
+
+        VB88._probe_host_window = _probe88_fn
+        VB88._get_vbe = lambda: _FakeVbe88()
+        _r83 = VB88._get_vbe_cached()
+        check("88.3 ★退避期内仍探宿主：用户中途打开 Excel -> 一次调用就恢复"
+              "（既解除退避，又真的拿到 VBE）",
+              [(_probe88 != [], _r83 is not None,
+                VB88.com_backoff_remaining() == 0)],
+              expect_contain=[(True, True, True)])
+
+        # ---- 88.4 ★回归：宿主一直在、COM 持续失败 -> 退避照旧升到顶档 ----
+        # 上面几条都是"宿主回来了就解除"；这里守住另一头：宿主窗口明明一直在
+        # （miss=0、seen=True），却每次打 COM 都失败（典型的 Excel 正在关闭）
+        # —— 退避必须按 1/2/5/10/30 老实升上去，不能被"每轮都探到宿主"
+        # 退化成一个恒定的小值。
+        _arm_backoff88(seen=True)
+
+        def _boom88():
+            raise RuntimeError("com unavailable")
+
+        VB88._probe_host_window = lambda: True
+        VB88._get_vbe = _boom88
+        for _ in range(5):
+            VB88._com_state["until"] = 0.0        # 模拟时间前进到退避到期
+            VB88._vbe_cache["obj"] = None
+            VB88._get_vbe_cached()
+        check("88.4 ★回归：宿主窗口一直在、COM 持续失败 -> 退避照旧升到 30s"
+              "（没被'每轮都探到宿主'刷没了）",
+              [(VB88._com_state["fails"], VB88.com_backoff_remaining() > 20)],
+              expect_contain=[(5, True)])
+
+        # ---- 88.5 公开入口 com_host_present()（退避期的调用方用它）----
+        _sv85 = VB88._host_window_alive
+        _sent85 = object()
+        VB88._host_window_alive = lambda: _sent85
+        try:
+            _r85 = VB88.com_host_present()
+        finally:
+            VB88._host_window_alive = _sv85
+        check("88.5 com_host_present() 是宿主探测的公开入口（带解除退避的副作用）",
+              [(_r85 is _sent85,)], expect_contain=[(True,)])
+
+        # ---- 88.7 窗口门【不提供信息】时（类名对不上的宿主）退避也要松口 ----
+        # "seen 一直是 False" = 从没见过任何已知宿主窗口。此时窗口门自己说
+        # "别拦（放行）"，退避若还卡 30 秒就自相矛盾 —— 净效果是开机后干等
+        # 半分钟（WPS 这类宿主会一直吃这个亏）。
+        _arm_backoff88(seen=False)
+        VB88._probe_host_window = lambda: False
+        VB88._get_vbe = _boom88
+        _r87 = VB88._get_vbe_cached()
+        check("88.7 窗口门不提供信息（类名对不上的宿主）-> 退避被压到 2s，"
+              "不再干等 30s",
+              [(_r87 is None, VB88.com_backoff_remaining() <= 2.0)],
+              expect_contain=[(True, True)])
+
+        # ---- 88.8 ★反面：门是准的（见过宿主）时，退避照旧不许被缩短 ----
+        # 宿主真在关闭时，那条"别去骚扰它"的保护必须原样保留
+        # （_com_backoff_shorten 只压时长、不清失败档位，就是为这个）。
+        _arm_backoff88(seen=True)
+        VB88._probe_host_window = lambda: False
+        VB88._get_vbe = _boom88
+        _r88 = VB88._get_vbe_cached()
+        check("88.8 ★反面：已见过宿主（门是准的）-> 退避照旧卡着，不许被缩短",
+              [(_r88 is None, VB88.com_backoff_remaining() > 20)],
+              expect_contain=[(True, True)])
+
+        # ---- 88.9 源码护栏：两处早退的顺序 + 退避期轮询独立档位 ----
+        import re as _re88
+        _mnc88 = _re88.sub(r"#[^\n]*", "", io.open(
+            os.path.join(ROOT, "main.py"), encoding="utf-8").read())
+        _vnc88 = _re88.sub(r"#[^\n]*", "", io.open(
+            os.path.join(ROOT, "vbe_bridge.py"), encoding="utf-8").read())
+        _i_probe88 = _vnc88.find("host_alive = _host_window_alive()")
+        _i_back88 = _vnc88.find("if com_backoff_remaining() > 0:", _i_probe88)
+        check("88.9 源码护栏：① _get_vbe_cached 里【先探宿主、后判退避】；"
+              "② '宿主回来了'判据含 seen=False（开机路径）；③ 窗口门不提供"
+              "信息时调 _com_backoff_shorten；④ _com_allowed 退避期调 "
+              "com_host_present；⑤ 退避期有独立轮询间隔（旧的合并式 idle 已删）",
+              [(0 < _i_probe88 < _i_back88,
+                '_wnd_state["miss"] >= 2 or not _wnd_state["seen"]' in _vnc88,
+                "_com_backoff_shorten(_COM_BACKOFF_COLD_CAP)" in _vnc88,
+                _mnc88.count("vbe_bridge.com_host_present()") >= 1,
+                "POLL_INTERVAL_BACKOFF_MS" in _mnc88
+                and "idle = (com_backoff_remaining() > 0" not in _mnc88)],
+              expect_contain=[(True, True, True, True, True)])
+    except Exception as _e88:
+        import traceback as _tp88
+        _tp88.print_exc()
+        check("第 88 节异常: %s" % _e88, [True], expect_contain=[False])
+
     print("\n" + "=" * 60)
     print("结果: %d PASS, %d FAIL" % (PASS, FAIL))
     if FAILURES:

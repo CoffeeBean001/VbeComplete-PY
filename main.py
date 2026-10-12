@@ -454,6 +454,17 @@ FOCUS_GRACE_SEC = 2.0
 # 甚至把刚退出的 Excel 又唤醒一次。空闲期降到 0.5 次/秒足够兜底。
 POLL_INTERVAL_IDLE_MS = 2000
 
+# ★v106：正处于 COM 失败退避期时的轮询间隔（毫秒）。
+#
+# 退避最长 30 秒（见 vbe_bridge._COM_BACKOFF）。这段时间里唯一还能让我们
+# "知道宿主已经回来了"的手段，就是每轮那次纯 Win32 的宿主窗口探测 ——
+# 而用户在这 30 秒里打开 Excel 恰恰是最常见的情形（开机自启，见下）。
+# 按空闲档 2 秒去探，用户会感到"Excel 都开好了还得愣一下才出提示"；
+# 0.5 秒基本无感，代价只是每轮多 11 次 FindWindowW（几微秒）。
+# 退避期【不会】打任何 COM（_com_allowed 直接挡掉），所以这里加快不会
+# 影响"别把正在关闭的 Excel 拽住"这条既有约定。
+POLL_INTERVAL_BACKOFF_MS = 500
+
 # 钩子抑制冷却期（秒）：当"上一个非 VBE 的前台窗口已被销毁"——即那个窗口
 # 是被关掉的、焦点是被它甩回 VBE 的——在此窗口期内绝不挂载系统级钩子。
 #
@@ -738,7 +749,22 @@ def main():
         - COM 连续失败退避中：一律不碰（Excel 正在关闭/重启）。
         """
         if com_backoff_remaining() > 0:
-            return False
+            # ★v106：退避期内也要探一下宿主窗口在不在。
+            #
+            # 退避最长 30 秒，而"用户刚打开 Excel"这件事只能由宿主探测发现
+            # （见 vbe_bridge.com_host_present）。这里不探，退避期里就没有
+            # 任何东西会去解除它 —— 表现就是开机自启后 Excel 明明已经开好、
+            # 代码也能打了，补全却还要等半分钟才冒出来。
+            # 代价：11 次 FindWindowW（几微秒），只发生在退避期。
+            try:
+                vbe_bridge.com_host_present()
+            except Exception:
+                pass
+            if com_backoff_remaining() > 0:
+                return False
+            # 刚好被上面这一探解除退避（宿主回来了）-> 立刻放行这一次，
+            # 不必再等其他门控条件凑齐，用户那边就是"打开 Excel 就能用"。
+            return True
         if state.get("vbe_focused"):
             return True
         # 启动后还一次都没判定出"焦点在 VBE"（比如窗口标题不含
@@ -1757,14 +1783,24 @@ def main():
                                 post_trigger()
         except Exception:
             pass
-        # 已离开 VBE（超过宽限期）、或 COM 正处于失败退避（宿主多半在关闭）
-        # -> 降频轮询，别在关文件/退 Excel 时猛打 COM。
-        idle = (com_backoff_remaining() > 0
-                or (not state.get("vbe_focused")
-                    and time.time() - state.get("last_focus_time", 0.0)
-                    > FOCUS_GRACE_SEC))
-        root.after(POLL_INTERVAL_IDLE_MS if idle else POLL_INTERVAL_MS,
-                   poll_editor)
+        # 已离开 VBE（超过宽限期）-> 降频轮询，别在关文件/退 Excel 时猛打 COM。
+        # 仍在 VBE 里 -> 常规 100ms；COM 失败退避期 -> 退避档（见下）。
+        #
+        # ★v106：退避期【单独一档、反而更快】。退避最长 30 秒，而"宿主回来了"
+        # 只能靠每轮那次纯 Win32 的宿主探测发现（见 _com_allowed），这期间
+        # 用户打开 Excel 很常见（开机自启）。按 2 秒一探，用户会觉得"打开
+        # 之后还得愣一下"；降到 0.5 秒就基本无感，多出来的只是几次
+        # FindWindowW。**退避期一次 COM 都不会打**（_com_allowed 挡掉了），
+        # 所以这一档加快也不会把正在关闭的 Excel 拽住。
+        if com_backoff_remaining() > 0:
+            interval = POLL_INTERVAL_BACKOFF_MS
+        elif (not state.get("vbe_focused")
+                and time.time() - state.get("last_focus_time", 0.0)
+                > FOCUS_GRACE_SEC):
+            interval = POLL_INTERVAL_IDLE_MS
+        else:
+            interval = POLL_INTERVAL_MS
+        root.after(interval, poll_editor)
 
     root.after(10, drain_actions)
     root.after(0, reconcile)
