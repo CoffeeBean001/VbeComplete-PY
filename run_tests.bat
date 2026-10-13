@@ -3,7 +3,7 @@ rem Run regression tests.
 rem   Sample project : tests\testdata\ (14 modules exported from a real .xlsm)
 rem   Needs a live VBA host only for the few Excel-specific cases (host type-library
 rem   enums; they are skipped automatically when the detected host is not Excel); the
-rem   other 982 are pure parsing-layer checks and run anywhere.
+rem   rest are pure parsing-layer checks and run anywhere.
 rem   Keep this file in the repo — delete the tests and every later change has
 rem   to be verified on the live VBE alone.
 

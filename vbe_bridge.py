@@ -1267,7 +1267,10 @@ def blank_line_delete_wanted(line_text, caret_ec=None, tabw=4):
 #
 # ⚠️ 本判据与 `_pair_insertion`（自动配对）刻意成对存在：自动配对插出来的
 # `()`，退格就该一次收掉，否则用户敲完 `f(` 想反悔，得按两下退格。
-_BS_PAIR_PAIRS = {"(": ")", '"': '"'}
+_BS_PAIR_PAIRS = {"(": ")", '"': '"',
+                  # ★v108：全角那一对也要能"一次退格收掉" —— 自动配对插出来的
+                  # `（）` / `“”` 与半角 `()` / `""` 在这一点上等价。
+                  "（": "）", "“": "”"}
 
 
 def pair_delete_span(line_text, char_col=None):
@@ -1295,7 +1298,8 @@ def pair_delete_span(line_text, char_col=None):
         **同一份**（项目铁律：钩子判据与后端复核必须同口径）。
 
     判据本身极简，只问一件事：**光标左边那个字符和右边那个字符，是不是一对
-    配对符**（`(` + `)` 或 `"` + `"`）。这一条就把"中间没内容"钉死了 ——
+    配对符**（`(` + `)`、`"` + `"`，或 ★v108 的全角 `（` + `）`、`“` + `”`）。
+    这一条就把"中间没内容"钉死了 ——
     左边是 `(`、右边紧跟着 `)`，本来就意味着两格之间什么都没有。
 
     刻意**不做**的事：
@@ -3006,14 +3010,23 @@ def _pair_insertion(line_text, col0, open_ch, close_ch):
 
     引号是特殊的一个键（既开又闭），所以额外看【光标左边引号数的奇偶】：
     奇数说明正处在未闭合的字符串里，这一下是收尾的那一半，只补一个。
+
+    ★v108：全角引号 `“`/`”` 是**两个不同的字符**（半角 `"` 开收同字），
+    所以"在不在字符串里"改成比 `“` 与 `”` 的个数（`“` 多出来就是没闭合）。
+    其余逻辑（`（`/`）`）与半角完全同路。
     """
-    if open_ch == '"':
-        if col0 < len(line_text) and line_text[col0] == '"':
+    if open_ch in ('"', "“"):
+        if col0 < len(line_text) and line_text[col0] == close_ch:
             return None, col0 + 1                       # 跨过去
-        inside = line_text[:col0].count('"') % 2 == 1
+        if open_ch == "“":
+            _pre = line_text[:col0]
+            inside = _pre.count("“") > _pre.count("”")
+        else:
+            inside = line_text[:col0].count('"') % 2 == 1
         if inside:
-            return line_text[:col0] + '"' + line_text[col0:], col0 + 1
-        return line_text[:col0] + '""' + line_text[col0:], col0 + 1
+            return line_text[:col0] + close_ch + line_text[col0:], col0 + 1
+        return (line_text[:col0] + open_ch + close_ch + line_text[col0:],
+                col0 + 1)
     return (line_text[:col0] + open_ch + close_ch + line_text[col0:],
             col0 + 1)
 
@@ -4182,7 +4195,18 @@ class VbeBackend:
     # VBE 原生【不会】自动闭合括号和引号（VBE_Extras / Rubberduck 都把它当增强
     # 功能往外加），所以这里补上不会出现"两边都补"的双份。唯一要注意的是 VBE
     # 会在【行尾按回车时】补齐缺失的右引号，那与逐字符输入无关，不受影响。
-    _PAIR_CLOSE = {"(": ")", '"': '"', ")": ")"}
+    _PAIR_CLOSE = {"(": ")", '"': '"', ")": ")",
+                   # ★v108：输入法在「中文标点 / 全角」时，钩子会送来全角开符号
+                   # （main._pair_char_for_ime），这里给出对应的全角收符号。
+                   # ⚠️ `）` **必须自己占一个键**（`"）": "）"`），就像半角的
+                   #    `")": ")"` 一样：insert_pair 一进来先查这张表，查不到
+                   #    就直接 return False —— 少了这一行，"敲 `）` 时跨过去"那
+                   #    条路**根本走不到**（v108 实测：写 `（` 会补出 `（）`，但
+                   #    再敲 `）` 却什么都没接管，因为表里只有 `（` 没有 `）`）。
+                   # ⚠️ `“` 的收符号是 `”`（**两个不同的字符**），与半角引号
+                   #    "开收同字"不一样 —— `_pair_insertion` 里那句"引号特殊处理"
+                   #    因此按 open_ch 分了两支。
+                   "）": "）", "（": "）", "“": "”"}
 
     @staticmethod
     def _write_line(cm, line_no, text):
@@ -4210,6 +4234,11 @@ class VbeBackend:
 
     def insert_pair(self, open_ch):
         """在光标处插入一对符号（`(` -> `()`、`"` -> `""`），光标落在中间。
+
+        ★v108：`open_ch` 也可能是**全角**（`（` -> `（）`、`“` -> `“”`）——
+        输入法在「中文标点 / 全角」时由 main._pair_char_for_ime 换算后送进来，
+        收符号查 _PAIR_CLOSE。**绝不在这一层自己"猜"输入法状态**：钩子线程
+        已经问过一次了，后端再问一次就是两份判据（项目铁律第 23 条）。
 
         返回 True = "这一下我代为输入了"（调用方据此吞掉原按键）；
         返回 False = "我没管"（在注释里 / 有选区 / COM 出问题），调用方必须
@@ -4242,10 +4271,12 @@ class VbeBackend:
                 # 返回 False 让按键【原样交给 VBE】，它自己插入 `(`；
                 # 用户接着输参数时得到 `Call judge(1, 2)`，那对括号会保留。
                 return False
-            if open_ch == ")":
+            if open_ch in (")", "）"):
                 # 右半边已经在光标右边 -> 只跨过去（补完 `()` 后再按 `)` 不该
                 # 多出一个）；否则【放行】，让用户真的插入一个右括号。
-                if col0 >= len(line_text) or line_text[col0] != ")":
+                # ★v108：全角 `）` 与半角 `)` 同路（`open_ch` 本身就是配置里的
+                # 那个字符，收符号映射到它自己，所以直接比它即可）。
+                if col0 >= len(line_text) or line_text[col0] != open_ch:
                     return False
                 new_line, caret_off = None, col0 + 1
             else:

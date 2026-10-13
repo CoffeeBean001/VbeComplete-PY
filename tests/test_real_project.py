@@ -212,6 +212,14 @@ def main():
         )]
     except Exception:
         _LEAK_WATCH = []
+    # ★v108：§91 会临时把 `main._ime_conversion_mode` 换成桩来钉"问不到"那一档，
+    # 同样纳入自查（单独 try：`import main` 万一失败不该把整张表变成空表）。
+    try:
+        import main as _mn0
+        _LEAK_WATCH.append((_mn0, "_ime_conversion_mode",
+                            _mn0._ime_conversion_mode))
+    except Exception:
+        pass
 
     # ⚠️★v103c：本回归网里凡是【成员位置】（`标识符.` / With 块里的 `.成员`）的
     #   用例 —— §34 / §49 / §50 / §53 / §71 / §72 / §77.3 —— 测的都是"点号后面
@@ -16304,6 +16312,231 @@ def main():
         import traceback as _tp89
         _tp89.print_exc()
         check("第 89 节异常: %s" % _e89, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
+    # 91. ★v108：输入法在「中文标点 / 全角」时，不要再把中文标点"翻"成英文的
+    #
+    #     用户报的 bug（原话）："我不能输入中文的双括号和中文双引号，一输入就会
+    #     自动变成英文的双括号和英文双引号。"
+    #
+    #     根因：自动配对的判据只看【虚拟键 + Shift】。中文输入法在「中文标点」下
+    #     Shift+9 打出来的是全角 `（`、Shift+' 是全角 `“`，我们却一律替它插半角
+    #     `()`/`""`。修法：接管前问一次输入法的「转换模式」，中文标点/全角时换成
+    #     全角那一对。
+    #
+    #     ⚠️ 放在 §90 之前：§90 是"猴补丁必须还原"的自查护栏，新小节必须排在
+    #        它前面，否则本节万一漏还原就没人管了。
+    #     ⚠️ 常量不是猜的：本机实测（tests/probe_ime_mode.py）微软拼音
+    #        「中文 + 中文标点」读到 0x0401 = IME_CMODE_NATIVE(0x0001) |
+    #        IME_CMODE_SYMBOL(0x0400)，取值对照本机 SDK 的 imm.h / ime_cmodes.h。
+    # ------------------------------------------------------------------
+    print("\n=== 91. ★v108：中文标点 / 全角时不再把用户的中文标点换成英文的 ===")
+    try:
+        import main as _MN91
+        VB91 = VB
+        _FU, _RU, _QO, _QC = "（", "）", "“", "”"   # U+FF08 / U+FF09 / U+201C / U+201D
+
+        # ---- 91.1 纯函数：转换模式 -> 要不要用全角标点 ----
+        _fwp = _MN91._ime_fullwidth_punct
+        # "问不到"（探测返回 None）那一档用桩钉死：`_ime_fullwidth_punct()` 不传参
+        # 就是**真去探测**，直接拿本机输入法状态当期望值会让回归网随环境变色。
+        _old_mode91a = _MN91._ime_conversion_mode
+        try:
+            _MN91._ime_conversion_mode = lambda hwnd=None: None
+            _probe_none91 = _fwp()
+        finally:
+            _MN91._ime_conversion_mode = _old_mode91a
+        check("91.1 `main._ime_fullwidth_punct`：**必须同时**「中文模式」+"
+              "「中文标点(0x0400)/全角(0x0008)」才算；"
+              "0x0001（中文模式但英文标点）/ 0x0000（英文模式）/ 0x0400（无中文模式）"
+              "/ 探测不到（None）一律按半角",
+              [(_fwp(0x0401),        # 实测：微软拼音 中文 + 中文标点
+                _fwp(0x0009),        # 中文模式 + 全角
+                _fwp(0x0001),        # 中文模式，但半角英文标点 -> 半角
+                _fwp(0x0000),        # 英文模式
+                _fwp(0x0400),        # 只有中文标点位、不在中文模式 -> 不算
+                _fwp(0x0008),        # 只有全角位、不在中文模式 -> 不算
+                _probe_none91,       # 问不到（没有 IME / 超时）
+                _fwp(0xFFFF))],      # 全亮
+              expect_contain=[
+                  (True, True, False, False, False, False, False, True)])
+
+        # ---- 91.2 纯函数：半角配对字符 -> 输入法真正会打出来的那个 ----
+        _pcfi = _MN91._pair_char_for_ime
+        _old_mode91 = _MN91._ime_conversion_mode
+        try:
+            _MN91._ime_conversion_mode = lambda hwnd=None: 0x0401
+            _got_cn = tuple(_pcfi(c) for c in ("(", ")", '"'))
+            _MN91._ime_conversion_mode = lambda hwnd=None: 0x0001
+            _got_half = tuple(_pcfi(c) for c in ("(", ")", '"'))
+            _MN91._ime_conversion_mode = lambda hwnd=None: None
+            _got_none = tuple(_pcfi(c) for c in ("(", ")", '"'))
+        finally:
+            _MN91._ime_conversion_mode = _old_mode91
+        check("91.2 `main._pair_char_for_ime`：中文标点时 `(`/`)`/`\"` -> "
+              "`（`/`）`/`“`；英文标点或问不到时**原样返回半角**（拿不准就退回"
+              "既有行为，绝不因为探测失败把功能弄坏）",
+              [(_got_cn, _got_half, _got_none)],
+              expect_contain=[((_FU, _RU, _QO),
+                               ("(", ")", '"'),
+                               ("(", ")", '"'))])
+
+        # ---- 91.2b `_pair_char_for_key` 必须保持【纯函数】：不许自己去问 IME ----
+        _names91 = set(_MN91._pair_char_for_key.__code__.co_names)
+        check("91.2b `_pair_char_for_key` 保持【纯 VK -> 字符】："
+              "（a）返回的永远是**半角**；"
+              "（b）函数体里**不许**出现 `_ime_conversion_mode` / "
+              "`_pair_char_for_ime` —— 输入法状态只能在【决定接管之后】问一次，"
+              "否则每按一次 Shift 都要发个窗口消息",
+              [(_MN91._pair_char_for_key(0x39, True),
+                _MN91._pair_char_for_key(0x30, True),
+                _MN91._pair_char_for_key(0xDE, True),
+                ("_ime_conversion_mode" not in _names91
+                 and "_pair_char_for_ime" not in _names91))],
+              expect_contain=[(("(", ")", '"', True))])
+
+        # ---- 91.3 集成：insert_pair 收全角时插出来的就是全角 ----
+        # 列语义（显示列 vs 字符列）不是本节要验的东西，所以直接把它钉成
+        # "字符列"（§29 / §56 也是这么做的）：这样 caret_col 就是我写的字符列，
+        # 期望值才可复现。`ec <= len+1` 时被动判定本来就返回 None，
+        # 预置缓存就不会去动光标探测。
+        class _FCM91:
+            def __init__(self, lines):
+                self.lines = list(lines)
+                self.Name = "Module1"
+
+            def Lines(self, start, count):
+                return self.lines[start - 1]
+
+            def ReplaceLine(self, line_no, text):
+                self.lines[line_no - 1] = text
+
+            @property
+            def CountOfLines(self):
+                return len(self.lines)
+
+        class _FPane91:
+            def __init__(self, cm, col):
+                self.CodeModule = cm
+                self.sel = (1, col, 1, col)
+
+            def GetSelection(self):
+                return self.sel
+
+            def SetSelection(self, sl, sc, el, ec):
+                self.sel = (sl, sc, el, ec)
+
+        class _FVBE91:
+            def __init__(self, pane):
+                self.ActiveCodePane = pane
+
+        _sem91 = VB91._sem_cache.get("info")
+        VB91._sem_cache["info"] = ("char", 4, False)
+
+        def run91(line, caret_col, open_ch):
+            """跑一次 insert_pair，返回 (是否接管, 写回后的行, 光标列)。"""
+            cm = _FCM91([line])
+            pane = _FPane91(cm, caret_col)
+            _old_vbe = VB91._get_vbe
+            _old_gate = VB91._WINDOW_GATE_DISABLED
+            VB91._get_vbe = lambda: _FVBE91(pane)
+            VB91._WINDOW_GATE_DISABLED = True
+            VB91._vbe_cache["obj"] = None
+            VB91.com_reset()
+            try:
+                took = VB91.VbeBackend().insert_pair(open_ch)
+            finally:
+                VB91._get_vbe = _old_vbe
+                VB91._WINDOW_GATE_DISABLED = _old_gate
+            return bool(took), cm.lines[0], pane.sel[3]
+
+        try:
+            _c91 = (run91("    x = f", 10, _FU),          # 补出 （）
+                    run91("    x = f" + _FU + _RU, 11, _RU),   # 右边已有 -> 跨过去
+                    run91("    s = ", 9, _QO),            # 补出 “”
+                    run91("    s = " + _QO + _QC, 10, _QO),    # 引号跨过去
+                    run91("    s = " + _QO + "abc", 13, _QO),  # 串里 -> 只补收符号
+                    # 半角回归（老行为一个都不能变）
+                    run91("    x = f", 10, "("),
+                    run91("    x = f()", 11, ")"),
+                    # 反面：注释里 / Call 语句里一律不接管（交给输入法自己打）
+                    run91("    Rem " + _FU, 9, _FU),
+                    run91("    Call foo", 12, _FU))
+        finally:
+            VB91._sem_cache["info"] = _sem91
+        check("91.3 `insert_pair` 收全角开符号时插的就是全角："
+              "`（`->`（）` 且光标落在中间；`）` 右边已有则**跨过去**（不重复插）；"
+              "`“`->`“”`；串里敲 `“` 只补收符号 `”`；"
+              "注释里 / `Call` 语句里**依旧不接管**（原样交给输入法）；"
+              "半角路径逐条不变",
+              [_c91],
+              expect_contain=[(
+                  (True, "    x = f" + _FU + _RU, 11),
+                  (True, "    x = f" + _FU + _RU, 12),
+                  (True, "    s = " + _QO + _QC, 10),
+                  (True, "    s = " + _QO + _QC, 11),
+                  (True, "    s = " + _QO + "abc" + _QC, 14),
+                  (True, "    x = f()", 11),
+                  (True, "    x = f()", 12),
+                  (False, "    Rem " + _FU, 9),
+                  (False, "    Call foo", 12))])
+
+        # ---- 91.4 退格成对删除也要认全角那一对 ----
+        _ps91 = VB91.pair_delete_span
+        check("91.4 退格成对删除认全角：光标夹在 `（）` / `“”` 中间时，"
+              "一次退格把两端一起收掉（与半角 `()` / `\"\"` 同口径）；"
+              "中间有内容 / 左右不成对时**不接管**",
+              [(_ps91("f" + _FU + _RU, 3),
+                _ps91("s = " + _QO + _QC, 6),
+                _ps91("f()", 3),
+                _ps91("f" + _FU + "a" + _RU, 3),
+                _ps91("f" + _RU + _FU, 2))],
+              expect_contain=[((1, 2), (4, 5), (1, 2), None, None)])
+
+        # ---- 91.5 源码护栏：探测走的是"IME 窗口 + 消息"那条跨进程路 ----
+        _msrc91 = io.open(os.path.join(ROOT, "main.py"),
+                          encoding="utf-8").read()
+        _vsrc91 = io.open(os.path.join(ROOT, "vbe_bridge.py"),
+                          encoding="utf-8").read()
+        _i_def91 = _msrc91.find("def _ime_conversion_mode(")
+        _i_call91 = _msrc91.find("_pair_char_for_ime(_pair_ch)")
+        # ⚠️ 收符号表查**运行时**的字典，不查源码字符串：v108 第一版用
+        # `'"）": "）"' in 源码` 去钉它，结果**注释里那句说明就把它喂饱了**——
+        # 我故意把 `"）": "）"` 从表里删掉做 A/B，这条居然还是绿的（假绿）。
+        _pc91 = VB91.VbeBackend._PAIR_CLOSE
+        check("91.5 源码护栏："
+              "（a）`ImmGetContext` 跨进程拿不到 IME 上下文（实测返回 NULL），"
+              "所以探测必须走 `ImmGetDefaultIMEWnd` + `WM_IME_CONTROL`/"
+              "`IMC_GETCONVERSIONMODE`，并且用 `SendMessageTimeout` + "
+              "`SMTO_ABORTIFHUNG`（**钩子线程不能被卡死**，超时会被系统摘掉钩子）；"
+              "（b）常量取自 SDK 头文件：`IME_CMODE_SYMBOL = 0x0400`、"
+              "`IME_CMODE_FULLSHAPE = 0x0008`、`IME_CMODE_NATIVE = 0x0001`；"
+              "（c）钩子在**决定接管之后**才换算，且提供 `VBECOMPLETE_NO_IME_PUNCT=1` "
+              "强制回半角；"
+              "（d）收符号表里 `）` 必须**自己占一个键**"
+              "（少了它，「敲 `）` 跨过去」那条路根本走不到 —— 本轮真踩过）；"
+              "（e）`_pair_insertion` 的引号分支要把 `“` 与半角 `\"` 同等对待、"
+              "`insert_pair` 的「右边已有就跨过去」要把 `）` 与 `)` 同等对待",
+              [("ImmGetDefaultIMEWnd" in _msrc91
+                and "WM_IME_CONTROL = 0x0283" in _msrc91
+                and "IMC_GETCONVERSIONMODE = 0x0001" in _msrc91
+                and "SendMessageTimeoutW" in _msrc91
+                and "SMTO_ABORTIFHUNG" in _msrc91,
+                "IME_CMODE_SYMBOL = 0x0400" in _msrc91
+                and "IME_CMODE_FULLSHAPE = 0x0008" in _msrc91
+                and "IME_CMODE_NATIVE = 0x0001" in _msrc91,
+                "VBECOMPLETE_NO_IME_PUNCT" in _msrc91
+                and _i_def91 > 0 and _i_call91 > _i_def91,
+                (_pc91.get("（"), _pc91.get("）"), _pc91.get("“"),
+                 _pc91.get(")")),
+                'in (\'"\', "“")' in _vsrc91
+                and 'in (")", "）")' in _vsrc91)],
+              expect_contain=[(True, True, True,
+                               ("）", "）", "”", ")"), True)])
+    except Exception as _e91:
+        import traceback as _tp91
+        _tp91.print_exc()
+        check("第 91 节异常: %s" % _e91, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原

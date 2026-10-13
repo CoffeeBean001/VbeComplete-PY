@@ -50,7 +50,10 @@ autostart on login · `run_tests.bat` runs the offline regression suite.
 
 On accept a `Sub` gets a trailing space, a `Function` gets `()` with the caret inside **and the
 VBE's own parameter info pops up** (so you can see the signature while filling in the arguments),
-and a keyword gets a space. Suggested: your variables, constants and procedures, plus modules, forms
+and a keyword gets a space. Typing `(` / `"` auto-closes the pair (caret in the middle, never inside
+a comment); with a Chinese IME in full-width / Chinese-punctuation mode the Chinese pair `（）` / `“”`
+is inserted instead of being converted to ASCII. Suggested: your variables, constants and
+procedures, plus modules, forms
 and control names, keywords and built-in functions / types (≈260) — enums (`vb*` / `xl*` / `mso*`)
 are excluded. While you *declare* a new name (`Dim …`, `Sub …`) the list stays closed, exactly like
 IDEA; after `As` / `New` it still offers types.

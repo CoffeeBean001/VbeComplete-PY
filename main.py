@@ -237,8 +237,168 @@ def _is_line_nav_shortcut(vk, shift_down):
     return vk in NAV_VKS and bool(shift_down)
 
 
+# ---------------------------------------------------------------------------
+# ★v108：输入法状态 —— 「中文标点 / 全角」时不要替用户把标点"翻成"英文
+#
+# 用户报的 bug（原话）："我不能输入中文的双括号和中文双引号，一输入就会自动
+# 变成英文的双括号和英文双引号。"
+#
+# 根因：自动配对的判据只看【虚拟键 + Shift】，不看输入法状态。而中文输入法在
+# 「中文标点」下，Shift+9 打出来的是全角 `（`、Shift+' 是全角 `“` —— 我们却
+# 一律替它插半角 `()` / `""`，等于**把用户的中文标点翻译成了英文标点**。
+#
+# 常量取值全部抄自本机 Windows SDK 头文件（不是猜的）：
+#   um/imm.h:        IME_CMODE_NATIVE     0x0001   # 中文模式（NATIVE 同 CHINESE）
+#   um/ime_cmodes.h: IME_CMODE_FULLSHAPE  0x0008   # 全角
+#   um/imm.h:        IME_CMODE_SYMBOL     0x0400   # 中文标点
+#   um/winuser.h:    WM_IME_CONTROL       0x0283   # wParam 用 imm.h 的 IMC_* 常量
+#   um/imm.h:        SMTO_BLOCK 0x0001 / SMTO_ABORTIFHUNG 0x0002（winuser.h）
+# ⚠️ `IMC_GETCONVERSIONMODE`(0x0001) 在 immdev.h 里只给了它的 SET 版
+#   （IMC_SETCONVERSIONMODE 0x0002），GET 版是 0x0001 —— 与文档一致。
+# ⚠️ 0x0080 这一位两个头文件说法不同（imm.h 叫 SOFTKBD、ime_cmodes.h 叫
+#   NATIVESYMBOL），语义有歧义 ⇒ **刻意不用它**（免得把"软键盘开着"误判成中文标点）。
+#
+# ★本机实测（微软拼音，`py -3 tests/probe_ime_mode.py`，2026-10-13）：
+#   本进程新建窗口的 IME 上下文读到 0x0001（NATIVE，中文标点关）
+#   前台窗口（用户当时的状态）读到 **0x0401 = NATIVE | SYMBOL** —— 即
+#   **中文标点就是 IME_CMODE_SYMBOL(0x0400)**，FULLSHAPE 并没有跟着置位。
+#   `IME_CMODE_FULLSHAPE` 仍然一并认（全角时敲出来的同样是全角标点）。
+# ---------------------------------------------------------------------------
+WM_IME_CONTROL = 0x0283
+IMC_GETCONVERSIONMODE = 0x0001
+IME_CMODE_NATIVE = 0x0001
+IME_CMODE_FULLSHAPE = 0x0008
+IME_CMODE_SYMBOL = 0x0400
+SMTO_ABORTIFHUNG = 0x0002
+
+# 输入法处在"全角中文标点"时，半角配对字符该换成哪个开符号。
+# （收符号不在这里写：`(`->`（` 由 vbe_bridge._PAIR_CLOSE 给出 `）`，
+#  引号的收符号是 `”`。注意引号那个键**开收是同一个 vk**，所以映射表里
+#  只有开符号 `“`。）
+_CN_PAIR = {"(": "（", ")": "）", '"': "“"}
+
+# 想强制按半角处理（万一某个输入法报的状态不对）：
+#   set VBECOMPLETE_NO_IME_PUNCT=1
+try:
+    IME_PUNCT_AWARE = (
+        os.environ.get("VBECOMPLETE_NO_IME_PUNCT", "0").strip() != "1")
+except Exception:
+    IME_PUNCT_AWARE = True
+
+_IME_PROTO = {"ready": False}
+
+
+def _ime_protos():
+    """给这两个 Win32 调用设好原型（句柄是 64 位，restype 不设会被截断）。"""
+    if _IME_PROTO["ready"]:
+        return ctypes.windll.user32, ctypes.windll.imm32
+    u32 = ctypes.windll.user32
+    imm32 = ctypes.windll.imm32
+    imm32.ImmGetDefaultIMEWnd.restype = ctypes.c_void_p
+    imm32.ImmGetDefaultIMEWnd.argtypes = [ctypes.c_void_p]
+    u32.SendMessageTimeoutW.restype = ctypes.c_void_p
+    u32.SendMessageTimeoutW.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.c_uint, ctypes.c_uint, ctypes.POINTER(ctypes.c_size_t)]
+    _IME_PROTO["ready"] = True
+    return u32, imm32
+
+
+def _ime_conversion_mode(hwnd=None):
+    """问一次窗口所属输入法的「转换模式」；问不到返回 None。纯 Win32，不碰 COM。
+
+    为什么不用看起来更直接的 `ImmGetContext(hwnd)` + `ImmGetConversionStatus`：
+    **跨进程拿不到** —— v108 实测（探针 tests/probe_ime_mode.py）：对别的进程的
+    窗口调 ImmGetContext 一律返回 NULL（只有自己线程的窗口才有 IME 上下文）。
+    而"把 IME 窗口当普通窗口发消息"正是官方给的跨进程路子：
+    `ImmGetDefaultIMEWnd(hwnd)` 拿到该窗口的输入法窗口，再
+    `SendMessageTimeoutW(WM_IME_CONTROL, IMC_GETCONVERSIONMODE)` 问它。
+    同一份探针里这条路读到了真实值 0x0401，所以采用的是它。
+
+    ⚠️ 这个函数跑在**键盘钩子线程**里，所以：① 只调纯 Win32、绝不碰 COM；
+    ② 用 SendMessageTimeout 而不是 SendMessage —— 目标窗口若卡死，
+       `SMTO_ABORTIFHUNG` 会立刻返回，**绝不会把钩子线程钉死**
+       （低层键盘钩子超时会被系统悄悄摘掉，那是最坏的结果）。
+    问不到（没有 IME / API 失败 / 超时）一律返回 None，由调用方按半角处理
+    —— 拿不准就退回既有行为，不会因为探测失败把功能弄坏。
+    """
+    if not IME_PUNCT_AWARE:
+        return None
+    try:
+        u32, imm32 = _ime_protos()
+        h = int(hwnd or 0)
+        if not h:
+            try:
+                h = int(vbe_bridge._focused_hwnd_in_vbe() or 0)
+            except Exception:
+                h = 0
+        if not h and _gui is not None:
+            try:
+                h = int(_gui.GetForegroundWindow() or 0)
+            except Exception:
+                h = 0
+        if not h:
+            return None
+        ime_wnd = imm32.ImmGetDefaultIMEWnd(ctypes.c_void_p(h))
+        if not ime_wnd:
+            return None
+        res = ctypes.c_size_t(0)
+        got = u32.SendMessageTimeoutW(
+            ctypes.c_void_p(int(ime_wnd)), WM_IME_CONTROL,
+            IMC_GETCONVERSIONMODE, 0, SMTO_ABORTIFHUNG, 50,
+            ctypes.byref(res))
+        if not got:
+            return None
+        return int(res.value) & 0xFFFF
+    except Exception:
+        return None
+
+
+def _ime_fullwidth_punct(mode=None):
+    """输入法此刻敲出来的标点是不是【全角中文标点】。纯函数 + 一次探测。
+
+    判据两段（缺一不可）：
+      ① **必须在中文模式**（IME_CMODE_NATIVE）—— 英文模式下输入法本来就出
+         半角标点，哪怕「中文标点」这个开关还亮着也不能算（实测新建的 IME
+         上下文就是 0x0001：中文模式但中文标点关）。
+      ② 「中文标点」(IME_CMODE_SYMBOL) 或「全角」(IME_CMODE_FULLSHAPE) 亮着。
+    `mode` 只为便于单测传入；默认自己去探测。
+    """
+    m = _ime_conversion_mode() if mode is None else mode
+    if m is None:
+        return False
+    try:
+        m = int(m)
+    except Exception:
+        return False
+    return bool(m & IME_CMODE_NATIVE) and bool(
+        m & (IME_CMODE_SYMBOL | IME_CMODE_FULLSHAPE))
+
+
+def _pair_char_for_ime(pair_ch):
+    """半角配对字符 -> 输入法此刻真正会打出来的那一个。★v108。
+
+    只在**已经决定要接管这个键**的时候才问输入法（探测有系统调用，别在每次
+    按 Shift 时都做）。问不到 / 不是中文标点 -> 原样返回半角字符。
+    """
+    cn = _CN_PAIR.get(pair_ch)
+    if not cn:
+        return pair_ch
+    mode = _ime_conversion_mode()
+    ok = _ime_fullwidth_punct(mode) if mode is not None else False
+    if ok:
+        _log("autopair: 输入法=%s -> 用全角 %r" % (
+            ("0x%04X" % int(mode)), cn))
+        return cn
+    return pair_ch
+
+
 def _pair_char_for_key(vk, shift_down):
     """这个键敲出来的是不是需要自动配对的符号 —— 返回 '(' / '"' / None。
+
+    ⚠️ 这里返回的**一律是半角**：中文标点（全角）那一档由 `_pair_char_for_ime`
+    在接管前换算（见 v108 的说明）。这样本函数保持"纯 VK -> 字符"的纯粹性，
+    单测不用碰输入法。
 
     刻意去问系统「这个 vk 在当前键盘布局下的基础字符是什么」
     （MapVirtualKeyW），而不是写死 vk 常量：布局不同也不会配错。
@@ -988,6 +1148,11 @@ def main():
         的线程守卫）。按键此时已经被钩子吞掉了，所以这里必须收尾：
         写成功了最好；写不成（注释里 / 有选区 / COM 恰好抽风）就把这一下
         原样还给系统，让 VBE 按原生行为插入 —— 绝不丢用户的按键。
+
+        ★v108：`ch` 可能是**全角**（`（` / `“`）—— 输入法处在中文标点时
+        钩子已经换算过了（见 _pair_char_for_ime）。`send_char` 走
+        KEYEVENTF_UNICODE 注入，所以还按键时注入的也是同一个全角字符，
+        不会途中又被输入法翻回半角。
         """
         try:
             if backend.insert_pair(ch):
@@ -1208,10 +1373,18 @@ def main():
                     # 钩子线程里做是安全的），真正的写入丢给主线程。万一主
                     # 线程也写不进去，_auto_pair_here 会把这一下原样还给系统
                     # —— 依然不会"吞掉按键却什么都没发生"。
-                    action = (_auto_pair_here, (_pair_ch,))
+                    #
+                    # ★v108：**到这里才问输入法状态**（_pair_char_for_ime）。
+                    # 上面 _pair_char_for_key 给的永远是半角字符；中文标点 /
+                    # 全角时换成全角（`(`->`（`、`"`->`“`）——否则用户敲中文
+                    # 括号会被我们"翻译"成英文括号。问一次要发个窗口消息，
+                    # 所以刻意放在"已经确定要接管这个键"之后，别每次按 Shift
+                    # 都去问。
+                    _ime_ch = _pair_char_for_ime(_pair_ch)
+                    action = (_auto_pair_here, (_ime_ch,))
                     suppress = True
                     _log("autopair: 钩子接管 vk=0x%X -> %r"
-                         % (vk, _pair_ch))
+                         % (vk, _ime_ch))
                 elif completer.is_visible():
                     if not in_vbe_code_pane():
                         # 焦点已离开 VBE：收起弹窗，按键照常放行

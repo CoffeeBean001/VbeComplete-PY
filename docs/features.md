@@ -38,6 +38,9 @@
 **Editing helpers**
 
 - Auto-paired brackets and quotes (`(`, `[`, `"`, …), with the caret placed between the two halves.
+  Auto-pairing asks the IME for its conversion mode first: with a Chinese IME in **full-width /
+  Chinese-punctuation** mode it inserts the Chinese pair (`（` `）`, `“` `”`) instead of silently
+  converting what you typed to ASCII. `VBECOMPLETE_NO_IME_PUNCT=1` forces the half-width pair.
 - `Backspace` deletes both halves of an empty pair, and removes a whitespace-only line in one stroke.
 - `Enter` at end of line indents to the right depth, aligns `Else` / `ElseIf` / `Case`, and closes a
   block you just opened (`End Sub`, `Next i`, …).
@@ -97,6 +100,7 @@ Behaviour is tuned through environment variables (set them before launching):
 | `VBECOMPLETE_RECENT_MAX` | 64 | How many recently-used names are remembered. |
 | `VBECOMPLETE_NO_YIELD` | off | `1` disables yielding to the VBE's native member list. |
 | `VBECOMPLETE_NO_AUTOPAIR` | off | `1` disables auto-pairing. |
+| `VBECOMPLETE_NO_IME_PUNCT` | off | `1` always pairs with half-width `()` / `""`, even when the IME is in Chinese-punctuation / full-width mode. |
 | `VBECOMPLETE_NO_BS_DELLINE` / `VBECOMPLETE_NO_BS_DELPAIR` | off | `1` disables the two `Backspace` helpers. |
 | `VBECOMPLETE_NO_ENTER_INDENT` / `VBECOMPLETE_NO_AUTOCLOSE` | off | `1` disables `Enter`-time indentation / automatic block closers. |
 
@@ -111,7 +115,7 @@ Behaviour is tuned through environment variables (set them before launching):
 | `vba_builtins.py` | VBA built-in vocabulary (functions, types, keywords, enums) |
 | `ui.py` | The floating popup (tkinter) and its screen-avoidance logic |
 | `log.py` | Optional diagnostic log (off by default, zero overhead) |
-| `tests/` | Regression suite |
+| `tests/` | Regression suite (`test_real_project.py`) and the sample project it runs against; `tests/probe_ime_mode.py` is a one-shot probe that prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified). |
 
 ## Credits
 
