@@ -748,7 +748,7 @@ def in_vbe_code_pane(closing=None):
 
     ★v109：**读标题之前必须先问"这个窗口还响应吗"**（closing 探针，200ms 封顶）。
 
-    踩过的坑（2026-10-14 实测，探针 `.workbuddy/tools/probe_hook_gate2.py`）：
+    踩过的坑（2026-10-14 实测，探针 `tests/probe_hook_gate.py`）：
     `GetWindowText` 是【跨线程同步调用】—— 前台窗口的主线程正忙时（典型场景：
     用户关 PyCharm，它的主线程在拆窗口、写设置，好几秒不理会消息），这一行会把
     **我们自己的主线程堵住 1.5 秒以上**（实测 1.484s；窗口彻底卡死时更久），
@@ -1706,7 +1706,7 @@ def main():
         # ★v109：closing 探针【提前到最前面算一次】，然后两处复用：
         #   ① in_vbe_code_pane(closing=...) —— 前台不响应时压根不读标题
         #      （GetWindowText 是跨线程同步调用，会把主线程堵 1.5 秒以上，
-        #       实测见 .workbuddy/tools/probe_hook_gate2.py）；
+        #       实测见 tests/probe_hook_gate.py）；
         #   ② _reconcile_resources(closing=...) —— v28 原有的"退出中不挂钩"。
         # 原先 closing 是在本函数中后段才算的，那时候标题早就读完了，
         # 挡不住那次阻塞。

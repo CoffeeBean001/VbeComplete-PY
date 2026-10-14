@@ -123,7 +123,7 @@ Behaviour is tuned through environment variables (set them before launching):
 | `vba_builtins.py` | VBA built-in vocabulary (functions, types, keywords, enums) |
 | `ui.py` | The floating popup (tkinter) and its screen-avoidance logic |
 | `log.py` | Optional diagnostic log (off by default, zero overhead) |
-| `tests/` | Regression suite (`test_real_project.py`) and the sample project it runs against; `tests/probe_ime_mode.py` is a one-shot probe that prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified). |
+| `tests/` | Regression suite (`test_real_project.py`) and the sample project it runs against. Two one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), and `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread. |
 
 ## Credits
 

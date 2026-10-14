@@ -1255,7 +1255,7 @@
 > （`in_vbe_code_pane` / `reconcile`）手里往往已经拿到了前台句柄，传进来就省得再
 > `GetForegroundWindow` 一次；不传时行为与从前完全一致。
 
-复现与验证手段（都在仓库里）：`.workbuddy/tools/probe_hook_gate2.py` —— 跑**真实的**
+复现与验证手段（随仓库发布）：`tests/probe_hook_gate.py` —— 跑**真实的**
 `main.py` + **真实的** pynput 钩子，用假窗口真实切换前台，其中一个假窗口可以进入
 "wndproc 里睡 N 秒"的卡死模式。它同时给出了两个关键数据：
 `SendMessageTimeout(200ms)` 对**同线程**窗口会**等满**对方处理完才返回（超时形同虚设），
@@ -1376,7 +1376,7 @@ IDEA 的这些能力**都建立在一个前提上：IDE 手里有整个工程的
 | `requirements.txt`                                              | 依赖（`pywin32` / `pynput`）             |
 | `run.bat` / `stop.bat` / `stop.ps1`                             | 启停                                   |
 | `install_autostart.ps1` / `uninstall_autostart.ps1`（及对应 `.bat`） | 开机自启的安装与卸载                           |
-| `tests/` + `run_tests.bat`                                      | **回归测试**（985 条），见下                   |
+| `tests/` + `run_tests.bat`                                      | **回归测试**（1012 条），见下；另有两个手工探针：`probe_ime_mode.py`（问输入法转换模式）、`probe_hook_gate.py`（实证钩子门控 / 前台窗口卡死对主线程的影响） |
 
 ## 附：跑回归测试与 log.py 说明（原文）
 
