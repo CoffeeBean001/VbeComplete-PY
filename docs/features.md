@@ -52,6 +52,14 @@
 - After `object.`, VbeComplete steps aside and lets the VBE's own, type-aware member list take over.
 - Global hooks are attached **only while a VBE code pane has focus**, so the tool is essentially
   invisible (and free) the rest of the time.
+- **Closing other IDEs stays fast.** Reading the foreground window's title used to call
+  `GetWindowText`, a *cross-thread synchronous* call: while another program is shutting down
+  (PyCharm / VSCode tearing their windows down), that one line stalled our own main thread for
+  1.5 s or more, which in turn stalled the loop that detaches the global hooks — so the hooks
+  stayed on top of the dying process and its exit hung (a regression of the v27–v29 fix).
+  The title is now read **only after** a cheap, 200 ms-capped "is this window still responding?"
+  probe, and the loop itself is wrapped so that no exception can ever stop it. Measured on the
+  same scenario: main-thread stall **1.484 s → 0.000 s**, hook detach **5 s+ → 0.26 s**.
 
 ## How it compares to IntelliJ IDEA
 

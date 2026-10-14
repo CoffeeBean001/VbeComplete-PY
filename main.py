@@ -739,17 +739,38 @@ def acquire_single_instance():
         return True
 
 
-def in_vbe_code_pane():
+def in_vbe_code_pane(closing=None):
     """判断当前前台窗口是否是 VBE（粗判据：只看前台窗口标题）。
 
     只用于「要不要挂系统级钩子」这个粗粒度决定：属性窗口 / 工程窗口 / 设计器
     也都是 VBE 主窗口的子窗口，它们在这里一律返回 True（挂上钩子是安全的，
     因为真正会动代码的动作另有 in_vbe_code_area 把关）。
+
+    ★v109：**读标题之前必须先问"这个窗口还响应吗"**（closing 探针，200ms 封顶）。
+
+    踩过的坑（2026-10-14 实测，探针 `.workbuddy/tools/probe_hook_gate2.py`）：
+    `GetWindowText` 是【跨线程同步调用】—— 前台窗口的主线程正忙时（典型场景：
+    用户关 PyCharm，它的主线程在拆窗口、写设置，好几秒不理会消息），这一行会把
+    **我们自己的主线程堵住 1.5 秒以上**（实测 1.484s；窗口彻底卡死时更久），
+    而主线程一堵，`reconcile` 就跑不了 ⇒「焦点离开 VBE 立刻卸载全局钩子」被拖住
+    ⇒ WH_KEYBOARD_LL / WH_MOUSE_LL 继续挂在人家退出流程上 ⇒ 正是 v27 修过的
+    「PyCharm / VSCode 关不掉 / 卡死」。
+    前台不响应时直接判"不是 VBE"：一台不响应的机器，钩子挂上去也没有意义
+    （v28 的 closing 判据本来就是"无响应就不挂钩"这个口径，这里只是把它从
+    "决定挂不挂"挪到了"读标题之前"，顺带把阻塞消掉）。
+
+    closing：调用方（reconcile）本轮已经探过的结果就传进来，避免同一轮探两次。
     """
     if _gui is None:
         return False
     try:
         hwnd = _gui.GetForegroundWindow()
+        if not hwnd or not _gui.IsWindow(hwnd):
+            return False
+        if closing is None:
+            closing = foreground_window_closing(hwnd)
+        if closing:
+            return False          # 不读标题：GetWindowText 会把主线程堵死
         title = _gui.GetWindowText(hwnd)
         return "Microsoft Visual Basic" in title
     except Exception:
@@ -802,7 +823,7 @@ def vbe_focus_class():
         return None
 
 
-def foreground_window_closing():
+def foreground_window_closing(hwnd=None):
     """检测当前前台窗口是否正在关闭 / 已无响应。
 
     关闭 VSCode / PyCharm 等 IDE 时，其主窗口在退出过程中（保存提示、
@@ -819,12 +840,17 @@ def foreground_window_closing():
       - 前台无有效窗口（已关完、回到桌面）也视为"无有效前台"，不挂载；
       - 前台是正常 VBE 代码窗时必然响应正常 -> 返回 False，不误伤；
       - 拿不到窗口 API 时退化返回 False（保持原可用行为）。
+
+    ★v109：hwnd 参数 —— 调用方（in_vbe_code_pane / reconcile）手里往往已经
+    拿到了前台句柄，传进来就省得再 GetForegroundWindow 一次。传 None 时
+    行为与从前完全一致（自己取前台）。
     """
     if _gui is None:
         return False
     try:
         import ctypes
-        hwnd = _gui.GetForegroundWindow()
+        if hwnd is None:
+            hwnd = _gui.GetForegroundWindow()
         if not hwnd or not _gui.IsWindow(hwnd):
             return True      # 前台无有效窗口 -> 不挂载
         user32 = ctypes.windll.user32
@@ -866,6 +892,26 @@ def _reconcile_resources(focused, released, backoff, last_focus_time, now, grace
         or (not focused and (now - last_focus_time) > grace)
     )
     return mount_hooks, release_com
+
+
+def _safe_tick(fn, tag="tick"):
+    """跑一轮周期任务 fn()；异常一律吞掉，绝不外抛。★v109
+
+    为什么需要它：`reconcile` 是「焦点驱动卸载全局钩子」的**唯一**循环
+    （`root.after(300, reconcile)` 自己排自己）。它一旦在某轮里抛异常死掉，
+    钩子就永远卸不下来 —— 全局 WH_KEYBOARD_LL / WH_MOUSE_LL 常驻不撤，
+    别的程序退出就会被拖住（v27 的「PyCharm / VSCode 关不掉」正是这么来的，
+    且比"晚 600ms 卸载"严重得多：那是**永久**挂着，重启工具才好）。
+    原先 reconcile 只有开头那一行有 try/except，中后段（completer.is_visible()、
+    popup.is_busy() / mouse_inside()、backend.release() …）全是裸调用 ——
+    任何一处抛异常，这一轮就再也排不上下一次。
+
+    tag：只进诊断日志（VBECOMPLETE_LOG=1 时），用来区分是哪个循环炸了。
+    """
+    try:
+        fn()
+    except Exception as _e:
+        _log("%s: 本轮异常 %r（已吞掉，循环继续）" % (tag, _e))
 
 
 def _poll_mod_switch(last, snap):
@@ -1643,16 +1689,30 @@ def main():
                 pass
         state[key] = None
 
-    def reconcile():
-        """焦点驱动：仅当 VBE 代码窗是前台窗口时才挂键盘/鼠标全局钩子。
+    def _reconcile_once():
+        """reconcile 的【单轮】实现（★v109 从 reconcile 里拆出来）。
 
-        之前一直挂着 WH_KEYBOARD_LL 全局钩子，会干扰 PyCharm 等程序（导致
-        PyCharm 关不掉）。改为：在 VBE 里才挂载钩子；切到其它程序（PyCharm 等）
-        立刻卸载钩子，并收起弹窗、释放 COM 资源。这样既消除冲突，又让“打开 VBE
-        自动生效”成为可能（工具常驻，进 VBE 自动挂载）。
+        设计前提（v27 立下的规矩，别改）：**全局钩子只在 VBE 里才挂**。之前一直
+        挂着 WH_KEYBOARD_LL，会干扰 PyCharm 等程序（导致 PyCharm 关不掉）；改为
+        在 VBE 里才挂载，切到其它程序（PyCharm 等）立刻卸载，并收起弹窗、按宽限
+        释放 COM 资源。这样既消除冲突，又让"打开 VBE 自动生效"成为可能
+        （工具常驻，进 VBE 自动挂载）。
+
+        拆出去的原因：外壳 `reconcile()` 要用 `_safe_tick` 把每一轮包住，
+        保证这一轮无论抛什么异常，300ms 循环都照样排得上下一次 ——
+        否则钩子一旦卸不掉，就是**永久**挂在别的程序退出流程上
+        （v27「PyCharm 关不掉」的永久版，比晚 600ms 卸载严重得多）。
         """
+        # ★v109：closing 探针【提前到最前面算一次】，然后两处复用：
+        #   ① in_vbe_code_pane(closing=...) —— 前台不响应时压根不读标题
+        #      （GetWindowText 是跨线程同步调用，会把主线程堵 1.5 秒以上，
+        #       实测见 .workbuddy/tools/probe_hook_gate2.py）；
+        #   ② _reconcile_resources(closing=...) —— v28 原有的"退出中不挂钩"。
+        # 原先 closing 是在本函数中后段才算的，那时候标题早就读完了，
+        # 挡不住那次阻塞。
+        closing = foreground_window_closing()
         try:
-            raw_focused = in_vbe_code_pane()
+            raw_focused = in_vbe_code_pane(closing=closing)
         except Exception:
             raw_focused = False
         # 若拿不到窗口 API，退化成“始终挂载”（保持可用，但会失去冲突修复）
@@ -1728,7 +1788,7 @@ def main():
         # 额外保险：即便焦点去抖仍维持"在 VBE"，只要检测到前台窗口正在关闭
         # （正在退出的 IDE），也强制不挂钩。否则关闭 PyCharm/VSCode 时，焦点
         # 离开 VBE 的去抖窗口（约 600ms）内钩子仍挂着，IDE 退出会被挡死。
-        closing = foreground_window_closing()
+        # （★v109：closing 在本函数开头就算好了，这里直接用，不再探第二次。）
         # 钩子抑制冷却期：刚因“别的程序关掉”而落回 VBE 时，压住钩子挂载，
         # 等那个进程彻底退出再恢复（见上文进入 VBE 时设 hook_suppress_until）。
         hook_suppressed = bool(state.get("hook_suppress_until", 0.0) > time.time())
@@ -1760,6 +1820,16 @@ def main():
             if release_com:
                 state["released"] = True
                 backend.release()
+
+    def reconcile():
+        """焦点驱动的资源循环（每 300ms 一轮）：挂/卸全局钩子、收弹窗、放 COM。
+
+        ★v109：本函数只做两件事 —— 用 `_safe_tick` 跑一轮 `_reconcile_once()`
+        （这一轮里任何异常都被吃掉，不外抛），然后**无条件**排下一次。
+        "无条件"是重点：这个循环是「离开 VBE 就卸载全局钩子」的唯一执行者，
+        它停摆一次，钩子就可能一直挂在别的程序退出流程上（v27 的老坑）。
+        """
+        _safe_tick(_reconcile_once, tag="reconcile")
         root.after(300, reconcile)
 
     def poll_editor():

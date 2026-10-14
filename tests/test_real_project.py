@@ -214,10 +214,16 @@ def main():
         _LEAK_WATCH = []
     # ★v108：§91 会临时把 `main._ime_conversion_mode` 换成桩来钉"问不到"那一档，
     # 同样纳入自查（单独 try：`import main` 万一失败不该把整张表变成空表）。
+    # ★v109：§92 会临时换 `main._gui`（假 win32gui）和
+    # `main.foreground_window_closing`（可调 closing 桩）—— 忘还原会让后面每一节
+    # 的焦点判读都落在假对象上，同样必须纳管。
     try:
         import main as _mn0
         _LEAK_WATCH.append((_mn0, "_ime_conversion_mode",
                             _mn0._ime_conversion_mode))
+        _LEAK_WATCH.append((_mn0, "_gui", _mn0._gui))
+        _LEAK_WATCH.append((_mn0, "foreground_window_closing",
+                            _mn0.foreground_window_closing))
     except Exception:
         pass
 
@@ -16537,6 +16543,246 @@ def main():
         import traceback as _tp91
         _tp91.print_exc()
         check("第 91 节异常: %s" % _e91, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
+    # 92. ★v109：开着 VbeComplete 时 PyCharm 项目关不掉（v27 的老坑又犯了）
+    #
+    #     用户报（原话）："以前改掉了，但是现在又犯了。就是打开这个项目以后，
+    #     pycharm 里的项目不能关闭，他俩冲突了。"
+    #
+    #     根因（2026-10-14 实测，探针 .workbuddy/tools/probe_hook_gate2.py）：
+    #     `in_vbe_code_pane()` 用 `GetWindowText(前台窗口)` 读标题，而它是
+    #     【跨线程同步调用】—— 前台窗口的主线程正忙时（用户关 PyCharm，它的主线程
+    #     在拆窗口、写设置，好几秒不理会消息），这一行会把【我们自己的主线程】
+    #     堵住 1.5 秒以上（实测 1.484s；窗口彻底卡死时更久）。
+    #     主线程一堵，`reconcile` 就跑不了 ⇒「焦点离开 VBE 立刻卸载全局钩子」
+    #     被拖住 ⇒ WH_KEYBOARD_LL / WH_MOUSE_LL 继续挂在人家退出流程上
+    #     ⇒ 正是 v27 修过的「PyCharm / VSCode 关不掉 / 卡死」。
+    #     另外 reconcile 只有开头一行有 try/except，中后段的裸调用一旦抛异常，
+    #     300ms 循环就永久停摆 —— 钩子永远卸不掉（比"晚卸载"严重得多）。
+    #
+    #     修法（两层）：
+    #       ① 读标题【之前】先问"这个窗口还响应吗"（closing 探针 200ms 封顶），
+    #          不响应就判"不是 VBE"，压根不碰 GetWindowText；
+    #       ② reconcile 拆成"外壳（_safe_tick + 无条件重排）+ 单轮实现"，
+    #          单轮里任何异常都吃不掉循环本身。
+    # ------------------------------------------------------------------
+    print("\n=== 92. ★v109：前台窗口忙时不许堵住主线程（PyCharm 关不掉）===")
+    try:
+        import main as _MN92
+        import ast as _ast92
+
+        # ---- 92.1 in_vbe_code_pane 的门控矩阵 ----
+        class _FakeGui92:
+            """假 win32gui：把每一次 GetWindowText / GetForegroundWindow 都记下来。"""
+
+            def __init__(self, fg=1001, alive=True,
+                         title="Microsoft Visual Basic - 探针"):
+                self.fg = fg
+                self.alive = alive
+                self.title = title
+                self.text_calls = []       # 被读过标题的 hwnd
+                self.fg_calls = 0
+
+            def GetForegroundWindow(self):
+                self.fg_calls += 1
+                return self.fg
+
+            def IsWindow(self, hwnd):
+                return bool(self.alive)
+
+            def GetWindowText(self, hwnd):
+                self.text_calls.append(hwnd)
+                return self.title
+
+        _old_gui92 = _MN92._gui
+        _old_clo92 = _MN92.foreground_window_closing
+        try:
+            def _mk92(closing, fg=1001, alive=True,
+                      title="Microsoft Visual Basic - 探针"):
+                """装好假 _gui + 可调 closing 桩；返回 (gui, 探针调用记录表)。"""
+                g = _FakeGui92(fg=fg, alive=alive, title=title)
+                _MN92._gui = g
+                seen = []
+
+                def _stub(hwnd=None):
+                    seen.append(hwnd)
+                    return closing
+
+                _MN92.foreground_window_closing = _stub
+                return g, seen
+
+            # (a) ★核心回归：前台【不响应】时，哪怕标题明明含 VBE 也必须判 False，
+            #     而且【一次标题都不许读】—— 读标题就是把主线程堵死的那一步。
+            g, seen = _mk92(True)
+            _r_a = _MN92.in_vbe_code_pane()
+            # (b) 响应 + 标题含 VBE -> True（老行为不能变）
+            g, _ = _mk92(False)
+            _r_b = _MN92.in_vbe_code_pane()
+            # (c) 响应 + 标题不含 VBA -> False
+            g, _ = _mk92(False, title="探针代码 - PyCharm (Probe)")
+            _r_c = _MN92.in_vbe_code_pane()
+            # (d) 显式传 closing=False -> 不调探针（同一轮不探两次），照常读标题
+            g, seen = _mk92(False)
+            _r_d = _MN92.in_vbe_code_pane(closing=False)
+            # (e) 显式传 closing=True -> 不调探针、不读标题
+            g, seen = _mk92(False)
+            _r_e = _MN92.in_vbe_code_pane(closing=True)
+            # (f) 前台句柄为空 -> False，不读标题
+            g, _ = _mk92(False, fg=0)
+            _r_f = _MN92.in_vbe_code_pane()
+            # (g) 窗口已销毁 -> False，不读标题
+            g, _ = _mk92(False, alive=False)
+            _r_g = _MN92.in_vbe_code_pane()
+            # (h) 拿不到窗口 API -> False（老兜底）
+            _MN92._gui = None
+            _r_h = _MN92.in_vbe_code_pane()
+            # (i) 读标题本身抛异常 -> False（老兜底不能丢）
+            g, _ = _mk92(False)
+
+            def _boom(_hwnd):
+                raise RuntimeError("GetWindowText 炸了")
+
+            g.GetWindowText = _boom
+            _r_i = _MN92.in_vbe_code_pane()
+        finally:
+            _MN92._gui = _old_gui92
+            _MN92.foreground_window_closing = _old_clo92
+        check("92.1 `main.in_vbe_code_pane`：前台窗口【不响应】时直接判 False，"
+              "**一次标题都不读**（GetWindowText 是跨线程同步调用，会把主线程堵"
+              " 1.5 秒以上，reconcile 因此停摆、全局钩子卸不掉 —— PyCharm 关不掉"
+              " 的根因）；响应时才读标题；句柄空 / 窗口已毁 / 拿不到 API / 读标题"
+              " 抛异常，一律 False（老兜底不变）",
+              [(_r_a, _r_b, _r_c, _r_d, _r_e, _r_f, _r_g, _r_h, _r_i)],
+              expect_contain=[(False, True, False,
+                               True, False, False, False, False, False)])
+
+        # ---- 92.1b 核心回归的"另一半"：那些不许读标题的分支，真的没读过 ----
+        _old_gui92 = _MN92._gui
+        _old_clo92 = _MN92.foreground_window_closing
+        try:
+            def _texts92(closing, **kw):
+                g, seen = _mk92(closing, **kw)
+                r = _MN92.in_vbe_code_pane()
+                return r, list(g.text_calls), list(seen), g.fg_calls
+
+            _t_a = _texts92(True)                 # 不响应：不读标题、探过 1 次
+            _t_d = _texts92(False)                # 响应：读标题、探过 1 次
+            g, seen = _mk92(False)
+            _r_d2 = _MN92.in_vbe_code_pane(closing=False)   # 显式传入：不探
+            _t_e = (_r_d2, list(g.text_calls), list(seen), g.fg_calls)
+        finally:
+            _MN92._gui = _old_gui92
+            _MN92.foreground_window_closing = _old_clo92
+        check("92.1b 「不响应就不读标题」落到调用记录上："
+              "（a）closing=True -> GetWindowText 零次、closing 探针 1 次且带的是"
+              "前台句柄；"
+              "（b）closing=False -> 读标题 1 次；"
+              "（c）显式传 closing=False -> 探针零次（同一轮绝不探两次）",
+              [(_t_a, _t_d, _t_e)],
+              expect_contain=[((False, [], [1001], 1),
+                               (True, [1001], [1001], 1),
+                               (True, [1001], [], 1))])
+
+        # ---- 92.2 foreground_window_closing(hwnd=...)：复用已取到的句柄 ----
+        _old_gui92 = _MN92._gui
+        try:
+            g = _FakeGui92()
+            _MN92._gui = g
+            _c_pass = _MN92.foreground_window_closing(hwnd=4242)  # 不该自己取前台
+            _n_pass = g.fg_calls
+            _c_none = _MN92.foreground_window_closing()           # 不传就自己取
+            _n_none = g.fg_calls
+        finally:
+            _MN92._gui = _old_gui92
+        check("92.2 `foreground_window_closing(hwnd=None)`：传了句柄就【不再】"
+              "自己 GetForegroundWindow（调用方手里往往已经有了，省一次系统调用）；"
+              "不传时行为与从前一致（自己取前台）",
+              [(_n_pass, _n_none, _c_pass is not None, _c_none is not None)],
+              expect_contain=[(0, 1, True, True)])
+
+        # ---- 92.3 _safe_tick：周期任务的壳，异常绝不外抛 ----
+        def _boom92():
+            raise ValueError("boom")
+
+        _hits92 = []
+        _raised92 = None
+        try:
+            _MN92._safe_tick(lambda: _hits92.append(1))
+            _MN92._safe_tick(_boom92, tag="reconcile")
+            _MN92._safe_tick(lambda: 1 / 0)
+        except Exception as _e92:
+            _raised92 = repr(_e92)
+        check("92.3 `main._safe_tick`：正常调用照常执行；body 抛异常时【绝不外抛】"
+              "（reconcile 是「离开 VBE 就卸载全局钩子」的唯一循环，它一死钩子就"
+              "永久挂在别的程序退出流程上 —— 比晚 600ms 卸载严重得多）",
+              [(_hits92, _raised92)], expect_contain=[([1], None)])
+
+        # ---- 92.4 AST 结构护栏：外壳无条件重排 + closing 提前 ----
+        _src92 = io.open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+        _tree92 = _ast92.parse(_src92)
+        _mainf92 = [n for n in _tree92.body
+                    if isinstance(n, _ast92.FunctionDef)
+                    and n.name == "main"][0]
+
+        def _fn92(name):
+            return [n for n in _mainf92.body
+                    if isinstance(n, _ast92.FunctionDef)
+                    and n.name == name][0]
+
+        _recon92 = _fn92("reconcile")
+        _once92 = _fn92("_reconcile_once")
+        # (a) 外壳先用 _safe_tick 包住单轮
+        _a92 = any(
+            isinstance(n, _ast92.Call)
+            and isinstance(n.func, _ast92.Name) and n.func.id == "_safe_tick"
+            for s in _recon92.body for n in _ast92.walk(s))
+        # (b) 外壳【顶层语句】里就有 root.after(300, reconcile)——
+        #     不在 if / try 里，即"无条件重排"（单轮炸了也排得上下一次）
+        _b92 = False
+        for s in _recon92.body:
+            if isinstance(s, _ast92.Expr) and isinstance(s.value, _ast92.Call) \
+                    and isinstance(s.value.func, _ast92.Attribute) \
+                    and s.value.func.attr == "after":
+                _args = s.value.args
+                if any(isinstance(x, _ast92.Constant) and x.value == 300
+                       for x in _args) \
+                        and any(isinstance(x, _ast92.Name) and x.id == "reconcile"
+                                for x in _args):
+                    _b92 = True
+        # (c) 单轮里 closing 的赋值必须早于 in_vbe_code_pane 调用
+        #     （晚了就挡不住 GetWindowText 那次阻塞）
+        _dumps92 = [_ast92.dump(s) for s in _once92.body]
+        _i_close92 = next(i for i, d in enumerate(_dumps92)
+                          if "foreground_window_closing" in d)
+        _i_read92 = next(i for i, d in enumerate(_dumps92)
+                         if "in_vbe_code_pane" in d)
+        # (d) in_vbe_code_pane / _reconcile_resources 两个调用都带 closing 关键字
+        _kw92 = {"in_vbe_code_pane": False, "_reconcile_resources": False}
+        for s in _once92.body:
+            for n in _ast92.walk(s):
+                if isinstance(n, _ast92.Call) \
+                        and isinstance(n.func, _ast92.Name) \
+                        and n.func.id in _kw92:
+                    if any(k.arg == "closing" for k in n.keywords):
+                        _kw92[n.func.id] = True
+        # (e) 单轮实现里【不许】再自己 root.after（否则外壳会重复排循环）
+        _e92 = not any(
+            isinstance(n, _ast92.Attribute) and n.attr == "after"
+            for s in _once92.body for n in _ast92.walk(s))
+        check("92.4 结构护栏（AST，不靠源码字符串——注释会把字符串护栏喂饱）："
+              "（a）外壳用 _safe_tick 包住单轮；"
+              "（b）root.after(300, reconcile) 是外壳的【顶层语句】（无条件重排）；"
+              "（c）closing 探针的赋值早于 in_vbe_code_pane 调用；"
+              "（d）两处调用都显式传 closing（同一轮绝不探两次）；"
+              "（e）单轮实现里不再自己重排（避免双排）",
+              [(_a92, _b92, _i_close92 < _i_read92,
+                _kw92["in_vbe_code_pane"], _kw92["_reconcile_resources"], _e92)],
+              expect_contain=[(True, True, True, True, True, True)])
+    except Exception as _e92:
+        import traceback as _tp92
+        _tp92.print_exc()
+        check("第 92 节异常: %s" % _e92, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原
