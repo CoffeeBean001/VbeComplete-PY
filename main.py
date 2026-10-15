@@ -230,41 +230,6 @@ def send_quick_info():
         return False
 
 
-def send_tab():
-    """替用户按一下 **Tab** —— VBE 自己的缩进键（带 smart indent）。
-
-    ★v110b。用途：Ctrl+↓ 跳到过程收尾区的空行、落点是顶格/真空行、光标
-    已经就位之后，把光标推到过程体该在的层级。用户口径（原话）："ctrl+↓
-    跳到结尾空行，能不能再加个 tab 补位？"
-
-    为什么不自己算缩进写进去、而是"替用户按一下"：VBE 的 Tab 会按它自己
-    的 smart indent 设置把光标推到正确层级，Tab 宽度 / 空格还是制表符 /
-    缩进几级全都跟着用户的 VBE 选项走 —— 我们手上只有纯文本，重算一遍
-    既费事又不可能比它准（与 v107c 的 Ctrl+Shift+I 同一条理）。
-    注入前会先确认目标行还是顶格的（判据在 vbe_bridge.v110_end_jump_plan），
-    所以不存在"把用户摆好的缩进又加深一级"的问题。
-
-    注入的事件带 LLKHF_INJECTED，钩子会放行（v57 的规矩），不会自己截自己。
-    返回是否发送成功；调用方（`vbe_bridge.VbeBackend.ctrl_nav_jump`）拿不到
-    就算了 —— **Tab 补不出来绝不影响跳转本身**。
-    """
-    try:
-        evts = (_INPUT * 2)()
-        for i, flags in enumerate((0, KEYEVENTF_KEYUP)):
-            e = evts[i]
-            e.type = INPUT_KEYBOARD
-            e.u.ki.wVk = VK_TAB
-            e.u.ki.wScan = 0
-            e.u.ki.dwFlags = flags
-            e.u.ki.time = 0
-            e.u.ki.dwExtraInfo = 0
-        n = ctypes.windll.user32.SendInput(
-            2, ctypes.byref(evts), ctypes.sizeof(_INPUT))
-        return int(n) == 2
-    except Exception:
-        return False
-
-
 def _is_newline_shortcut(vk, shift_down):
     """Shift+Enter 是否应触发"在当前行下方新起一行"（纯判断，便于单测）。
 
@@ -1053,8 +1018,7 @@ def main():
         root = tk.Tk()
         root.withdraw()
         backend = VbeBackend(send_char=send_char,
-                             send_quick_info=send_quick_info,
-                             send_tab=send_tab)
+                             send_quick_info=send_quick_info)
         popup = Popup(root)
         # 滚动窗口行数以 UI 为准（两边必须是同一个数，否则窗口会露出半行）
         completer = engine.Completer(backend, popup, view_rows=MAX_VISIBLE_ROWS)
@@ -1301,9 +1265,9 @@ def main():
         快照是轮询刷的，不作废的话随后一次轮询会拿旧行文本去比对，平白多弹
         一次候选窗（与 _delete_blank_line_here 同一条规矩）。
 
-        ★v110b：落点是顶格/真空行时，后端会在光标就位之后调 `send_tab` 替用户
-        按一下 Tab（VBE 自己的 smart indent 推到过程体层级）。注入失败/开关关着
-        都不影响本函数的成败判定 —— 光标落好就算成功。
+        ★v110b：落点是顶格/真空行时，后端会把那一行**直接写成过程体层级的
+        缩进**（照 Ctrl+↑ 抄 Dim 行缩进的办法）。缩进补不出来（开关关着）不影响
+        本函数的成败判定 —— 光标落好就算成功。
         """
         try:
             completer.hide()

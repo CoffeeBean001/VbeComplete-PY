@@ -226,7 +226,7 @@ AUTO_PARAM_INFO = not _env_flag("VBECOMPLETE_NO_PARAM_INFO", False)
 #   Ctrl+↑：跳到本过程最后一个 `Dim` 语句【下面】那一行 —— 不是空白就照 Dim
 #           行的缩进补一行空白，光标落在上面；
 #   Ctrl+↓：跳到本过程 `End Sub` / `End Function` / `End Property` 行【上面】
-#           那一行 —— 不是空白就照收尾行的缩进补一行空白。
+#           那一行 —— 不是空白就补一行空白，缩进照"过程体层级"。
 # 用户口径（原话）："当我按 ctrl+↑，光标会自动定位到当前过程中最后一个 dim
 # 关键字行，如果此行的下一行不是空行，就自动在此行下方新增一行，光标移动到
 # 下方空白行；如果此行的下一行是空白行，就不用新增行，光标移动到下方空白行
@@ -241,18 +241,22 @@ AUTO_PARAM_INFO = not _env_flag("VBECOMPLETE_NO_PARAM_INFO", False)
 # 写不成就把这一下按键原样还给系统。想关掉：`set VBECOMPLETE_NO_CTRL_NAV=1`
 # （开关本身在 main.py，与 SHIFT_NAV_JUMP 放在一起）。
 #
-# ★v110b：Ctrl+↓ 落到收尾区空行之后，**再替用户按一下 Tab**。
+# ★v110b：Ctrl+↓ 落到收尾区空行时，**把那一行直接写成过程体层级的缩进**。
 # 用户口径（原话）："还有个地方需要修改，ctrl+↓ 跳到结尾空行，能不能再加个
-# tab 补位？" —— 落点那一行常常是顶格的真空行（我们照 `End Sub` 的缩进补的，
-# 而收尾行惯例顶格），光标落在行首，用户接着写过程体代码还得自己按一次 Tab。
-# 现在让 VBE 自己的 Tab（带 smart indent）把光标推到过程体该在的层级。
-# ⚠️ 只在落点【顶格 / 真空行】时补：带着缩进的空白行说明用户自己摆过层级，
+# tab 补位？" —— 落点那一行常常是顶格的真空行（收尾行 `End Sub` 惯例顶格），
+# 光标落在行首，用户接着写过程体代码还得自己按一次 Tab。
+# 缩进抄"尾行上方最后一条非空行"的行首空白（与 Ctrl+↑ 抄 Dim 行缩进同一条理），
+# 那正是用户接着要写语句的层级。
+# ⚠️ 只在落点是【顶格 / 真空行】时补：带着缩进的空白行说明用户自己摆过层级，
 #    尊重，绝不加深（用户没要求的层级我们不加）。
-# ⚠️ 顺序必须是"光标就位【之后】"（与 v107c 注入 Ctrl+Shift+I 同一条规矩）：
-#    Tab 落在哪个行哪个列，完全取决于那一刻光标在哪。
-# ⚠️ 注入失败 / 拿不到注入函数一律静默跳过 —— Tab 补位是锦上添花，
-#    绝不能因为它没按下去就影响跳转本身。
-# 想关掉：`set VBECOMPLETE_NO_CTRL_NAV_TAB=1`。
+#
+# ★v110b/2（修真机 bug）：原先这一处是**注入一下 Tab 键**、让 VBE 自己的
+# smart indent 去补。真机实测**不生效**（跳转正常、缩进没有）：SetSelection 是
+# COM 调用，返回时 VBE 未必已把光标画到新行，注入的 Tab 打在旧行上；补了
+# 轮询 GetSelection + 延时也仍不出缩进。改成**直接把新行写过程体缩进**之后
+# 就完全确定（`InsertLines` 写空白行不会被 VBE trim —— 这一点由现成的"回车
+# 缩进" `new_line_below` 作旁证，它一直就是直接写 `indent`，真机好用）。
+# 想关掉（只落光标 + 只保证有一行空白，不补缩进）：`set VBECOMPLETE_NO_CTRL_NAV_TAB=1`。
 CTRL_NAV_TAB = not _env_flag("VBECOMPLETE_NO_CTRL_NAV_TAB", False)
 
 
@@ -1397,17 +1401,19 @@ def v110_stmt_end_line(raw, i, limit):
 
 
 def v110_dim_jump_plan(lines, raw, span):
-    """Ctrl+↑ 的落点计划：`(目标行, 要插入的文本, 是否 Tab 补位)`
-    （均 0-based；文本 None = 目标行已经是空白行，什么都不用插）。
+    """Ctrl+↑ 的落点计划：`(目标行, 写入方式, 文本)`（均 0-based）。
     不该接管返回 None。
 
     目标行 = 本过程最后一个 Dim 语句【下面那一行】。跨行的 Dim 语句要连它的
     续行一起跨过去（在 `Dim a, _` 中间插一行会把语句拆断）。
 
-    ★v110b：第三元恒为 False —— Tab 补位是 Ctrl+↓ 独有的（用户口径只提了
-    "ctrl+↓ 跳到结尾空行，能不能再加个 tab 补位"）。声明区下面那一行紧跟
-    Dim 区，缩进本来就对；真要对称加上也就是把这里改成与 end 计划同款的
-    顶格判据，但**没要求不做**。
+    写入方式（与 `ctrl_nav_jump` 同一套口径）：
+      * `("insert", 文本)`：在目标行处插一行（原有行下移），文本就是新行内容；
+      * `(None, None)`：目标行已是空白行，什么都不用写，只落光标。
+
+    ★v110b/2：不再有"是否 Tab 补位"这一元 —— 那条路真机不生效（见
+    `v110_end_jump_plan` 的说明）。Ctrl+↑ 本来就是**把新行直接写成 Dim 行的
+    缩进**（Dim 区就在过程体层级），所以一行都不用改。
     """
     start, end = span
     d = None
@@ -1430,45 +1436,63 @@ def v110_dim_jump_plan(lines, raw, span):
     if nxt > end:
         return None
     if (lines[nxt] or "").strip():
-        return (nxt, _leading_ws(lines[d]), False)   # 补一行，缩进抄 Dim 行
-    return (nxt, None, False)
+        return (nxt, "insert", _leading_ws(lines[d]))   # 补一行，缩进抄 Dim 行
+    return (nxt, None, None)
 
 
 def v110_end_jump_plan(lines, span):
-    """Ctrl+↓ 的落点计划：`(目标行, 要插入的文本, 是否 Tab 补位)`
-    （0-based；None = 不插行）。不该接管返回 None。
+    """Ctrl+↓ 的落点计划：`(目标行, 写入方式, 文本)`（0-based）。
+    不该接管返回 None。
 
-    目标行 = 过程尾行【上面那一行】；它不是空白就在尾行处补一行（尾行连同
-    下面整体下移），缩进抄尾行自己（`End Sub` 顶格时空文本就是真空行）。
+    目标行 = 过程尾行【上面那一行】。缩进取**过程体层级** = 尾行上方最后一条
+    非空行的行首空白（与 Ctrl+↑ 抄 Dim 行缩进同一条理）—— 那正是用户接着要
+    写语句的层级。
 
-    ★v110b：第三元 = 落点行【顶格 / 真空】时为 True（见上面 v110b 注释块）。
-    插入分支看的是"将要插进去的那一行"（`_leading_ws(lines[end])`），不插
-    分支看的是用户留下的那一行原文 —— 带着任何缩进都算"用户摆过层级"，
-    一律不补，绝不加深。
+      * 尾行上方不是空白：在尾行处**插一行**，内容就是过程体缩进
+        （`("insert", body)`；`End Sub` 顶格时 body == ""，就是一条真空行）；
+      * 尾行上方已是空白、且是**真空行**：把它**换成带过程体缩进的一行**
+        （`("swap", body)`；复用下面 `ctrl_nav_jump` 的"插入+删旧行"写法，
+        因为 InsertLines 写空白行不会被 VBE trim，ReplaceLine 会 —— 见 v103b）；
+      * 尾行上方已是空白、且**带着缩进**：什么都不写（`(None, None)`）——
+        用户摆过层级，绝不加深。
+
+    ★v110b/2（修真机 bug）。原先这一支是"插入真空行 + 注入一下 Tab 键让
+    VBE 的 smart indent 去补缩进"。真机实测**注入的 Tab 不生效**（跳转正常、
+    缩进没有）：`SetSelection` 是 COM 调用，返回时 VBE 未必已把光标画到新行，
+    注入的 Tab 打在旧行上；补了轮询+延时也仍不出缩进。改成**直接把新行写成
+    过程体缩进**——不依赖任何注入时序。这条写法有现成旁证："回车缩进"
+    `new_line_below` 一直就是 `InsertLines(n, indent)` 直接写带缩进的（可能
+    全空白）新行，真机好用（用户从没报过回车不缩进）。
+
+    ⚠️ 判"空白"前必须 `rstrip("\r")`：模块文本是 \r\n 分隔的，`split("\n")`
+    之后每行行尾都带 \r，而 `"\r".lstrip() == ""`（\r 算空白）—— 不 rstrip
+    就会把真空行误判成"带着缩进"（本轮真踩到，见 MEMORY 第 42 条）。
     """
     start, end = span
     prv = end - 1
     if prv < start:
         return None
+    # 过程体层级：从尾行上方往上找第一条非空行，抄它的行首空白
+    body = ""
+    for i in range(prv, start - 1, -1):
+        t = (lines[i] or "").rstrip("\r")
+        if t.strip():
+            body = _leading_ws(t)
+            break
     if (lines[prv] or "").strip():
-        ins = _leading_ws(lines[end])
-        return (end, ins, ins == ins.lstrip())
-    # ⚠️ 必须 rstrip("\r")：模块文本是 \r\n 分隔的，split("\n") 之后每一行
-    # 行尾都带着 \r，而 "\r".lstrip() == ""（\r 算空白）—— 不 rstrip 的话
-    # 真空行会被判成"带着缩进"，Tab 补位就永远不触发（本轮真踩到）。
+        return (end, "insert", body)
     cur = (lines[prv] or "").rstrip("\r")
-    return (prv, None, cur == cur.lstrip())
+    if cur == "" and body != "":
+        return (prv, "swap", body)
+    return (prv, None, None)
 
 
 def ctrl_nav_jump_plan(code, caret_line, direction):
     """Ctrl+↑（direction<0）/ Ctrl+↓（direction>0）这一跳的完整计划（纯函数）。
 
     code = 模块全文；caret_line = 光标行号（1-based）；direction = -1 / +1。
-    返回 `(目标行[1-based], 要插入的文本, 是否 Tab 补位)`；插入文本为 None
-    表示目标行已经是空白行、什么都不用插。不该接管（不在过程里 / 没有 Dim /
-    过程没收尾 / 模块形态有问题）返回 None。
-
-    ★v110b 起是三元组（第三元见 v110b 注释块；Ctrl+↑ 恒 False）。
+    返回 `(目标行[1-based], 写入方式, 文本)`（方式见 `v110_end_jump_plan`）。
+    不该接管（不在过程里 / 没有 Dim / 过程没收尾 / 模块形态有问题）返回 None。
 
     ⚠️ caret_line 允许是"模块最后一行 + 1"：VBE 允许光标停在一个尚不存在的
     虚拟空行上（见 `VbeBackend._write_line` 的说明）。那时按最后一行算 ——
@@ -1498,8 +1522,8 @@ def ctrl_nav_jump_plan(code, caret_line, direction):
             else v110_end_jump_plan(masked, span))
     if plan is None:
         return None
-    tgt, ins, want_tab = plan
-    return (tgt + 1, ins, bool(want_tab))     # 转 1-based 交给 COM 用
+    tgt, mode, text = plan
+    return (tgt + 1, mode, text)              # 转 1-based 交给 COM 用
 
 
 # ---- v99：退格成对删除（空括号 / 空引号）----
@@ -3573,7 +3597,7 @@ def host_enum_constants():
 
 
 class VbeBackend:
-    def __init__(self, send_char=None, send_quick_info=None, send_tab=None):
+    def __init__(self, send_char=None, send_quick_info=None):
         # ★v103b：把字符"还给系统"的注入函数（main.send_char）。只在
         # "关键字补空格"这一处用到 —— 真机实测 VBE 会把 ReplaceLine 写进去的
         # 行尾空格 trim 掉，唯一可行的补法是注入一个空格按键。
@@ -3584,11 +3608,9 @@ class VbeBackend:
         # 括号中间"之后用一次 —— 参数信息是 VBE 原生能力，我们不重画。
         # 同样地：传 None 就不做，绝不半途出错（见 AUTO_PARAM_INFO 处的说明）。
         self._send_quick_info = send_quick_info
-        # ★v110b：替用户按一下【Tab】的注入函数（main.send_tab）。只在
-        # Ctrl+↓ 跳到收尾区、落点是顶格/真空行、光标已经就位之后用一次 ——
-        # VBE 自己的 Tab 带 smart indent，正好把光标推到过程体该在的层级。
-        # 传 None 就不做（离线测试 / 老式构造），绝不影响跳转本身。
-        self._send_tab = send_tab
+        # ★v110b/2：这里原先还有一个 `send_tab`（替用户按一下 Tab 补缩进），
+        # 真机实测注入的 Tab 不生效（见文件顶部 v110b/2 注释）⇒ 改成直接把
+        # 缩进写进新行，注入函数随之撤掉。
         self._cache = None
         self._cache_time = 0
         self._declared_names = set()
@@ -5401,25 +5423,32 @@ class VbeBackend:
         `ctrl_nav_jump_plan`（v87 的规矩）。模块是整份读的，所以"当前过程"
         的边界以【真实代码】为准，与光标在过程里哪个位置无关。
 
-        落点一律是目标行的【行尾】：空白行上带着缩进时正好停在缩进之后，用户
-        接着敲就是对的层级；真空行时 VBE 把列夹到 1。列交给 VBE 自己夹
-        （`_caret_to_line_end`）—— 新插入的缩进可能被 VBE trim 成真空行，
-        所以落光标之前必须重新读一遍目标行。
+        落点一律是目标行的【行尾】：带缩进的空白行上正好停在缩进之后，用户接着
+        敲就是对的层级；真空行时列被 VBE 夹到 1。写完必须重新读一遍目标行再去
+        落光标（`_caret_to_line_end` 自己会再读一次并让 VBE 夹列）。
 
-        ★v110b：落点顶格/真空（计划第三元）时，**光标就位之后**再让 main 注入
-        的 `send_tab` 替用户按一下 Tab —— VBE 自己的 Tab 带 smart indent，
-        会把光标推到过程体该在的层级。顺序不能反（Tab 落在哪取决于那一刻
-        光标在哪，v107c 同一条规矩）；注入失败静默跳过，绝不影响跳转本身。
+        ★v110b/2（修真机 bug）：Ctrl+↓ 的缩进**直接写进新行** —— 照 Ctrl+↑ 抄
+        Dim 行缩进的办法，抄"尾行上方最后一条非空行"的过程体缩进。不再注入
+        Tab 键（那条路真机不生效，见 `v110_end_jump_plan`）。计划给出**写入方式**：
+          * `("insert", text)`：`InsertLines(target, text)`（原有行整体下移）；
+          * `("swap", text)`：目标行是一条真空空白行，要换成带缩进的 —— 先
+            `InsertLines(target, text)` 再 `DeleteLines(target + 1, 1)` 删掉原来
+            那条真空行。**不能用 ReplaceLine**：VBE 会把写进去的行尾空白 trim 掉
+            （v103b 教训），InsertLines 不会（"回车缩进" `new_line_below` 就是
+            靠它写带缩进的新行，真机好用）；
+          * `(None, None)`：不动文本，只落光标。
+        开关 `CTRL_NAV_TAB` 关掉时退化成"只落光标 + 只保证有一行空白"（旧行为）。
 
         ⚠️ 这些情形一律返回 False（调用方把这一下按键原样还给系统，绝不会
         出现"吞了按键却什么都没发生"）：
           * 取不到 COM / 没有活动代码窗格 / 模块行数为 0；
           * 纯判据说"不该接管"（不在过程里、没有 Dim、过程没收尾……）；
-          * 锚点复核不过：目标行"是不是空白"必须与计划一致（计划说不插就该
-            是空白、说要插就不该是）。不一致说明行号换算错了 —— 宁可这一次
-            不跳，也绝不能把空白行插到用户代码中间（v21 的老规矩）。
+          * 锚点复核不过：`"insert"` 要求目标行**非空白**（它是参考行/尾行），
+            其余要求目标行**空白**。不一致说明行号换算错了 —— 宁可这一次不跳，
+            也绝不能把空白行插到用户代码中间（v21 的老规矩）。
 
-        写只有一次（`InsertLines`），且绝不在 finally 里补写（v21）。
+        写绝不在 finally 里补写（v21）；`"swap"` 那两条写紧挨着发生、中间不碰
+        光标也不判别的。
         """
         try:
             vbe = _get_vbe_cached()
@@ -5446,56 +5475,44 @@ class VbeBackend:
                 return False
             code = cm.Lines(1, n)
             plan = ctrl_nav_jump_plan(code, line, direction)
+            _log("ctrlnav: dir=%s caret=%s plan=%r" % (direction, line, plan))
             if plan is None:
                 return False
-            target, insert_text, want_tab = plan
+            target, mode, text = plan
+            # 开关关掉（VBECOMPLETE_NO_CTRL_NAV_TAB=1）：只保证"有一行空白"，
+            # 不替用户补过程体缩进 —— insert 退化成写空串、swap 退化成不写。
+            if not CTRL_NAV_TAB:
+                if mode == "insert":
+                    text = ""
+                else:
+                    mode = None
             # 锚点复核（见上面的说明）
             try:
                 cur = str(cm.Lines(target, 1)).rstrip("\r\n")
             except Exception:
                 return False
-            if bool(cur.strip()) != bool(insert_text is not None):
+            if bool(cur.strip()) != (mode == "insert"):
+                _log("ctrlnav: 锚点复核不过 target=%s cur=%r mode=%s"
+                     % (target, cur, mode))
                 return False
-            if insert_text is not None:
-                # 单次写：InsertLines 在 target 处插入，原有行整体下移 ——
-                # 正是"在目标行处新起一行"。
-                cm.InsertLines(target, insert_text)
+            if mode == "insert":
+                # InsertLines 在 target 处插入，原有行整体下移 —— 正是"在目标行
+                # 处新起一行"。
+                cm.InsertLines(target, text)
+            elif mode == "swap":
+                # 把一条真空空白行换成带缩进的一行：InsertLines 写空白行不会被
+                # VBE trim、ReplaceLine 会（v103b），所以"插一条 + 删旧那条"。
+                cm.InsertLines(target, text)
+                cm.DeleteLines(target + 1, 1)
             try:
                 actual = str(cm.Lines(target, 1)).rstrip("\r\n")
             except Exception:
                 actual = ""
+            _log("ctrlnav: mode=%s target=%s actual=%r" % (mode, target, actual))
             if not _caret_to_line_end(cp, cm, target, actual):
                 # 兜底：该编辑器不夹列 -> 才回去按列语义算（见 _caret_to_line_end）
                 _c = _eol_caret_col(actual, _sem_cache.get("info"))
                 cp.SetSelection(target, _c, target, _c)
-            # ★v110b：Tab 补位 —— 必须排在光标就位【之后】（见方法说明）。
-            # 注入函数拿不到 / 开关关着 / 抛异常，一律静默跳过：光标已经落好，
-            # 这一跳算成功，Tab 只是锦上添花。
-            # ⚠️ 时序坑（v107c 同款）：SetSelection 是 COM 调用，返回时 VBE 未必
-            # 已经把光标真正"画"到新行上；若立刻 SendInput(Tab)，这一下 Tab 会
-            # 打在光标还没移动前的旧行 —— 真机表现为"跳过去了但没 Tab"。所以先
-            # 轮询 GetSelection 确认光标真的到了 target 行（最多等 ~150ms），
-            # 再补一小段 UI 落实时间后注入；始终没 settle 就宁可这次不补
-            # （锦上添花，绝不打错行）。
-            if want_tab and CTRL_NAV_TAB:
-                _tab = getattr(self, "_send_tab", None)
-                if _tab is not None:
-                    try:
-                        _settled = False
-                        for _ in range(6):
-                            try:
-                                _sl, _sc, _el, _ec = cp.GetSelection()
-                                if int(_el) == target and int(_sl) == target:
-                                    _settled = True
-                                    break
-                            except Exception:
-                                pass
-                            time.sleep(0.025)
-                        if _settled:
-                            time.sleep(0.05)   # 再给 VBE 一点 UI 落实时间
-                            _tab()
-                    except Exception:
-                        pass
             return True
         except Exception:
             return False

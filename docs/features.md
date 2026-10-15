@@ -48,14 +48,14 @@
   logic as `Enter`, at any column.
 - **`Ctrl+↑` / `Ctrl+↓` jump to the blank lines of a procedure.** `Ctrl+↑` moves the caret to the
   line *below* the last `Dim` of the current procedure; `Ctrl+↓` moves it to the line *above*
-  `End Sub` / `End Function` / `End Property`. If that line is not blank yet, a blank line with the
-  matching indentation is inserted first — so the two keys always land you on the "declare more"
-  area and the "clean exit" area. When `Ctrl+↓` lands on a top-level / empty line, a Tab is pressed
-  for you (VBE's own smart indent), so the caret drops straight at the procedure's indent level;
-  a line that already carries indentation is left untouched. VBE's own `Ctrl+↑` / `Ctrl+↓` do
-  nothing in a code pane, so the key is handed back to the system untouched when the move cannot
-  be made (no procedure, no `Dim`, module read-only). Use `VBECOMPLETE_NO_CTRL_NAV=1` to disable,
-  or `VBECOMPLETE_NO_CTRL_NAV_TAB=1` to keep the jump but never press the Tab.
+  `End Sub` / `End Function` / `End Property`. If that line is not blank yet, a blank line is
+  inserted first — so the two keys always land you on the "declare more" area and the "clean exit"
+  area. `Ctrl+↓` also writes the landing line at the procedure's indent level (copied from the last
+  non-blank line above), so the caret drops straight where you can keep typing; a line that already
+  carries indentation is left untouched. VBE's own `Ctrl+↑` / `Ctrl+↓` do nothing in a code pane, so
+  the key is handed back to the system untouched when the move cannot be made (no procedure, no
+  `Dim`, module read-only). Use `VBECOMPLETE_NO_CTRL_NAV=1` to disable, or
+  `VBECOMPLETE_NO_CTRL_NAV_TAB=1` to keep the jump but never add the indent.
 
 **Coexistence**
 
@@ -122,7 +122,7 @@ Behaviour is tuned through environment variables (set them before launching):
 | `VBECOMPLETE_NO_BS_DELLINE` / `VBECOMPLETE_NO_BS_DELPAIR` | off | `1` disables the two `Backspace` helpers. |
 | `VBECOMPLETE_NO_ENTER_INDENT` / `VBECOMPLETE_NO_AUTOCLOSE` | off | `1` disables `Enter`-time indentation / automatic block closers. |
 | `VBECOMPLETE_NO_CTRL_NAV` | off | `1` disables the `Ctrl+↑` / `Ctrl+↓` jumps; the keys stay with the VBE. |
-| `VBECOMPLETE_NO_CTRL_NAV_TAB` | off | `1` keeps the `Ctrl+↓` jump but never presses the Tab on a top-level landing line. |
+| `VBECOMPLETE_NO_CTRL_NAV_TAB` | off | `1` keeps the `Ctrl+↓` jump but never adds the procedure-level indent to the landing line. |
 
 ## Project structure
 

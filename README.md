@@ -48,7 +48,7 @@ autostart on login · `run_tests.bat` runs the offline regression suite.
 | `Shift+Enter` | Start a new line below, leaving the current one intact |
 | `Backspace` | Delete a whitespace-only line, or both halves of an empty pair |
 | `Ctrl+↑` | Jump to the blank line below the last `Dim` of the procedure (inserting one if needed) |
-| `Ctrl+↓` | Jump to the blank line above `End Sub` / `End Function` (inserting one if needed); when the caret lands at column 1 a Tab is pressed for you, so it drops straight at the procedure's indent level |
+| `Ctrl+↓` | Jump to the blank line above `End Sub` / `End Function` (inserting one if needed) and write it at the procedure's indent level |
 
 On accept a `Sub` gets a trailing space, a `Function` gets `()` with the caret inside **and the
 VBE's own parameter info pops up** (so you can see the signature while filling in the arguments),
