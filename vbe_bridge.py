@@ -5471,11 +5471,29 @@ class VbeBackend:
             # ★v110b：Tab 补位 —— 必须排在光标就位【之后】（见方法说明）。
             # 注入函数拿不到 / 开关关着 / 抛异常，一律静默跳过：光标已经落好，
             # 这一跳算成功，Tab 只是锦上添花。
+            # ⚠️ 时序坑（v107c 同款）：SetSelection 是 COM 调用，返回时 VBE 未必
+            # 已经把光标真正"画"到新行上；若立刻 SendInput(Tab)，这一下 Tab 会
+            # 打在光标还没移动前的旧行 —— 真机表现为"跳过去了但没 Tab"。所以先
+            # 轮询 GetSelection 确认光标真的到了 target 行（最多等 ~150ms），
+            # 再补一小段 UI 落实时间后注入；始终没 settle 就宁可这次不补
+            # （锦上添花，绝不打错行）。
             if want_tab and CTRL_NAV_TAB:
                 _tab = getattr(self, "_send_tab", None)
                 if _tab is not None:
                     try:
-                        _tab()
+                        _settled = False
+                        for _ in range(6):
+                            try:
+                                _sl, _sc, _el, _ec = cp.GetSelection()
+                                if int(_el) == target and int(_sl) == target:
+                                    _settled = True
+                                    break
+                            except Exception:
+                                pass
+                            time.sleep(0.025)
+                        if _settled:
+                            time.sleep(0.05)   # 再给 VBE 一点 UI 落实时间
+                            _tab()
                     except Exception:
                         pass
             return True

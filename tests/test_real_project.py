@@ -17255,6 +17255,40 @@ def main():
               [(_rc94, _seq94)],
               expect_contain=[(True, [(0x09, 0), (0x09, 2)])])
 
+        # ---- 94.5 时序护栏：光标没 settle 就宁可不补（绝不打错行）----
+        class _FStubPane94:
+            """GetSelection 永远报旧位置、无视 SetSelection —— 模拟 VBE 还没把
+            光标画到新行（真机时序坑）。ctrl_nav_jump 必须轮询发现没 settle、
+            然后【不】调用 send_tab：这一下 Tab 若打出去会落在旧行。"""
+            def __init__(self, cm):
+                self.CodeModule = cm
+                self.sel = (1, 1, 1, 1)
+            def GetSelection(self):
+                return self.sel
+            def SetSelection(self, sl, sc, el, ec):
+                pass   # 假装 SetSelection 没生效
+        _tabs94 = []
+        _cm94 = _FCM93(["Sub Foo()", "    x = 1", "End Sub"])
+        _p94 = _FStubPane94(_cm94)
+        _old_vbe = VB94._get_vbe
+        _old_gate = VB94._WINDOW_GATE_DISABLED
+        VB94._get_vbe = lambda: type("V", (), {"ActiveCodePane": _p94})()
+        VB94._WINDOW_GATE_DISABLED = True
+        VB94._vbe_cache["obj"] = None
+        VB94.com_reset()
+        try:
+            _took94 = bool(VB94.VbeBackend(
+                send_tab=lambda: _tabs94.append(1)).ctrl_nav_jump(+1))
+        finally:
+            VB94._get_vbe = _old_vbe
+            VB94._WINDOW_GATE_DISABLED = _old_gate
+        check("94.5 时序护栏：VBE 还没把光标画到新行（GetSelection 一直报旧位置）"
+              "时，ctrl_nav_jump 必须轮询发现没 settle 而【不】调用 send_tab —— "
+              "这一下 Tab 打出去会落在旧行，所以宁可这次不补（锦上添花）；"
+              "跳转本身仍算成功、且一个字节都不变",
+              [(_took94, len(_tabs94))],
+              expect_contain=[(True, 0)])
+
         # ---- 94.4 结构护栏（AST）+ 逃生门 ----
         _vsrc94 = io.open(os.path.join(ROOT, "vbe_bridge.py"),
                           encoding="utf-8").read()
