@@ -16827,7 +16827,8 @@ def main():
         import ctypes as _ct93
         VB93 = VB
 
-        # ---- 93.1 纯判据矩阵：目标行 + 要不要插行（一个元组打包，见 v108 教训）----
+        # ---- 93.1 纯判据矩阵：目标行 + 要不要插行 + 要不要 Tab 补位 ----
+        # （一个元组打包，见 v108 教训；★v110b 起是三元组，第三元见 §94）
         _S93 = "Sub Foo()\r\n    Dim a As Long\r\n    x = 1\r\nEnd Sub\r\n"
 
         def _p93(code, caret, direction):
@@ -16886,15 +16887,20 @@ def main():
             _p93(_S93, 0, -1),
         )
         _w93 = (
-            (3, "    "), (3, None), None, (5, "    "), (3, "    "), (4, "    "),
-            (3, "    "), None, None, None, None, None, None, None, None,
-            (4, ""), (3, None), (2, ""), (4, ""), (3, ""), (3, ""), None,
+            # ↑ 七项第三元恒 False（Tab 补位是 Ctrl+↓ 独有，见 §94）
+            (3, "    ", False), (3, None, False), None, (5, "    ", False),
+            (3, "    ", False), (4, "    ", False), (3, "    ", False),
+            None, None, None, None, None, None, None, None,
+            # ↓ 五项：End 行都顶格 / 空白行都真空 -> 第三元都是 True
+            (4, "", True), (3, None, True), (2, "", True), (4, "", True),
+            (3, "", True), (3, "", True), None,
             None, None, None,
         )
         check("93.1 `vbe_bridge.ctrl_nav_jump_plan`（纯函数）：↑=最后一个 Dim "
               "语句的下一行、↓=End 行；目标行不是空白就照参考行缩进补一行、"
               "是空白就什么都不插；不在过程里 / 没有 Dim / 过程没收尾 / 续行"
-              "后半截 / 注释与字符串里的 Dim 一律返回 None（= 按键原样还给系统）",
+              "后半截 / 注释与字符串里的 Dim 一律返回 None（= 按键原样还给系统）。"
+              "★v110b 起返回三元组，第三元 = 落点顶格/真空时替用户按一下 Tab",
               [_g93], expect_contain=[_w93])
 
         # ---- 93.2 集成：后端真的插行 + 落光标 ----
@@ -16940,10 +16946,11 @@ def main():
 
         def _run93(lines, caret_line, direction, fail_insert=False):
             """跑一次 ctrl_nav_jump，返回 (是否接管, InsertLines 记录, 写后行,
-            光标行, 光标列)。"""
+            光标行, 光标列, Tab 注入次数)。★v110b：默认挂一个假 send_tab 计次数。"""
             cm = _FCM93(lines)
             cm.fail_insert = bool(fail_insert)
             pane = _FPane93(cm, caret_line)
+            _tabs = []
             _old_vbe = VB93._get_vbe
             _old_gate = VB93._WINDOW_GATE_DISABLED
             VB93._get_vbe = lambda: _FVBE93(pane)
@@ -16951,12 +16958,13 @@ def main():
             VB93._vbe_cache["obj"] = None
             VB93.com_reset()
             try:
-                took = VB93.VbeBackend().ctrl_nav_jump(direction)
+                took = VB93.VbeBackend(
+                    send_tab=lambda: _tabs.append(1)).ctrl_nav_jump(direction)
             finally:
                 VB93._get_vbe = _old_vbe
                 VB93._WINDOW_GATE_DISABLED = _old_gate
             return (bool(took), list(cm.inserts), list(cm.lines),
-                    pane.sel[0], pane.sel[1])
+                    pane.sel[0], pane.sel[1], len(_tabs))
 
         _SRC93 = ["Sub Foo()", "    Dim a As Long", "    x = 1", "End Sub"]
         _g93b = (
@@ -16976,23 +16984,26 @@ def main():
         )
         _w93b = (
             (True, [(3, "    ")],
-             ["Sub Foo()", "    Dim a As Long", "    ", "    x = 1", "End Sub"], 3, 5),
+             ["Sub Foo()", "    Dim a As Long", "    ", "    x = 1", "End Sub"], 3, 5, 0),
             (True, [],
-             ["Sub Foo()", "    Dim a As Long", "", "    x = 1", "End Sub"], 3, 1),
+             ["Sub Foo()", "    Dim a As Long", "", "    x = 1", "End Sub"], 3, 1, 0),
+            # ↓ 插行：落点是真空行 -> Tab 补位按了一次
             (True, [(4, "")],
-             ["Sub Foo()", "    Dim a As Long", "    x = 1", "", "End Sub"], 4, 1),
+             ["Sub Foo()", "    Dim a As Long", "    x = 1", "", "End Sub"], 4, 1, 1),
+            # ↓ 不插：End 上面本来就是真空行 -> 也按了一次
             (True, [],
-             ["Sub Foo()", "    x = 1", "", "End Sub"], 3, 1),
-            (False, [], ["Dim g As Long", "", "Sub Foo()", "End Sub"], 1, 1),
-            (False, [], ["Sub Foo()", "    x = 1", "End Sub"], 2, 1),
-            (False, [], _SRC93, 3, 1),
-            (False, [], _SRC93, 3, 1),
+             ["Sub Foo()", "    x = 1", "", "End Sub"], 3, 1, 1),
+            (False, [], ["Dim g As Long", "", "Sub Foo()", "End Sub"], 1, 1, 0),
+            (False, [], ["Sub Foo()", "    x = 1", "End Sub"], 2, 1, 0),
+            (False, [], _SRC93, 3, 1, 0),
+            (False, [], _SRC93, 3, 1, 0),
         )
         check("93.2 `VbeBackend.ctrl_nav_jump`（集成）：↑/↓ 各验「插行」与「不插」"
               "两条路 —— InsertLines 只调一次、行号与缩进都对、光标落在目标行"
               "行尾（假 pane 不夹列，走的是 _eol_caret_col 兜底：真空行 1 列、"
               "带缩进 5 列）；不在过程里 / 没有 Dim / 写失败 / direction=0 一律"
-              "返回 False 且一个字节都没改（调用方据此把按键还给系统）",
+              "返回 False 且一个字节都没改（调用方据此把按键还给系统）。"
+              "★v110b：↓ 落点是真空行时 send_tab 被调一次、↑ 一次都不调",
               [_g93b], expect_contain=[_w93b])
 
         # ---- 93.3 修饰键门槛（模块级纯函数）----
@@ -17122,6 +17133,204 @@ def main():
         import traceback as _tp93
         _tp93.print_exc()
         check("第 93 节异常: %s" % _e93, [True], expect_contain=[False])
+
+    print("\n=== 94. ★v110b：Ctrl+↓ 落点顶格 / 真空时替用户按一下 Tab ===")
+    try:
+        import main as _MN94
+        import ast as _ast94
+        import ctypes as _ct94
+        VB94 = VB
+
+        # ---- 94.1 纯判据：want_tab 矩阵（计划第三元）----
+        def _p94(code, caret, direction):
+            return VB94.ctrl_nav_jump_plan(code, caret, direction)
+
+        _g94 = (
+            # ↓ End 上方不是空白、End 顶格 -> 插进去的是真空行 -> 要 Tab
+            _p94("Sub Foo()\r\n    x = 1\r\nEnd Sub\r\n", 2, +1),
+            # ↓ End 上方是真空行 -> 什么都不插 -> 也要 Tab（光标在行首）
+            _p94("Sub Foo()\r\n    x = 1\r\n\r\nEnd Sub\r\n", 2, +1),
+            # ↓ End 上方是【带着一级缩进的空白行】-> 用户摆过层级 -> 不 Tab
+            _p94("Sub Foo()\r\n    x = 1\r\n    \r\nEnd Sub\r\n", 2, +1),
+            # ↓ End 上方只有 2 空格（不足一级）-> 保守，绝不加深 -> 不 Tab
+            _p94("Sub Foo()\r\n    x = 1\r\n  \r\nEnd Sub\r\n", 2, +1),
+            # ↓ End 行【自己有缩进】（罕见）且上方不是空白 -> 插进去就带缩进
+            _p94("Sub Foo()\r\n    x = 1\r\n    End Sub\r\n", 2, +1),
+            # ↓ 光标就在 End 行上 -> 照常（先跳过它再找过程）
+            _p94("Sub Foo()\r\n    x = 1\r\nEnd Sub\r\n", 3, +1),
+            # ↑ 一律不要 Tab（用户口径只提了 ctrl+↓）—— 哪怕 Dim 下面是真空行
+            _p94("Sub Foo()\r\n    Dim a As Long\r\n\r\n    x = 1\r\n"
+                 "End Sub\r\n", 4, -1),
+            _p94("Sub Foo()\r\n    Dim a As Long\r\n    x = 1\r\nEnd Sub\r\n", 3, -1),
+            # ↓ 不在过程里 -> None（第三元无从谈起）
+            _p94("Dim g As Long\r\n\r\nSub Foo()\r\nEnd Sub\r\n", 1, +1),
+        )
+        _w94 = (
+            (3, "", True), (3, None, True), (3, None, False), (3, None, False),
+            (3, "    ", False), (3, "", True),
+            (3, None, False), (3, "    ", False),
+            None,
+        )
+        check("94.1 `ctrl_nav_jump_plan` 第三元（want_tab）：Ctrl+↓ 的落点是"
+              "【顶格 / 真空行】才要 Tab —— 插进去的真空行、用户留下的真空行都算；"
+              "带着任何缩进的空白行（一级的、不足一级的）一律不要，绝不加深用户"
+              "摆好的层级；End 行自己有缩进时插进去就带缩进、也不要；Ctrl+↑ 恒 "
+              "False（口径只提了 ctrl+↓）",
+              [_g94], expect_contain=[_w94])
+
+        # ---- 94.2 后端：Tab 必须排在光标就位【之后】；开关关着就不按 ----
+        _ev94 = []
+
+        class _OrdPane94(_FPane93):
+            """假 pane：把每次 SetSelection 也记进事件流（和 tab 共用一条时间线）。"""
+
+            def SetSelection(self, sl, sc, el, ec):
+                _ev94.append(("sel", sl))
+                _FPane93.SetSelection(self, sl, sc, el, ec)
+
+        def _run_ord94(lines, caret_line, direction, tab_on=True, tab_raise=False):
+            cm = _FCM93(lines)
+            pane = _OrdPane94(cm, caret_line)
+            _ev94.clear()
+
+            def _tab():
+                _ev94.append(("tab",))
+                if tab_raise:
+                    raise RuntimeError("注入失败")
+
+            _old_vbe = VB94._get_vbe
+            _old_gate = VB94._WINDOW_GATE_DISABLED
+            _old_flag = VB94.CTRL_NAV_TAB
+            VB94._get_vbe = lambda: _FVBE93(pane)
+            VB94._WINDOW_GATE_DISABLED = True
+            VB94._vbe_cache["obj"] = None
+            VB94.CTRL_NAV_TAB = bool(tab_on)
+            VB94.com_reset()
+            try:
+                took = VB94.VbeBackend(send_tab=_tab).ctrl_nav_jump(direction)
+            finally:
+                VB94._get_vbe = _old_vbe
+                VB94._WINDOW_GATE_DISABLED = _old_gate
+                VB94.CTRL_NAV_TAB = _old_flag
+            return bool(took), list(_ev94)
+
+        _t1, _e1 = _run_ord94(["Sub Foo()", "    x = 1", "End Sub"], 2, +1)
+        _t2, _e2 = _run_ord94(["Sub Foo()", "    x = 1", "", "End Sub"], 2, +1)
+        _t3, _e3 = _run_ord94(["Sub Foo()", "    x = 1", "End Sub"], 2, +1,
+                              tab_on=False)
+        _t4, _e4 = _run_ord94(["Sub Foo()", "    x = 1", "End Sub"], 2, +1,
+                              tab_raise=True)
+        _t5, _e5 = _run_ord94(["Sub Foo()", "    x = 1", "End Sub"], 2, -1)
+        _ntab = lambda ev: sum(1 for x in ev if x[0] == "tab")
+        check("94.2 `ctrl_nav_jump` 的 Tab 注入时机与兜底：（a）↓ 落真空行时按了"
+              "一次，且它是事件流里【最后一个】事件、前面先有 SetSelection —— "
+              "顺序反了 Tab 就落在旧光标处（v107c 同一条规矩）；（b）落点本来就是"
+              "真空行（不插行那条路）也按；（c）开关 CTRL_NAV_TAB=False 时一次都"
+              "不按，但跳转本身照样成功；（d）注入函数抛异常被静默吞掉、跳转仍算"
+              "成功；（e）↑ / 没有 Dim 时不按",
+              [(_t1, _e1[0][0] if _e1 else None, _e1[-1] if _e1 else None,
+                _ntab(_e1), _t2, _ntab(_e2), _t3, _ntab(_e3),
+                _t4, _ntab(_e4), _t5, _ntab(_e5))],
+              expect_contain=[(True, "sel", ("tab",), 1,
+                               True, 1, True, 0, True, 1, False, 0)])
+
+        # ---- 94.3 main.send_tab()：就两个事件（Tab 按下 + 松开）----
+        _cap94 = []
+
+        def _fake_si94(n, arr, size):
+            evts = _ct94.cast(arr, _ct94.POINTER(_MN94._INPUT * n)).contents
+            for e in evts:
+                _cap94.append((int(e.u.ki.wVk), int(e.u.ki.dwFlags)))
+            return n
+
+        _old_si94 = _ct94.windll.user32.SendInput
+        try:
+            _ct94.windll.user32.SendInput = _fake_si94
+            _rc94 = _MN94.send_tab()
+            _seq94 = list(_cap94)
+        finally:
+            _ct94.windll.user32.SendInput = _old_si94
+        check("94.3 `main.send_tab()`：替用户按一下 Tab（VK_TAB 按下 + 松开，"
+              "不带任何修饰键；注入事件带 LLKHF_INJECTED，钩子会放行不会自截）",
+              [(_rc94, _seq94)],
+              expect_contain=[(True, [(0x09, 0), (0x09, 2)])])
+
+        # ---- 94.4 结构护栏（AST）+ 逃生门 ----
+        _vsrc94 = io.open(os.path.join(ROOT, "vbe_bridge.py"),
+                          encoding="utf-8").read()
+        _msrc94 = io.open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+        _vtree94 = _ast94.parse(_vsrc94)
+        _mtree94 = _ast94.parse(_msrc94)
+
+        def _fn94(tree, name):
+            for n in _ast94.walk(tree):
+                if isinstance(n, _ast94.FunctionDef) and n.name == name:
+                    return n
+            return None
+
+        _be94 = _fn94(_vtree94, "ctrl_nav_jump")
+        _be_d94 = _ast94.dump(_be94)
+        # （a）_send_tab 的调用必须排在 _caret_to_line_end 之后（行号比较）。
+        # ⚠️ 两处都是【Name 调用】（id=），不是属性调用（attr=）—— 写成 attr=
+        # 会两个都匹配不上，10**9 > 10**9 恒假，白红一场（本轮真踩到）。
+        _ln_tab94 = _ln_caret94 = 10 ** 9
+        for n in _ast94.walk(_be94):
+            if isinstance(n, _ast94.Call):
+                d = _ast94.dump(n.func)
+                if "id='_caret_to_line_end'" in d:
+                    _ln_caret94 = min(_ln_caret94, n.lineno)
+                if "id='_tab'" in d:
+                    _ln_tab94 = min(_ln_tab94, n.lineno)
+        # （b）want_tab 与 CTRL_NAV_TAB 双条件（少一个都不生效）
+        _cond94 = ("id='want_tab'" in _be_d94
+                   and "id='CTRL_NAV_TAB'" in _be_d94)
+        # （c）main.send_tab 有定义、且构造 VbeBackend 时传了进去
+        _has_fn94 = _fn94(_mtree94, "send_tab") is not None
+        _ctor94 = False
+        for n in _ast94.walk(_mtree94):
+            if isinstance(n, _ast94.Call):
+                d = _ast94.dump(n)
+                if "id='VbeBackend'" in d and "id='send_tab'" in d:
+                    _ctor94 = True
+        # （d）开关默认开 + 环境变量名出现在【赋值语句】里（不是注释里）
+        _env_ok94 = False
+        for n in _ast94.walk(_vtree94):
+            if isinstance(n, _ast94.Assign):
+                for t in n.targets:
+                    if isinstance(t, _ast94.Name) and t.id == "CTRL_NAV_TAB":
+                        if "VBECOMPLETE_NO_CTRL_NAV_TAB" in _ast94.dump(n.value):
+                            _env_ok94 = True
+        # （e）逃生门：设了环境变量之后重新加载的 vbe_bridge 里必须是 False
+        _old_env94 = os.environ.get("VBECOMPLETE_NO_CTRL_NAV_TAB")
+        _fresh_tab94 = None
+        try:
+            os.environ["VBECOMPLETE_NO_CTRL_NAV_TAB"] = "1"
+            import importlib.util as _iu94
+            _spec94 = _iu94.spec_from_file_location(
+                "vbe_bridge_fresh94", os.path.join(ROOT, "vbe_bridge.py"))
+            _fresh94 = _iu94.module_from_spec(_spec94)
+            _spec94.loader.exec_module(_fresh94)
+            _fresh_tab94 = _fresh94.CTRL_NAV_TAB
+        except Exception:
+            _fresh_tab94 = None
+        finally:
+            if _old_env94 is None:
+                os.environ.pop("VBECOMPLETE_NO_CTRL_NAV_TAB", None)
+            else:
+                os.environ["VBECOMPLETE_NO_CTRL_NAV_TAB"] = _old_env94
+        check("94.4 结构护栏（AST）+ 逃生门：（a）_send_tab 必须排在 "
+              "_caret_to_line_end 【之后】；（b）want_tab 与 CTRL_NAV_TAB 双条件；"
+              "（c）main.send_tab 有定义且构造 VbeBackend 时传进去（传 None 就"
+              "静默不补，离线测试/老式构造不受影响）；（d）开关 CTRL_NAV_TAB 默认"
+              "开、VBECOMPLETE_NO_CTRL_NAV_TAB 接在赋值语句上；（e）逃生门：设了"
+              "环境变量重新加载的 vbe_bridge 里必须是 False",
+              [(_ln_tab94 > _ln_caret94, _cond94, _has_fn94, _ctor94,
+                _env_ok94 and VB94.CTRL_NAV_TAB is True, _fresh_tab94)],
+              expect_contain=[(True, True, True, True, True, False)])
+    except Exception as _e94:
+        import traceback as _tp94
+        _tp94.print_exc()
+        check("第 94 节异常: %s" % _e94, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原

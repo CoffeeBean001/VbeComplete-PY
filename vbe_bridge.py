@@ -240,6 +240,20 @@ AUTO_PARAM_INFO = not _env_flag("VBECOMPLETE_NO_PARAM_INFO", False)
 # 调用；真正的读模块 + 插行 + 落光标在主线程（VbeBackend.ctrl_nav_jump），
 # 写不成就把这一下按键原样还给系统。想关掉：`set VBECOMPLETE_NO_CTRL_NAV=1`
 # （开关本身在 main.py，与 SHIFT_NAV_JUMP 放在一起）。
+#
+# ★v110b：Ctrl+↓ 落到收尾区空行之后，**再替用户按一下 Tab**。
+# 用户口径（原话）："还有个地方需要修改，ctrl+↓ 跳到结尾空行，能不能再加个
+# tab 补位？" —— 落点那一行常常是顶格的真空行（我们照 `End Sub` 的缩进补的，
+# 而收尾行惯例顶格），光标落在行首，用户接着写过程体代码还得自己按一次 Tab。
+# 现在让 VBE 自己的 Tab（带 smart indent）把光标推到过程体该在的层级。
+# ⚠️ 只在落点【顶格 / 真空行】时补：带着缩进的空白行说明用户自己摆过层级，
+#    尊重，绝不加深（用户没要求的层级我们不加）。
+# ⚠️ 顺序必须是"光标就位【之后】"（与 v107c 注入 Ctrl+Shift+I 同一条规矩）：
+#    Tab 落在哪个行哪个列，完全取决于那一刻光标在哪。
+# ⚠️ 注入失败 / 拿不到注入函数一律静默跳过 —— Tab 补位是锦上添花，
+#    绝不能因为它没按下去就影响跳转本身。
+# 想关掉：`set VBECOMPLETE_NO_CTRL_NAV_TAB=1`。
+CTRL_NAV_TAB = not _env_flag("VBECOMPLETE_NO_CTRL_NAV_TAB", False)
 
 
 def _co_free():
@@ -1383,11 +1397,17 @@ def v110_stmt_end_line(raw, i, limit):
 
 
 def v110_dim_jump_plan(lines, raw, span):
-    """Ctrl+↑ 的落点计划：`(目标行, 要插入的文本)`（均 0-based；文本 None =
-    目标行已经是空白行，什么都不用插）。不该接管返回 None。
+    """Ctrl+↑ 的落点计划：`(目标行, 要插入的文本, 是否 Tab 补位)`
+    （均 0-based；文本 None = 目标行已经是空白行，什么都不用插）。
+    不该接管返回 None。
 
     目标行 = 本过程最后一个 Dim 语句【下面那一行】。跨行的 Dim 语句要连它的
     续行一起跨过去（在 `Dim a, _` 中间插一行会把语句拆断）。
+
+    ★v110b：第三元恒为 False —— Tab 补位是 Ctrl+↓ 独有的（用户口径只提了
+    "ctrl+↓ 跳到结尾空行，能不能再加个 tab 补位"）。声明区下面那一行紧跟
+    Dim 区，缩进本来就对；真要对称加上也就是把这里改成与 end 计划同款的
+    顶格判据，但**没要求不做**。
     """
     start, end = span
     d = None
@@ -1410,32 +1430,45 @@ def v110_dim_jump_plan(lines, raw, span):
     if nxt > end:
         return None
     if (lines[nxt] or "").strip():
-        return (nxt, _leading_ws(lines[d]))      # 补一行，缩进抄 Dim 行
-    return (nxt, None)
+        return (nxt, _leading_ws(lines[d]), False)   # 补一行，缩进抄 Dim 行
+    return (nxt, None, False)
 
 
 def v110_end_jump_plan(lines, span):
-    """Ctrl+↓ 的落点计划：`(目标行, 要插入的文本)`（0-based；None = 不插行）。
+    """Ctrl+↓ 的落点计划：`(目标行, 要插入的文本, 是否 Tab 补位)`
+    （0-based；None = 不插行）。不该接管返回 None。
 
     目标行 = 过程尾行【上面那一行】；它不是空白就在尾行处补一行（尾行连同
     下面整体下移），缩进抄尾行自己（`End Sub` 顶格时空文本就是真空行）。
+
+    ★v110b：第三元 = 落点行【顶格 / 真空】时为 True（见上面 v110b 注释块）。
+    插入分支看的是"将要插进去的那一行"（`_leading_ws(lines[end])`），不插
+    分支看的是用户留下的那一行原文 —— 带着任何缩进都算"用户摆过层级"，
+    一律不补，绝不加深。
     """
     start, end = span
     prv = end - 1
     if prv < start:
         return None
     if (lines[prv] or "").strip():
-        return (end, _leading_ws(lines[end]))
-    return (prv, None)
+        ins = _leading_ws(lines[end])
+        return (end, ins, ins == ins.lstrip())
+    # ⚠️ 必须 rstrip("\r")：模块文本是 \r\n 分隔的，split("\n") 之后每一行
+    # 行尾都带着 \r，而 "\r".lstrip() == ""（\r 算空白）—— 不 rstrip 的话
+    # 真空行会被判成"带着缩进"，Tab 补位就永远不触发（本轮真踩到）。
+    cur = (lines[prv] or "").rstrip("\r")
+    return (prv, None, cur == cur.lstrip())
 
 
 def ctrl_nav_jump_plan(code, caret_line, direction):
     """Ctrl+↑（direction<0）/ Ctrl+↓（direction>0）这一跳的完整计划（纯函数）。
 
     code = 模块全文；caret_line = 光标行号（1-based）；direction = -1 / +1。
-    返回 `(目标行[1-based], 要插入的文本)`；插入文本为 None 表示目标行已经是
-    空白行、什么都不用插。不该接管（不在过程里 / 没有 Dim / 过程没收尾 /
-    模块形态有问题）返回 None。
+    返回 `(目标行[1-based], 要插入的文本, 是否 Tab 补位)`；插入文本为 None
+    表示目标行已经是空白行、什么都不用插。不该接管（不在过程里 / 没有 Dim /
+    过程没收尾 / 模块形态有问题）返回 None。
+
+    ★v110b 起是三元组（第三元见 v110b 注释块；Ctrl+↑ 恒 False）。
 
     ⚠️ caret_line 允许是"模块最后一行 + 1"：VBE 允许光标停在一个尚不存在的
     虚拟空行上（见 `VbeBackend._write_line` 的说明）。那时按最后一行算 ——
@@ -1465,8 +1498,8 @@ def ctrl_nav_jump_plan(code, caret_line, direction):
             else v110_end_jump_plan(masked, span))
     if plan is None:
         return None
-    tgt, ins = plan
-    return (tgt + 1, ins)          # 转 1-based 交给 COM 用
+    tgt, ins, want_tab = plan
+    return (tgt + 1, ins, bool(want_tab))     # 转 1-based 交给 COM 用
 
 
 # ---- v99：退格成对删除（空括号 / 空引号）----
@@ -3540,7 +3573,7 @@ def host_enum_constants():
 
 
 class VbeBackend:
-    def __init__(self, send_char=None, send_quick_info=None):
+    def __init__(self, send_char=None, send_quick_info=None, send_tab=None):
         # ★v103b：把字符"还给系统"的注入函数（main.send_char）。只在
         # "关键字补空格"这一处用到 —— 真机实测 VBE 会把 ReplaceLine 写进去的
         # 行尾空格 trim 掉，唯一可行的补法是注入一个空格按键。
@@ -3551,6 +3584,11 @@ class VbeBackend:
         # 括号中间"之后用一次 —— 参数信息是 VBE 原生能力，我们不重画。
         # 同样地：传 None 就不做，绝不半途出错（见 AUTO_PARAM_INFO 处的说明）。
         self._send_quick_info = send_quick_info
+        # ★v110b：替用户按一下【Tab】的注入函数（main.send_tab）。只在
+        # Ctrl+↓ 跳到收尾区、落点是顶格/真空行、光标已经就位之后用一次 ——
+        # VBE 自己的 Tab 带 smart indent，正好把光标推到过程体该在的层级。
+        # 传 None 就不做（离线测试 / 老式构造），绝不影响跳转本身。
+        self._send_tab = send_tab
         self._cache = None
         self._cache_time = 0
         self._declared_names = set()
@@ -5357,6 +5395,7 @@ class VbeBackend:
         dim 关键字行，如果此行的下一行不是空行，就自动在此行下方新增一行，
         光标移动到下方空白行；如果此行的下一行是空白行，就不用新增行……
         ctrl+↓ 同理，定位到 end sub 或 end function 行。"
+        ★v110b 追加："ctrl+↓ 跳到结尾空行，能不能再加个 tab 补位？"
 
         判据与钩子侧是【同一份实现】：这里把此刻真读到的模块文本喂给纯函数
         `ctrl_nav_jump_plan`（v87 的规矩）。模块是整份读的，所以"当前过程"
@@ -5366,6 +5405,11 @@ class VbeBackend:
         接着敲就是对的层级；真空行时 VBE 把列夹到 1。列交给 VBE 自己夹
         （`_caret_to_line_end`）—— 新插入的缩进可能被 VBE trim 成真空行，
         所以落光标之前必须重新读一遍目标行。
+
+        ★v110b：落点顶格/真空（计划第三元）时，**光标就位之后**再让 main 注入
+        的 `send_tab` 替用户按一下 Tab —— VBE 自己的 Tab 带 smart indent，
+        会把光标推到过程体该在的层级。顺序不能反（Tab 落在哪取决于那一刻
+        光标在哪，v107c 同一条规矩）；注入失败静默跳过，绝不影响跳转本身。
 
         ⚠️ 这些情形一律返回 False（调用方把这一下按键原样还给系统，绝不会
         出现"吞了按键却什么都没发生"）：
@@ -5404,7 +5448,7 @@ class VbeBackend:
             plan = ctrl_nav_jump_plan(code, line, direction)
             if plan is None:
                 return False
-            target, insert_text = plan
+            target, insert_text, want_tab = plan
             # 锚点复核（见上面的说明）
             try:
                 cur = str(cm.Lines(target, 1)).rstrip("\r\n")
@@ -5424,6 +5468,16 @@ class VbeBackend:
                 # 兜底：该编辑器不夹列 -> 才回去按列语义算（见 _caret_to_line_end）
                 _c = _eol_caret_col(actual, _sem_cache.get("info"))
                 cp.SetSelection(target, _c, target, _c)
+            # ★v110b：Tab 补位 —— 必须排在光标就位【之后】（见方法说明）。
+            # 注入函数拿不到 / 开关关着 / 抛异常，一律静默跳过：光标已经落好，
+            # 这一跳算成功，Tab 只是锦上添花。
+            if want_tab and CTRL_NAV_TAB:
+                _tab = getattr(self, "_send_tab", None)
+                if _tab is not None:
+                    try:
+                        _tab()
+                    except Exception:
+                        pass
             return True
         except Exception:
             return False
