@@ -99,6 +99,8 @@ VK_PROCESSKEY = 0xE5   # IME 组字过程中的按键（vkCode=229），不携�
 VK_CONTROL = 0x11
 VK_MENU = 0x12         # Alt
 VK_I = 0x49            # v107c：Ctrl+Shift+I = VBE 的「参数信息 / 快速信息」
+VK_LWIN = 0x5B         # v110：左 Win 键。Win+↑ 是系统快捷键（窗口最大化），
+VK_RWIN = 0x5C         #       绝不接管 —— 见 _ctrl_nav_key_ok 的修饰键门槛
 
 NAV_VKS = (VK_UP, VK_DOWN)
 
@@ -155,27 +157,37 @@ def send_char(ch):
         return False
 
 
-def send_vk(vk):
+def send_vk(vk, ctrl=False):
     """把一个【虚拟键】原样"还给"系统（keydown+keyup）。
 
     只用于兜底：Shift+↑/↓（跳出候选列表并移动光标）那一下已经被我们吞了，
     而对应的 COM 动作没能落成（Excel 正忙 / 代理失效）。此时必须让这一下按键
     真的发生 —— 绝不能"吞掉按键却什么都没发生"（v57 的老规矩）。
     注入的事件带 LLKHF_INJECTED，钩子会放行，不会自己截自己。
+
+    ★v110：`ctrl=True` 时先按下 Ctrl、发完这个键再反序松开（Ctrl+↑ / Ctrl+↓
+    的兜底重发用）。修饰键必须【反序】释放，否则宿主可能看到"Ctrl 还按着"
+    的残留状态。
     """
     try:
-        evts = (_INPUT * 2)()
-        for i, flags in enumerate((0, KEYEVENTF_KEYUP)):
+        k = int(vk)
+        if ctrl:
+            seq = ((VK_CONTROL, 0), (k, 0),
+                   (k, KEYEVENTF_KEYUP), (VK_CONTROL, KEYEVENTF_KEYUP))
+        else:
+            seq = ((k, 0), (k, KEYEVENTF_KEYUP))
+        evts = (_INPUT * len(seq))()
+        for i, (key, flags) in enumerate(seq):
             e = evts[i]
             e.type = INPUT_KEYBOARD
-            e.u.ki.wVk = int(vk)
+            e.u.ki.wVk = key
             e.u.ki.wScan = 0
             e.u.ki.dwFlags = flags
             e.u.ki.time = 0
             e.u.ki.dwExtraInfo = 0
         n = ctypes.windll.user32.SendInput(
-            2, ctypes.byref(evts), ctypes.sizeof(_INPUT))
-        return int(n) == 2
+            len(seq), ctypes.byref(evts), ctypes.sizeof(_INPUT))
+        return int(n) == len(seq)
     except Exception:
         return False
 
@@ -235,6 +247,32 @@ def _is_line_nav_shortcut(vk, shift_down):
     用户抱怨的"没法把光标移到上下行"了。
     """
     return vk in NAV_VKS and bool(shift_down)
+
+
+# ★v110：Ctrl+↑ / Ctrl+↓ 用的两个虚拟键（抽出来给纯判据和钩子共用一份）。
+CTRL_NAV_VKS = (VK_UP, VK_DOWN)
+
+
+def _ctrl_nav_vk_ok(vk, ctrl_down, shift_down, alt_down, win_down):
+    """这一下是不是"【单独】按着 Ctrl 的 ↑/↓"（★v110，纯函数，无系统调用）。
+
+    修饰键门槛一道都不能少：
+      * 必须按着 Ctrl —— 不然就是普通 ↑/↓（那是候选列表的选词键）；
+      * Shift / Alt / Win 任一在按都【不算】：Ctrl+Shift+↑ 在别的编辑器里是
+        "往上扩选"、Win+↑ 是系统的窗口最大化，都不是我们这个功能。尤其 Win：
+        低层钩子看得见它，吞了用户的窗口最大化可是要出事儿的。
+
+    真正的"要不要接管"还有两道闸（输入法组字 / COM 退避 / 焦点不在代码窗格），
+    那两道要读运行期状态，由 main() 里的 _ctrl_nav_key_ok 负责 —— 与
+    `_is_newline_shortcut` 同一分工：纯判据放模块级，状态采集放钩子侧。
+    """
+    if vk not in CTRL_NAV_VKS:
+        return False
+    if not ctrl_down:
+        return False
+    if shift_down or alt_down or win_down:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +549,27 @@ try:
                                      "0").strip() != "1")
 except Exception:
     SHIFT_NAV_JUMP = True
+
+# ★v110：Ctrl+↑ / Ctrl+↓ = 在【当前过程】内跳转（用户 2026-10-15 提的两条）。
+#   Ctrl+↑：跳到本过程最后一个 Dim 语句下面的空白行（没有就照 Dim 行的缩进
+#           补一行），光标落在上面；
+#   Ctrl+↓：跳到本过程 End Sub / End Function / End Property 行上面的空白行
+#           （没有就照收尾行的缩进补一行）。
+# 用户口径（原话）："当我按 ctrl+↑，光标会自动定位到当前过程中最后一个 dim
+# 关键字行，如果此行的下一行不是空行，就自动在此行下方新增一行，光标移动到
+# 下方空白行；如果此行的下一行是空白行，就不用新增行……ctrl+↓ 同理，定位到
+# end sub 或 end function 行。"
+#
+# 判据与写入的实现在 vbe_bridge（纯函数 ctrl_nav_jump_plan + 后端方法
+# ctrl_nav_jump），这里只负责"这一下按键要不要接管"（键盘钩子线程，只读本地
+# 状态、不碰 COM —— 与 _bs_delete_pair_key_ok 同一副骨架）。
+# 想关掉：`set VBECOMPLETE_NO_CTRL_NAV=1`（Ctrl+↑/↓ 原样交给 VBE，而 VBE
+# 原生这两个组合什么都不做）。
+try:
+    CTRL_NAV_JUMP = (os.environ.get("VBECOMPLETE_NO_CTRL_NAV",
+                                    "0").strip() != "1")
+except Exception:
+    CTRL_NAV_JUMP = True
 
 # 回车自动缩进（v79）。
 #
@@ -1187,6 +1246,39 @@ def main():
             _log("navline: COM 未落成 -> 按键原样还给系统 (delta=%d)" % delta)
             send_vk(VK_UP if delta < 0 else VK_DOWN)
 
+    def _ctrl_nav_jump_here(direction):
+        """Ctrl+↑（direction<0）/ Ctrl+↓（direction>0）：跳到当前过程里
+        声明区末尾 / 过程末尾的空白行（★v110）。
+
+        用户口径（原话）："当我按 ctrl+↑，光标会自动定位到当前过程中最后一个
+        dim 关键字行，如果此行的下一行不是空行，就自动在此行下方新增一行，
+        光标移动到下方空白行；如果此行的下一行是空白行，就不用新增行……
+        ctrl+↓ 同理，定位到 end sub 或 end function 行。"
+
+        顺序与 _move_caret_here 一致：先收窗（光标要换行了，列表留着没意义），
+        再用 COM 落光标。COM 没落成（VBE 正忙 / 代理失效 / 判据不成立，比如
+        光标在模块声明区、或本过程一个 Dim 都没有）就把这一下按键原样还给
+        系统 —— 绝不"吞掉按键却什么都没发生"。VBE 原生 Ctrl+↑/↓ 什么都不做，
+        所以还回去也只是"什么都不会发生"，不会和原生行为打架。
+
+        ★改过代码文本 + 移过光标，必须当场作废快照（state["cur_ctx"] = None）：
+        快照是轮询刷的，不作废的话随后一次轮询会拿旧行文本去比对，平白多弹
+        一次候选窗（与 _delete_blank_line_here 同一条规矩）。
+        """
+        try:
+            completer.hide()
+        except Exception:
+            pass
+        _ok = False
+        try:
+            _ok = backend.ctrl_nav_jump(direction)
+        except Exception:
+            _ok = False
+        state["cur_ctx"] = None
+        if not _ok:
+            _log("ctrlnav: 未接管 -> 按键原样还给系统 (direction=%d)" % direction)
+            send_vk(VK_UP if direction < 0 else VK_DOWN, ctrl=True)
+
     def _auto_pair_here(ch):
         """自动配对（`(` -> `()`、`"` -> `""`、右半边已存在则跨过去）。
 
@@ -1330,6 +1422,46 @@ def main():
         except Exception:
             return False
 
+    def _ctrl_nav_key_ok(vk):
+        """这一下 Ctrl+↑ / Ctrl+↓ 要不要由我们接管（★v110，跑在键盘钩子线程）。
+
+        与 v94 / v99 同一副骨架：钩子线程只读【本地状态】、绝不碰 COM。但有一
+        处根本不同 —— 这里【不读快照、也不做任何代码判据】。"当前过程的最后
+        一个 Dim 在哪"需要整个模块的文本，而轮询快照（state["cur_ctx"]）只有
+        光标所在的那一行；为它在钩子里现读模块等于把 COM 搬进钩子线程（v56
+        的血泪教训）。
+
+        所以钩子只回答"这个按键该不该由我们接手"，真正的判据（vbe_bridge
+        .ctrl_nav_jump_plan）与写入全在主线程、拿【此刻真读到的】模块文本重
+        算一遍；算不成立就把这一下按键原样还给系统。这比"拿 100ms 前的行文本
+        赌用户正在敲的那一行"安全得多，也不会出现"吞了键却什么都没发生"。
+
+        修饰键门槛在模块级纯函数 `_ctrl_nav_vk_ok`（可单测）；这里补两道读
+        运行期状态的闸：`pending_keys > 0`（输入法正在组字 / 刚敲的字还没落进
+        文档，与 v79 回车那条同一道闸）与 COM 退避 / 焦点不在 VBE 代码窗格。
+        """
+        try:
+            if not CTRL_NAV_JUMP:
+                return False
+            if vk not in CTRL_NAV_VKS:
+                return False          # 先挡掉绝大多数按键，省三次系统调用
+            u32 = ctypes.windll.user32
+            if not _ctrl_nav_vk_ok(
+                    vk,
+                    bool(u32.GetAsyncKeyState(VK_CONTROL) & 0x8000),
+                    _shift_down(),
+                    bool(u32.GetAsyncKeyState(VK_MENU) & 0x8000),
+                    bool(u32.GetAsyncKeyState(VK_LWIN) & 0x8000
+                         or u32.GetAsyncKeyState(VK_RWIN) & 0x8000)):
+                return False
+            if int(state.get("pending_keys") or 0) > 0:
+                return False
+            if com_backoff_remaining() > 0 or not in_vbe_code_area():
+                return False
+            return True
+        except Exception:
+            return False
+
     def win32_filter(msg, data):
         """
         Windows 低层键盘钩子的事件过滤器（运行在钩子线程）。
@@ -1431,6 +1563,19 @@ def main():
                     suppress = True
                     _log("autopair: 钩子接管 vk=0x%X -> %r"
                          % (vk, _ime_ch))
+                elif _ctrl_nav_key_ok(vk):
+                    # ★v110：Ctrl+↑ / Ctrl+↓ = 在当前过程内跳转（跳到声明区
+                    # 末尾 / 过程末尾的空白行）。判据见 _ctrl_nav_key_ok，写入
+                    # 见 _ctrl_nav_jump_here。
+                    #
+                    # ⚠️ 刻意排在下面 `completer.is_visible()` 那条【之前】：
+                    # 候选窗开着时 ↑/↓ 的既有分支不分辨修饰键，会把 Ctrl+↑
+                    # 当成"在列表里选词"吞掉 —— 而用户正一边打字（列表正开着）
+                    # 一边想跳去声明区，那时被列表抢走最难受。与 v90b 的 Tab
+                    # 同一条理：这个键是用户要的，不是列表要的。
+                    action = (_ctrl_nav_jump_here,
+                              (-1 if vk == VK_UP else 1,))
+                    suppress = True
                 elif completer.is_visible():
                     if not in_vbe_code_pane():
                         # 焦点已离开 VBE：收起弹窗，按键照常放行

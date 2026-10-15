@@ -222,6 +222,26 @@ AUTO_SPACE_AFTER_KEYWORD = _env_flag("VBECOMPLETE_AUTO_SPACE", True)
 # 想关掉：`set VBECOMPLETE_NO_PARAM_INFO=1`。
 AUTO_PARAM_INFO = not _env_flag("VBECOMPLETE_NO_PARAM_INFO", False)
 
+# ★v110：Ctrl+↑ / Ctrl+↓ 在【当前过程】内跳转（用户 2026-10-15 提的两条）：
+#   Ctrl+↑：跳到本过程最后一个 `Dim` 语句【下面】那一行 —— 不是空白就照 Dim
+#           行的缩进补一行空白，光标落在上面；
+#   Ctrl+↓：跳到本过程 `End Sub` / `End Function` / `End Property` 行【上面】
+#           那一行 —— 不是空白就照收尾行的缩进补一行空白。
+# 用户口径（原话）："当我按 ctrl+↑，光标会自动定位到当前过程中最后一个 dim
+# 关键字行，如果此行的下一行不是空行，就自动在此行下方新增一行，光标移动到
+# 下方空白行；如果此行的下一行是空白行，就不用新增行，光标移动到下方空白行
+# 就可以了。ctrl+↓ 同理，定位到 end sub 或 end function 行。"
+#
+# 为什么值得做：VBA 的变量声明区固定压在过程开头，"往声明区加一个变量"和
+# "往过程末尾追加几行"是两个高频动作，而 VBE 原生 Ctrl+↑/↓ 什么都不做。
+#
+# 骨架是第 10 条那副老规矩（v94 / v99 / v78 同一副）：判据全在纯函数里
+# （本文件下面 v110_* 一族），既能被单测直接钉住、也能在键盘钩子线程里安全
+# 调用；真正的读模块 + 插行 + 落光标在主线程（VbeBackend.ctrl_nav_jump），
+# 写不成就把这一下按键原样还给系统。想关掉：`set VBECOMPLETE_NO_CTRL_NAV=1`
+# （开关本身在 main.py，与 SHIFT_NAV_JUMP 放在一起）。
+
+
 def _co_free():
     """释放 pywin32 缓存的 COM 代理（仅在显式开启时才会真正调用）。
 
@@ -1250,6 +1270,203 @@ def blank_line_delete_wanted(line_text, caret_ec=None, tabw=4):
     if ec <= 0:
         return False
     return ec == len(t) + 1 or ec == _eol_disp_col(t, tabw)
+
+
+# ---- v110：Ctrl+↑ / Ctrl+↓ 跳到声明区末尾 / 过程末尾的空行 ----
+#
+# 用户口径（原话，2026-10-15）：
+#   "当我按 ctrl+↑，光标会自动定位到当前过程中最后一个 dim 关键字行，如果
+#    此行的下一行不是空行，就自动在此行下方新增一行，光标移动到下方空白行；
+#    如果此行的下一行是空白行，就不用新增行，光标移动到下方空白行就可以了。"
+#   "当我按 ctrl+↓，光标会自动定位到当前过程中的 end sub 或 end function 行，
+#    如果此行的上一行不是空白行，就自动在此行上方新增一行，光标移动到上方
+#    空白行；如果此行的上一行是空白行，就不用新增行……"
+#
+# 下面一族都是【纯函数】：不碰 COM，因此既能被单测直接钉住，也能在键盘钩子
+# 线程里安全调用（钩子线程不许碰 COM —— v56 的教训）。后端
+# `VbeBackend.ctrl_nav_jump` 与这里是【同一份实现】：后端只是把"此刻真读到
+# 的模块文本"喂进同样的纯函数（v87 的规矩：同一条语义只能有一份实现）。
+#
+# ⚠️ 每个判据都收【两份行表】：`lines`（抹白后的，跑正则）与 `raw`（原始的，
+# 判续行）。为什么必须分两份：`_mask_strings_and_comments` 把一整段注释压成
+# 【一个空格】，`' 注释 _` 行尾那个续行符 `_` 跟着注释一起被抹掉了 —— 只拿
+# 抹白行判续行，就认不出"下一行是注释的续行"，于是把注释里那行 `Dim x` 当成
+# 真声明，跳过去之后还会在注释中间插一行、把注释从中间拆断。
+
+# 过程收尾行：只认 Sub / Function / Property。
+# ⚠️ 不能直接用 parser._RE_ANY_PROC_END（那个还含 Type|Enum）：Type / Enum 块
+# 在【模块声明区】、不在过程里，把 `End Type` 当过程尾会在声明区里乱跳。
+_RE_V110_PROC_END = re.compile(r"^\s*End\s+(?:Sub|Function|Property)\b", re.I)
+# Dim 语句行：行首（忽略缩进）就是 Dim。`ReDim` 天然被排掉（它以 Re 开头，
+# 而且 ReDim 本来就不是"声明一个新名字"）。
+_RE_V110_DIM = re.compile(r"^\s*Dim\b", re.I)
+
+
+def _v110_after_continuation(raw, i):
+    """第 i 行（0-based）是不是某个【续行的后半截】（上一物理行以 ` _` 结尾）。
+
+    这种行不可能是语句开头：VBA 的行继续符写作 ` _`（空格 + 下划线），而
+    `Dim a As Long, _` 的续行只能是 `       b As Long` 这种变量表，不会重复
+    出现 Dim / Sub / End 关键字。所以过程头 / 过程尾 / Dim 三类判据都要先排掉
+    它 —— 否则 `' 注释 _` 后面跟一个 `Dim x`（注释被续下去了）会被当成真的
+    Dim 行：跳过去之后还会在注释中间插一行，把注释从中间拆断。
+
+    只吃原始行（见上面关于两份行表的说明）。
+    """
+    return i > 0 and bool(vba_parser._RE_CONT_AT_END.search(
+        (raw[i - 1] or "").rstrip("\r")))
+
+
+def v110_proc_span(lines, raw, idx):
+    """光标（idx，0-based）所在过程的 (头行, 尾行)（0-based，闭区间）。
+
+    不在任何过程里（模块声明区 / 两个过程之间）/ 过程还没有收尾行时返回
+    None —— 调用方据此把按键原样还给系统。
+
+    两条特殊口径：
+      * 光标【就在过程头那一行】时算"在过程里"（刚敲完 `Sub Foo()` 按
+        Ctrl+↑ 就该能跳进它的声明区）。这与 parser.is_proc_header_line 的
+        v79d 口径正好相反，但那边问的是"当前作用域"、这边问的是"归属"——
+        两个问题，不能套同一句结论。
+      * 光标【就在过程尾行】时先跳过它再往上找：否则一上来就撞见 End 行、
+        永远判"不在过程里"，而"光标停在 End Sub 上按 Ctrl+↓"恰恰是最常用
+        的姿势之一。
+    """
+    n = len(lines)
+    if not (0 <= idx < n):
+        return None
+    s = (lines[idx] or "").strip()
+    start = None
+    if s and (vba_parser._RE_SUB.match(s) or vba_parser._RE_PROP.match(s)):
+        # 光标在过程头上：它就是当前过程的头
+        if _v110_after_continuation(raw, idx):
+            return None                      # 续行后半截：模块形态有问题
+        start = idx
+    else:
+        i = idx - 1
+        while i >= 0:
+            t = (lines[i] or "").strip()
+            if t:
+                if (vba_parser._RE_SUB.match(t) or vba_parser._RE_PROP.match(t)):
+                    if _v110_after_continuation(raw, i):
+                        return None          # 续行后半截：不猜，直接放行
+                    start = i
+                    break
+                if vba_parser._RE_ANY_PROC_END.match(t):
+                    return None              # 先撞见收尾行 => 在声明区里
+            i -= 1
+        if start is None:
+            return None
+    j = start + 1
+    while j < n:
+        t = (lines[j] or "").strip()
+        if t and _RE_V110_PROC_END.match(t):
+            if _v110_after_continuation(raw, j):
+                return None                  # 续行后半截：同上，不猜
+            return (start, j)
+        j += 1
+    return None          # 没收尾行（正在写的新过程）：不接管
+
+
+def v110_stmt_end_line(raw, i, limit):
+    """从第 i 行（0-based）出发跨过续行，返回该语句【最后一个物理行】的下标。
+
+    续行一直拖到 limit（过程尾行）还不结束 => 返回 None：那种模块形态下
+    "Dim 语句的下一行"是谁根本说不清，不接管。只吃原始行。
+    """
+    j = i
+    while vba_parser._RE_CONT_AT_END.search((raw[j] or "").rstrip("\r")):
+        j += 1
+        if j >= limit:
+            return None
+    return j
+
+
+def v110_dim_jump_plan(lines, raw, span):
+    """Ctrl+↑ 的落点计划：`(目标行, 要插入的文本)`（均 0-based；文本 None =
+    目标行已经是空白行，什么都不用插）。不该接管返回 None。
+
+    目标行 = 本过程最后一个 Dim 语句【下面那一行】。跨行的 Dim 语句要连它的
+    续行一起跨过去（在 `Dim a, _` 中间插一行会把语句拆断）。
+    """
+    start, end = span
+    d = None
+    for i in range(end - 1, start, -1):          # 只扫过程体，头/尾两行不算
+        t = lines[i]
+        if not (t or "").strip():
+            continue
+        if not _RE_V110_DIM.match(t):
+            continue
+        if _v110_after_continuation(raw, i):
+            continue          # 续行后半截不是 Dim 语句开头，继续往上找
+        d = i
+        break
+    if d is None:
+        return None
+    de = v110_stmt_end_line(raw, d, end)
+    if de is None:
+        return None
+    nxt = de + 1
+    if nxt > end:
+        return None
+    if (lines[nxt] or "").strip():
+        return (nxt, _leading_ws(lines[d]))      # 补一行，缩进抄 Dim 行
+    return (nxt, None)
+
+
+def v110_end_jump_plan(lines, span):
+    """Ctrl+↓ 的落点计划：`(目标行, 要插入的文本)`（0-based；None = 不插行）。
+
+    目标行 = 过程尾行【上面那一行】；它不是空白就在尾行处补一行（尾行连同
+    下面整体下移），缩进抄尾行自己（`End Sub` 顶格时空文本就是真空行）。
+    """
+    start, end = span
+    prv = end - 1
+    if prv < start:
+        return None
+    if (lines[prv] or "").strip():
+        return (end, _leading_ws(lines[end]))
+    return (prv, None)
+
+
+def ctrl_nav_jump_plan(code, caret_line, direction):
+    """Ctrl+↑（direction<0）/ Ctrl+↓（direction>0）这一跳的完整计划（纯函数）。
+
+    code = 模块全文；caret_line = 光标行号（1-based）；direction = -1 / +1。
+    返回 `(目标行[1-based], 要插入的文本)`；插入文本为 None 表示目标行已经是
+    空白行、什么都不用插。不该接管（不在过程里 / 没有 Dim / 过程没收尾 /
+    模块形态有问题）返回 None。
+
+    ⚠️ caret_line 允许是"模块最后一行 + 1"：VBE 允许光标停在一个尚不存在的
+    虚拟空行上（见 `VbeBackend._write_line` 的说明）。那时按最后一行算 ——
+    它必然落在过程尾行之下，判出来是"不在过程里"，原样放行。
+    """
+    try:
+        caret_line = int(caret_line)
+        direction = int(direction)
+    except Exception:
+        return None
+    if not code or direction == 0 or caret_line < 1:
+        return None
+    raw = str(code).split("\n")
+    masked = vba_parser._mask_strings_and_comments(code).split("\n")
+    # 两份行表行数必须一致（抹白只把串/注释压成一个空格、不动换行）。不一致
+    # 说明文本形态超出了这套判据的假设 —— 整体不接管，绝不拿错位的行号去写
+    # 用户的代码。
+    if len(masked) != len(raw):
+        return None
+    n = len(raw)
+    if n <= 0:
+        return None
+    span = v110_proc_span(masked, raw, min(caret_line, n) - 1)
+    if span is None:
+        return None
+    plan = (v110_dim_jump_plan(masked, raw, span) if direction < 0
+            else v110_end_jump_plan(masked, span))
+    if plan is None:
+        return None
+    tgt, ins = plan
+    return (tgt + 1, ins)          # 转 1-based 交给 COM 用
 
 
 # ---- v99：退格成对删除（空括号 / 空引号）----
@@ -5130,4 +5347,85 @@ class VbeBackend:
             return False
         finally:
             # 与 new_line_below 同理：立刻放开手里的 COM 代理，别拖住 Excel 退出。
+            _release_vbe_proxy()
+
+    # ---- v110：Ctrl+↑ / Ctrl+↓ 跳到声明区末尾 / 过程末尾的空行 ----
+    def ctrl_nav_jump(self, direction):
+        """Ctrl+↑（direction<0）/ Ctrl+↓（direction>0）的真正执行者。
+
+        用户口径（原话）："当我按 ctrl+↑，光标会自动定位到当前过程中最后一个
+        dim 关键字行，如果此行的下一行不是空行，就自动在此行下方新增一行，
+        光标移动到下方空白行；如果此行的下一行是空白行，就不用新增行……
+        ctrl+↓ 同理，定位到 end sub 或 end function 行。"
+
+        判据与钩子侧是【同一份实现】：这里把此刻真读到的模块文本喂给纯函数
+        `ctrl_nav_jump_plan`（v87 的规矩）。模块是整份读的，所以"当前过程"
+        的边界以【真实代码】为准，与光标在过程里哪个位置无关。
+
+        落点一律是目标行的【行尾】：空白行上带着缩进时正好停在缩进之后，用户
+        接着敲就是对的层级；真空行时 VBE 把列夹到 1。列交给 VBE 自己夹
+        （`_caret_to_line_end`）—— 新插入的缩进可能被 VBE trim 成真空行，
+        所以落光标之前必须重新读一遍目标行。
+
+        ⚠️ 这些情形一律返回 False（调用方把这一下按键原样还给系统，绝不会
+        出现"吞了按键却什么都没发生"）：
+          * 取不到 COM / 没有活动代码窗格 / 模块行数为 0；
+          * 纯判据说"不该接管"（不在过程里、没有 Dim、过程没收尾……）；
+          * 锚点复核不过：目标行"是不是空白"必须与计划一致（计划说不插就该
+            是空白、说要插就不该是）。不一致说明行号换算错了 —— 宁可这一次
+            不跳，也绝不能把空白行插到用户代码中间（v21 的老规矩）。
+
+        写只有一次（`InsertLines`），且绝不在 finally 里补写（v21）。
+        """
+        try:
+            vbe = _get_vbe_cached()
+            if vbe is None:
+                return False
+            cp = vbe.ActiveCodePane
+            if cp is None:
+                return False
+            cm = cp.CodeModule
+            sl, sc, el, ec = cp.GetSelection()
+            # 光标在选区的【活动端】（与 move_caret_line 同一口径）：正向选择
+            # 在 (el, ec)，反向在 (sl, sc)。
+            if int(el) >= int(sl):
+                line = int(el)
+            else:
+                line = int(sl)
+            if line <= 0:
+                return False
+            try:
+                n = int(cm.CountOfLines)
+            except Exception:
+                n = 0
+            if n <= 0:
+                return False
+            code = cm.Lines(1, n)
+            plan = ctrl_nav_jump_plan(code, line, direction)
+            if plan is None:
+                return False
+            target, insert_text = plan
+            # 锚点复核（见上面的说明）
+            try:
+                cur = str(cm.Lines(target, 1)).rstrip("\r\n")
+            except Exception:
+                return False
+            if bool(cur.strip()) != bool(insert_text is not None):
+                return False
+            if insert_text is not None:
+                # 单次写：InsertLines 在 target 处插入，原有行整体下移 ——
+                # 正是"在目标行处新起一行"。
+                cm.InsertLines(target, insert_text)
+            try:
+                actual = str(cm.Lines(target, 1)).rstrip("\r\n")
+            except Exception:
+                actual = ""
+            if not _caret_to_line_end(cp, cm, target, actual):
+                # 兜底：该编辑器不夹列 -> 才回去按列语义算（见 _caret_to_line_end）
+                _c = _eol_caret_col(actual, _sem_cache.get("info"))
+                cp.SetSelection(target, _c, target, _c)
+            return True
+        except Exception:
+            return False
+        finally:
             _release_vbe_proxy()

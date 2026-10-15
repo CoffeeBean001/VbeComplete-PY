@@ -14209,16 +14209,39 @@ def main():
               expect_contain=[None])
 
         # ---- 78.2.10 ★main.py 接线护栏（离线用例咬不住"钩子有没有接线"）----
+        # ★v110：改成 AST 数，不再数源码字符串。字符串计数会被【注释】喂饱 ——
+        #   v108 记的是"假绿"（注释让本该红的护栏绿了），这次是它的镜像"假红"：
+        #   §93 新写的注释里提了一句"与 _bs_delete_pair_key_ok 同一副骨架"，
+        #   计数从 2 变 3，一条本来没问题的护栏红了。AST 只认真正的定义与引用。
         _msrc78 = io.open(os.path.join(_ROOT78, "main.py"),
                           encoding="utf-8").read()
-        check("78.2.10 ★接线护栏：`_bs_delete_pair_key_ok` 必须**恰好两处**出现"
-              "（一处在 `win32_filter` 之外的定义、一处在钩子里被调用）—— "
+        import ast as _ast78
+        _tree78 = _ast78.parse(_msrc78)
+        _defs78 = [n for n in _ast78.walk(_tree78)
+                   if isinstance(n, _ast78.FunctionDef)
+                   and n.name == "_bs_delete_pair_key_ok"]
+        _calls78 = [n for n in _ast78.walk(_tree78)
+                    if isinstance(n, _ast78.Call)
+                    and isinstance(n.func, _ast78.Name)
+                    and n.func.id == "_bs_delete_pair_key_ok"]
+        _wf78 = None
+        for n in _ast78.walk(_tree78):
+            if isinstance(n, _ast78.FunctionDef) and n.name == "win32_filter":
+                _wf78 = n
+        _refs78 = [n for n in _ast78.walk(_wf78)
+                   if isinstance(n, _ast78.Name)
+                   and n.id == "_delete_pair_here"]
+        _actdef78 = [n for n in _ast78.walk(_tree78)
+                     if isinstance(n, _ast78.FunctionDef)
+                     and n.name == "_delete_pair_here"]
+        check("78.2.10 ★接线护栏：`_bs_delete_pair_key_ok` 必须**恰好一处定义 +"
+              "一处调用**（钩子里），动作函数也要真的存在并被钩子引用 —— "
               "只定义不接线 = 功能完全不存在，而离线用例抓不到这种漏；"
-              "接线了却漏掉吞键 = 按键被吞但什么都没发生。两处都到位才算数",
-              [(_msrc78.count("_bs_delete_pair_key_ok") == 2,
-                "action = (_delete_pair_here, ())" in _msrc78,
-                "def _delete_pair_here():" in _msrc78)],
-              expect_contain=[(True, True, True)])
+              "接线了却漏掉吞键 = 按键被吞但什么都没发生。三处都到位才算数"
+              "（★v110 起用 AST 数：注释里提一句同名 token 就会让字符串计数失真）",
+              [(len(_defs78) == 1, len(_calls78) == 1,
+                len(_refs78) == 1, len(_actdef78) == 1)],
+              expect_contain=[(True, True, True, True)])
         check("78.2.10b 逃生门：`VBECOMPLETE_NO_BS_DELPAIR=1` 能把这条完全关掉"
               "（退格回到 VBE 原生）",
               ["VBECOMPLETE_NO_BS_DELPAIR" in _msrc78],
@@ -16783,6 +16806,322 @@ def main():
         import traceback as _tp92
         _tp92.print_exc()
         check("第 92 节异常: %s" % _e92, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
+    # 93. ★v110：Ctrl+↑ / Ctrl+↓ 跳到声明区末尾 / 过程末尾的空白行
+    #     用户口径（原话）："当我按 ctrl+↑，光标会自动定位到当前过程中最后一个
+    #     dim 关键字行，如果此行的下一行不是空行，就自动在此行下方新增一行，
+    #     光标移动到下方空白行；如果此行的下一行是空白行，就不用新增行，光标
+    #     移动到下方空白行就可以了。ctrl+↓ 同理，定位到 end sub 或 end function
+    #     行，上一行不是空白行就在上方新增一行。"
+    #
+    #     骨架是第 10 条那副老规矩：钩子只判"这个按键该不该接手"（模块级纯函数
+    #     _ctrl_nav_vk_ok + 两道读运行期状态的闸），判据与写入全在主线程、拿
+    #     【此刻真读到的】模块文本重算（vbe_bridge.ctrl_nav_jump_plan +
+    #     VbeBackend.ctrl_nav_jump），写不成就把按键原样还给系统。
+    # ------------------------------------------------------------------
+    print("\n=== 93. ★v110：Ctrl+↑/↓ 跳到声明区 / 过程末尾的空白行 ===")
+    try:
+        import main as _MN93
+        import ast as _ast93
+        import ctypes as _ct93
+        VB93 = VB
+
+        # ---- 93.1 纯判据矩阵：目标行 + 要不要插行（一个元组打包，见 v108 教训）----
+        _S93 = "Sub Foo()\r\n    Dim a As Long\r\n    x = 1\r\nEnd Sub\r\n"
+
+        def _p93(code, caret, direction):
+            return VB93.ctrl_nav_jump_plan(code, caret, direction)
+
+        _g93 = (
+            # ↑：Dim 下面不是空白 -> 插一行（缩进抄 Dim 行），落在 Dim 语句下一行
+            _p93(_S93, 3, -1),
+            # ↑：Dim 下面已经是空白 -> 什么都不插
+            _p93("Sub Foo()\r\n    Dim a As Long\r\n\r\n    x = 1\r\nEnd Sub\r\n", 4, -1),
+            # ↑：一个 Dim 都没有 -> 不接管
+            _p93("Sub Foo()\r\n    x = 1\r\nEnd Sub\r\n", 2, -1),
+            # ↑：取【最后一个】Dim（上面明明还有一个）
+            _p93("Sub Foo()\r\n    Dim a As Long\r\n    x = 1\r\n"
+                 "    Dim b As String\r\n    y = 2\r\nEnd Sub\r\n", 5, -1),
+            # ↑：光标在过程【头】那一行也算在过程里（刚敲完 Sub Foo() 就能跳）
+            _p93(_S93, 1, -1),
+            # ↑：跨行 Dim —— 目标落在语句【结束行】的下一行（绝不能插在中间，
+            #     那会把 `Dim a, _` 这个语句从当中拆断）
+            _p93("Sub Foo()\r\n    Dim a As Long, _\r\n        b As String\r\n"
+                 "    x = 1\r\nEnd Sub\r\n", 4, -1),
+            # ↑：Dim 紧贴 End Sub -> 插在 End 上方
+            _p93("Sub Foo()\r\n    Dim a As Long\r\nEnd Sub\r\n", 2, -1),
+            # ↑：ReDim / 注释里的 Dim / 字符串里的 Dim 都不算 Dim 声明
+            _p93("Sub Foo()\r\n    ReDim a(3)\r\n    x = 1\r\nEnd Sub\r\n", 3, -1),
+            _p93("Sub Foo()\r\n    ' Dim a As Long\r\n    x = 1\r\nEnd Sub\r\n", 3, -1),
+            _p93('Sub Foo()\r\n    s = "Dim a As Long"\r\n    x = 1\r\nEnd Sub\r\n', 3, -1),
+            # ↑：注释【续行】后面那行 Dim 也不算 —— `' 注释 _` 把它续成了注释，
+            #    认出来的话会在注释中间插一行、把注释从当中拆断（本轮真修过）
+            _p93("Sub Foo()\r\n    ' 注释 _\r\n    Dim a As Long\r\n"
+                 "    x = 1\r\nEnd Sub\r\n", 4, -1),
+            # ↑：模块声明区 / 两个过程之间 -> 不接管
+            _p93("Dim g As Long\r\n\r\nSub Foo()\r\n    x = 1\r\nEnd Sub\r\n", 1, -1),
+            _p93("Sub A()\r\nEnd Sub\r\n\r\nSub B()\r\nEnd Sub\r\n", 3, -1),
+            # ↑：过程还没写 End -> 不接管（"过程末尾"说不清）
+            _p93("Sub Foo()\r\n    Dim a As Long\r\n    x = 1\r\n", 3, -1),
+            # ↑：空过程（头尾相接）没有 Dim -> 不接管
+            _p93("Sub Foo()\r\nEnd Sub\r\n", 1, -1),
+            # ↓：End 上方不是空白 -> 插一行，目标就是 End 行自己
+            _p93(_S93, 3, +1),
+            # ↓：End 上方已经是空白 -> 什么都不插
+            _p93("Sub Foo()\r\n    x = 1\r\n\r\nEnd Sub\r\n", 2, +1),
+            # ↓：空过程（头尾相接）-> 插在中间
+            _p93("Sub Foo()\r\nEnd Sub\r\n", 1, +1),
+            # ↓：光标【就在 End 行上】也照常（先跳过它再往上找过程）
+            _p93(_S93, 4, +1),
+            # ↓：Function / Property 一样算过程
+            _p93("Function f() As Long\r\n    f = 1\r\nEnd Function\r\n", 2, +1),
+            _p93("Property Get V()\r\n    x = 1\r\nEnd Property\r\n", 2, +1),
+            # ↓：End Type 不是过程尾（Type 块在模块声明区）
+            _p93("Type T\r\n    a As Long\r\nEnd Type\r\n\r\nSub Foo()\r\n"
+                 "    x = 1\r\nEnd Sub\r\n", 2, -1),
+            # 坏参数：方向 0 / 空代码 / 行号 0
+            _p93(_S93, 3, 0),
+            _p93("", 1, -1),
+            _p93(_S93, 0, -1),
+        )
+        _w93 = (
+            (3, "    "), (3, None), None, (5, "    "), (3, "    "), (4, "    "),
+            (3, "    "), None, None, None, None, None, None, None, None,
+            (4, ""), (3, None), (2, ""), (4, ""), (3, ""), (3, ""), None,
+            None, None, None,
+        )
+        check("93.1 `vbe_bridge.ctrl_nav_jump_plan`（纯函数）：↑=最后一个 Dim "
+              "语句的下一行、↓=End 行；目标行不是空白就照参考行缩进补一行、"
+              "是空白就什么都不插；不在过程里 / 没有 Dim / 过程没收尾 / 续行"
+              "后半截 / 注释与字符串里的 Dim 一律返回 None（= 按键原样还给系统）",
+              [_g93], expect_contain=[_w93])
+
+        # ---- 93.2 集成：后端真的插行 + 落光标 ----
+        class _FCM93:
+            """假 CodeModule：把每次 InsertLines 记下来（行号 + 文本）。"""
+
+            def __init__(self, lines):
+                self.lines = list(lines)
+                self.Name = "Module1"
+                self.inserts = []
+                self.fail_insert = False
+
+            def Lines(self, start, count):
+                return "\r\n".join(self.lines[start - 1:start - 1 + count])
+
+            def ReplaceLine(self, line_no, text):
+                self.lines[line_no - 1] = text
+
+            def InsertLines(self, line_no, text):
+                if self.fail_insert:
+                    raise RuntimeError("模块只读")
+                self.inserts.append((line_no, text))
+                self.lines.insert(line_no - 1, text)
+
+            @property
+            def CountOfLines(self):
+                return len(self.lines)
+
+        class _FPane93:
+            def __init__(self, cm, line=1):
+                self.CodeModule = cm
+                self.sel = (line, 1, line, 1)
+
+            def GetSelection(self):
+                return self.sel
+
+            def SetSelection(self, sl, sc, el, ec):
+                self.sel = (sl, sc, el, ec)
+
+        class _FVBE93:
+            def __init__(self, pane):
+                self.ActiveCodePane = pane
+
+        def _run93(lines, caret_line, direction, fail_insert=False):
+            """跑一次 ctrl_nav_jump，返回 (是否接管, InsertLines 记录, 写后行,
+            光标行, 光标列)。"""
+            cm = _FCM93(lines)
+            cm.fail_insert = bool(fail_insert)
+            pane = _FPane93(cm, caret_line)
+            _old_vbe = VB93._get_vbe
+            _old_gate = VB93._WINDOW_GATE_DISABLED
+            VB93._get_vbe = lambda: _FVBE93(pane)
+            VB93._WINDOW_GATE_DISABLED = True
+            VB93._vbe_cache["obj"] = None
+            VB93.com_reset()
+            try:
+                took = VB93.VbeBackend().ctrl_nav_jump(direction)
+            finally:
+                VB93._get_vbe = _old_vbe
+                VB93._WINDOW_GATE_DISABLED = _old_gate
+            return (bool(took), list(cm.inserts), list(cm.lines),
+                    pane.sel[0], pane.sel[1])
+
+        _SRC93 = ["Sub Foo()", "    Dim a As Long", "    x = 1", "End Sub"]
+        _g93b = (
+            # ↑ 插行：新行落在第 3 行、缩进抄 Dim 行；光标停在新行行尾
+            _run93(_SRC93, 3, -1),
+            # ↑ 不插：Dim 下面本来就是空白行
+            _run93(["Sub Foo()", "    Dim a As Long", "", "    x = 1", "End Sub"], 4, -1),
+            # ↓ 插行：新行落在第 4 行（End 让位）；光标在新行上
+            _run93(_SRC93, 3, +1),
+            # ↓ 不插：End 上面本来就是空白行
+            _run93(["Sub Foo()", "    x = 1", "", "End Sub"], 2, +1),
+            # 不该接管的两类 + 写失败（只读模块）+ direction=0
+            _run93(["Dim g As Long", "", "Sub Foo()", "End Sub"], 1, -1),
+            _run93(["Sub Foo()", "    x = 1", "End Sub"], 2, -1),
+            _run93(_SRC93, 3, -1, fail_insert=True),
+            _run93(_SRC93, 3, 0),
+        )
+        _w93b = (
+            (True, [(3, "    ")],
+             ["Sub Foo()", "    Dim a As Long", "    ", "    x = 1", "End Sub"], 3, 5),
+            (True, [],
+             ["Sub Foo()", "    Dim a As Long", "", "    x = 1", "End Sub"], 3, 1),
+            (True, [(4, "")],
+             ["Sub Foo()", "    Dim a As Long", "    x = 1", "", "End Sub"], 4, 1),
+            (True, [],
+             ["Sub Foo()", "    x = 1", "", "End Sub"], 3, 1),
+            (False, [], ["Dim g As Long", "", "Sub Foo()", "End Sub"], 1, 1),
+            (False, [], ["Sub Foo()", "    x = 1", "End Sub"], 2, 1),
+            (False, [], _SRC93, 3, 1),
+            (False, [], _SRC93, 3, 1),
+        )
+        check("93.2 `VbeBackend.ctrl_nav_jump`（集成）：↑/↓ 各验「插行」与「不插」"
+              "两条路 —— InsertLines 只调一次、行号与缩进都对、光标落在目标行"
+              "行尾（假 pane 不夹列，走的是 _eol_caret_col 兜底：真空行 1 列、"
+              "带缩进 5 列）；不在过程里 / 没有 Dim / 写失败 / direction=0 一律"
+              "返回 False 且一个字节都没改（调用方据此把按键还给系统）",
+              [_g93b], expect_contain=[_w93b])
+
+        # ---- 93.3 修饰键门槛（模块级纯函数）----
+        _U, _D = _MN93.VK_UP, _MN93.VK_DOWN
+        _g93c = (
+            _MN93._ctrl_nav_vk_ok(_U, True, False, False, False),
+            _MN93._ctrl_nav_vk_ok(_D, True, False, False, False),
+            _MN93._ctrl_nav_vk_ok(_U, False, False, False, False),   # 普通 ↑
+            _MN93._ctrl_nav_vk_ok(_D, False, False, False, False),
+            _MN93._ctrl_nav_vk_ok(_U, True, True, False, False),     # Ctrl+Shift+↑
+            _MN93._ctrl_nav_vk_ok(_U, True, False, True, False),     # Ctrl+Alt+↑
+            _MN93._ctrl_nav_vk_ok(_U, True, False, False, True),     # Win+↑
+            _MN93._ctrl_nav_vk_ok(_MN93.VK_RETURN, True, False, False, False),
+            _MN93._ctrl_nav_vk_ok(_MN93.VK_TAB, True, False, False, False),
+            _MN93._ctrl_nav_vk_ok(_MN93.VK_LEFT, True, False, False, False),
+        )
+        check("93.3 `main._ctrl_nav_vk_ok`（纯函数）：只有「单独按着 Ctrl 的 "
+              "↑/↓」算数；Ctrl 没按 / Shift+Alt+Win 任一在按 / 别的键，一律 False "
+              "—— Win 那道尤其不能少（Win+↑ 是系统的窗口最大化，吞了要出事）",
+              [_g93c],
+              expect_contain=[(True, True, False, False, False, False,
+                               False, False, False, False)])
+
+        # ---- 93.4 send_vk(ctrl=True)：修饰键必须反序松开 ----
+        _cap93 = []
+
+        def _fake_si93(n, arr, size):
+            evts = _ct93.cast(arr, _ct93.POINTER(_MN93._INPUT * n)).contents
+            for e in evts:
+                _cap93.append((int(e.u.ki.wVk), int(e.u.ki.dwFlags)))
+            return n
+
+        _old_si93 = _ct93.windll.user32.SendInput
+        try:
+            _ct93.windll.user32.SendInput = _fake_si93
+            _rc_c93 = _MN93.send_vk(_U, ctrl=True)
+            _seq_c93 = list(_cap93)
+            _cap93.clear()
+            _rc_p93 = _MN93.send_vk(_D)          # 老调用方式：两个参数
+            _seq_p93 = list(_cap93)
+        finally:
+            _ct93.windll.user32.SendInput = _old_si93
+        check("93.4 `main.send_vk(vk, ctrl=True)`：兜底重发 Ctrl+↑/↓ 用。"
+              "序列必须是 Ctrl↓ → 键↓ → 键↑ → Ctrl↑（修饰键【反序】松开，"
+              "否则宿主可能看到\"Ctrl 还按着\"的残留）；不传 ctrl 时老行为"
+              "不变（就两个事件）",
+              [(_rc_c93, _seq_c93, _rc_p93, _seq_p93)],
+              expect_contain=[(True,
+                               [(0x11, 0), (0x26, 0), (0x26, 2), (0x11, 2)],
+                               True, [(0x28, 0), (0x28, 2)])])
+
+        # ---- 93.5 结构护栏（AST；源码字符串会被注释喂饱，见 v108 教训）----
+        _msrc93 = io.open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+        _vsrc93 = io.open(os.path.join(ROOT, "vbe_bridge.py"),
+                          encoding="utf-8").read()
+        _tree93 = _ast93.parse(_msrc93)
+        _vtree93 = _ast93.parse(_vsrc93)
+
+        def _fn93(tree, name):
+            for n in _ast93.walk(tree):
+                if isinstance(n, _ast93.FunctionDef) and n.name == name:
+                    return n
+            return None
+
+        _wf93 = _fn93(_tree93, "win32_filter")
+        _ln_ctrl93 = _ln_popup93 = 10 ** 9
+        _branch_ok93 = False
+        for n in _ast93.walk(_wf93):
+            if isinstance(n, _ast93.If):
+                d = _ast93.dump(n.test)
+                if "id='_ctrl_nav_key_ok'" in d:
+                    _ln_ctrl93 = min(_ln_ctrl93, n.lineno)
+                    _branch_ok93 = ("id='_ctrl_nav_jump_here'" in _ast93.dump(n)
+                                    and "Constant(value=True)" in _ast93.dump(n))
+                if ("id='completer'" in d and "attr='is_visible'" in d):
+                    _ln_popup93 = min(_ln_popup93, n.lineno)
+        _act93 = _fn93(_tree93, "_ctrl_nav_jump_here")
+        _act_d93 = _ast93.dump(_act93)
+        _be93 = _fn93(_vtree93, "ctrl_nav_jump")
+        _be_d93 = _ast93.dump(_be93)
+        # 开关：默认开 + 环境变量名出现在【赋值语句】里（不是注释里）
+        _env_ok93 = False
+        for n in _ast93.walk(_tree93):
+            if isinstance(n, _ast93.Assign):
+                for t in n.targets:
+                    if isinstance(t, _ast93.Name) and t.id == "CTRL_NAV_JUMP":
+                        if "VBECOMPLETE_NO_CTRL_NAV" in _ast93.dump(n.value):
+                            _env_ok93 = True
+        check("93.5 结构护栏（AST）：（a）Ctrl+↑/↓ 分支必须排在 `completer."
+              "is_visible()` 【之前】—— 候选窗开着时 ↑/↓ 那条分支不分辨修饰键，"
+              "晚一步就被列表抢走（用户正一边打字一边想跳去声明区）；（b）该分支"
+              "确实吞键并派发 _ctrl_nav_jump_here；（c）动作里作废快照 "
+              "state[\"cur_ctx\"]（改过文本+移过光标）且兜底是 send_vk(..., "
+              "ctrl=True)；（d）后端 ctrl_nav_jump 调的是纯函数 ctrl_nav_jump_plan"
+              "（同一份实现）；（e）开关默认开、逃生门环境变量接在赋值语句上",
+              [(_ln_ctrl93 < _ln_popup93, _branch_ok93,
+                "value='cur_ctx'" in _act_d93,
+                "arg='ctrl'" in _act_d93,
+                "id='ctrl_nav_jump_plan'" in _be_d93,
+                _env_ok93 and _MN93.CTRL_NAV_JUMP is True)],
+              expect_contain=[(True, True, True, True, True, True)])
+
+        # ---- 93.6 逃生门：VBECOMPLETE_NO_CTRL_NAV=1 -> 默认值必须是 False ----
+        _old_env93 = os.environ.get("VBECOMPLETE_NO_CTRL_NAV")
+        _fresh_ctrl93 = None
+        try:
+            os.environ["VBECOMPLETE_NO_CTRL_NAV"] = "1"
+            import importlib.util as _iu93
+            _spec93 = _iu93.spec_from_file_location(
+                "main_fresh93", os.path.join(ROOT, "main.py"))
+            _fresh93 = _iu93.module_from_spec(_spec93)
+            _spec93.loader.exec_module(_fresh93)
+            _fresh_ctrl93 = _fresh93.CTRL_NAV_JUMP
+        except Exception:
+            _fresh_ctrl93 = None
+        finally:
+            if _old_env93 is None:
+                os.environ.pop("VBECOMPLETE_NO_CTRL_NAV", None)
+            else:
+                os.environ["VBECOMPLETE_NO_CTRL_NAV"] = _old_env93
+        check("93.6 逃生门：`set VBECOMPLETE_NO_CTRL_NAV=1` 之后重新加载的 "
+              "main 里 CTRL_NAV_JUMP 必须是 False（ Ctrl+↑/↓ 原样交给 VBE）；"
+              "当前实例默认是 True",
+              [(_fresh_ctrl93, _MN93.CTRL_NAV_JUMP)],
+              expect_contain=[(False, True)])
+    except Exception as _e93:
+        import traceback as _tp93
+        _tp93.print_exc()
+        check("第 93 节异常: %s" % _e93, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原

@@ -46,6 +46,13 @@
   block you just opened (`End Sub`, `Next i`, …).
 - `Shift+Enter` starts a new line below without splitting the current one — the same indentation
   logic as `Enter`, at any column.
+- **`Ctrl+↑` / `Ctrl+↓` jump to the blank lines of a procedure.** `Ctrl+↑` moves the caret to the
+  line *below* the last `Dim` of the current procedure; `Ctrl+↓` moves it to the line *above*
+  `End Sub` / `End Function` / `End Property`. If that line is not blank yet, a blank line with the
+  matching indentation is inserted first — so the two keys always land you on the "declare more"
+  area and the "clean exit" area. VBE's own `Ctrl+↑` / `Ctrl+↓` do nothing in a code pane, so the
+  key is handed back to the system untouched when the move cannot be made (no procedure, no `Dim`,
+  module read-only). Use `VBECOMPLETE_NO_CTRL_NAV=1` to disable.
 
 **Coexistence**
 
@@ -111,6 +118,7 @@ Behaviour is tuned through environment variables (set them before launching):
 | `VBECOMPLETE_NO_IME_PUNCT` | off | `1` always pairs with half-width `()` / `""`, even when the IME is in Chinese-punctuation / full-width mode. |
 | `VBECOMPLETE_NO_BS_DELLINE` / `VBECOMPLETE_NO_BS_DELPAIR` | off | `1` disables the two `Backspace` helpers. |
 | `VBECOMPLETE_NO_ENTER_INDENT` / `VBECOMPLETE_NO_AUTOCLOSE` | off | `1` disables `Enter`-time indentation / automatic block closers. |
+| `VBECOMPLETE_NO_CTRL_NAV` | off | `1` disables the `Ctrl+↑` / `Ctrl+↓` jumps; the keys stay with the VBE. |
 
 ## Project structure
 
