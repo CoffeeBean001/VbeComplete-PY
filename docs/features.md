@@ -46,16 +46,15 @@
   block you just opened (`End Sub`, `Next i`, …).
 - `Shift+Enter` starts a new line below without splitting the current one — the same indentation
   logic as `Enter`, at any column.
-- **`Ctrl+↑` / `Ctrl+↓` jump to the blank lines of a procedure.** `Ctrl+↑` moves the caret to the
-  line *below* the last `Dim` of the current procedure; `Ctrl+↓` moves it to the line *above*
-  `End Sub` / `End Function` / `End Property`. If that line is not blank yet, a blank line is
-  inserted first — so the two keys always land you on the "declare more" area and the "clean exit"
-  area. `Ctrl+↓` also writes the landing line at the procedure's indent level (copied from the last
-  non-blank line above), so the caret drops straight where you can keep typing; a line that already
-  carries indentation is left untouched. VBE's own `Ctrl+↑` / `Ctrl+↓` do nothing in a code pane, so
-  the key is handed back to the system untouched when the move cannot be made (no procedure, no
-  `Dim`, module read-only). Use `VBECOMPLETE_NO_CTRL_NAV=1` to disable, or
-  `VBECOMPLETE_NO_CTRL_NAV_TAB=1` to keep the jump but never add the indent.
+- **`Ctrl+↑` / `Ctrl+↓` jump inside a procedure.** `Ctrl+↑` puts the caret at the **end of the
+  last `Dim` line** of the current procedure — no new line is inserted. `Ctrl+↓` moves the caret to
+  the line *above* `End Sub` / `End Function` / `End Property`; if that line is not blank yet, a
+  blank line is inserted first, and it is written at the procedure's indent level (copied from the
+  last non-blank line above), so the caret drops straight where you can keep typing; a line that
+  already carries indentation is left untouched. VBE's own `Ctrl+↑` / `Ctrl+↓` do nothing in a code
+  pane, so the key is handed back to the system untouched when the move cannot be made (no procedure,
+  no `Dim`, or a read-only module for `Ctrl+↓`). Use `VBECOMPLETE_NO_CTRL_NAV=1` to disable, or
+  `VBECOMPLETE_NO_CTRL_NAV_TAB=1` to keep the `Ctrl+↓` jump but never add the indent.
 
 **Coexistence**
 

@@ -16820,7 +16820,7 @@ def main():
     #     【此刻真读到的】模块文本重算（vbe_bridge.ctrl_nav_jump_plan +
     #     VbeBackend.ctrl_nav_jump），写不成就把按键原样还给系统。
     # ------------------------------------------------------------------
-    print("\n=== 93. ★v110：Ctrl+↑/↓ 跳到声明区 / 过程末尾的空白行 ===")
+    print("\n=== 93. ★v110/v110c：Ctrl+↑ 落到最后一个 Dim 行行尾 / Ctrl+↓ 跳到过程末尾 ===")
     try:
         import main as _MN93
         import ast as _ast93
@@ -16835,9 +16835,9 @@ def main():
             return VB93.ctrl_nav_jump_plan(code, caret, direction)
 
         _g93 = (
-            # ↑：Dim 下面不是空白 -> 插一行（缩进抄 Dim 行），落在 Dim 语句下一行
+            # ↑：落在最后一个 Dim 语句【那一行】的行尾（★v110c：不插行、不动文本）
             _p93(_S93, 3, -1),
-            # ↑：Dim 下面已经是空白 -> 什么都不插
+            # ↑：Dim 下面是不是空白都一样 —— 落点就是 Dim 行本身
             _p93("Sub Foo()\r\n    Dim a As Long\r\n\r\n    x = 1\r\nEnd Sub\r\n", 4, -1),
             # ↑：一个 Dim 都没有 -> 不接管
             _p93("Sub Foo()\r\n    x = 1\r\nEnd Sub\r\n", 2, -1),
@@ -16846,11 +16846,11 @@ def main():
                  "    Dim b As String\r\n    y = 2\r\nEnd Sub\r\n", 5, -1),
             # ↑：光标在过程【头】那一行也算在过程里（刚敲完 Sub Foo() 就能跳）
             _p93(_S93, 1, -1),
-            # ↑：跨行 Dim —— 目标落在语句【结束行】的下一行（绝不能插在中间，
-            #     那会把 `Dim a, _` 这个语句从当中拆断）
+            # ↑：跨行 Dim —— 目标落在语句【结束行】的行尾（`Dim a, _` 那一行不算，
+            #     否则光标会跑到续行符后面）
             _p93("Sub Foo()\r\n    Dim a As Long, _\r\n        b As String\r\n"
                  "    x = 1\r\nEnd Sub\r\n", 4, -1),
-            # ↑：Dim 紧贴 End Sub -> 插在 End 上方
+            # ↑：Dim 紧贴 End Sub -> 落在 Dim 行自己行尾
             _p93("Sub Foo()\r\n    Dim a As Long\r\nEnd Sub\r\n", 2, -1),
             # ↑：ReDim / 注释里的 Dim / 字符串里的 Dim 都不算 Dim 声明
             _p93("Sub Foo()\r\n    ReDim a(3)\r\n    x = 1\r\nEnd Sub\r\n", 3, -1),
@@ -16887,9 +16887,10 @@ def main():
             _p93(_S93, 0, -1),
         )
         _w93 = (
-            # ↑：Dim 下面不是空白 -> ("insert", 缩进抄 Dim 行)；已是空白 -> 不写
-            (3, "insert", "    "), (3, None, None), None, (5, "insert", "    "),
-            (3, "insert", "    "), (4, "insert", "    "), (3, "insert", "    "),
+            # ↑：一律 ("eol", None) —— 光标落在最后一个 Dim 语句【那一行】的行尾，
+            #     不插行、不动文本（★v110c）；没有 Dim / 不在过程里 -> None
+            (2, "eol", None), (2, "eol", None), None, (4, "eol", None),
+            (2, "eol", None), (3, "eol", None), (2, "eol", None),
             None, None, None, None, None, None, None, None,
             # ↓：End 上方不是空白 -> ("insert", 过程体缩进)；
             #     已是真空空白 -> ("swap", 过程体缩进)；已是带缩进空白 -> 不写
@@ -16898,13 +16899,14 @@ def main():
             None,
             None, None, None,
         )
-        check("93.1 `vbe_bridge.ctrl_nav_jump_plan`（纯函数）：↑=最后一个 Dim "
-              "语句的下一行、↓=End 行；目标行不是空白就补一行、是空白就什么都不写；"
+        check("93.1 `vbe_bridge.ctrl_nav_jump_plan`（纯函数）：★v110c 起 ↑=最后一个 "
+              "Dim 语句【那一行】（写入方式 \"eol\" —— 只落行尾、不插行、不动文本）；"
+              "↓=End 行上方那一行，不是空白就补一行、是空白就什么都不写。"
               "不在过程里 / 没有 Dim / 过程没收尾 / 续行后半截 / 注释与字符串里的 "
-              "Dim 一律返回 None（= 按键原样还给系统）。★v110b/2 起返回三元组 "
-              "`(行, 写入方式, 文本)`：insert=在目标行处插一行、swap=把目标那条"
-              "真空空白行换成带缩进的、None=不动文本；缩进都取\"过程体层级\""
-              "（↓ 抄尾行上方最后一条非空行的行首空白，与 ↑ 抄 Dim 行同一条理）",
+              "Dim 一律返回 None（= 按键原样还给系统）。返回三元组 "
+              "`(行, 写入方式, 文本)`：eol=只落行尾、insert=在目标行处插一行、"
+              "swap=把目标那条真空空白行换成带缩进的、None=不动文本；↓ 的缩进取"
+              "\"过程体层级\"（尾行上方最后一条非空行的行首空白）",
               [_g93], expect_contain=[_w93])
 
         # ---- 93.2 集成：后端真的插行 + 落光标 ----
@@ -16975,10 +16977,12 @@ def main():
 
         _SRC93 = ["Sub Foo()", "    Dim a As Long", "    x = 1", "End Sub"]
         _g93b = (
-            # ↑ 插行：新行落在第 3 行、缩进抄 Dim 行；光标停在新行行尾
+            # ★v110c ↑：不插行、一个字节都不改，光标落在 Dim 行（第 2 行）行尾
             _run93(_SRC93, 3, -1),
-            # ↑ 不插：Dim 下面本来就是空白行
+            # ↑：Dim 下面是不是空白都一样（落点仍是第 2 行行尾）
             _run93(["Sub Foo()", "    Dim a As Long", "", "    x = 1", "End Sub"], 4, -1),
+            # ↑ 根本不写文本 -> 模块只读（一写就抛）也照样跳得成
+            _run93(_SRC93, 3, -1, fail_insert=True),
             # ↓ 插行：新行落在第 4 行（End 让位）、直接带过程体缩进
             _run93(_SRC93, 3, +1),
             # ↓ swap：End 上面本来真空 -> 插一条带缩进的、再删掉原真空行
@@ -16986,14 +16990,15 @@ def main():
             # 不该接管的两类 + 写失败（只读模块）+ direction=0
             _run93(["Dim g As Long", "", "Sub Foo()", "End Sub"], 1, -1),
             _run93(["Sub Foo()", "    x = 1", "End Sub"], 2, -1),
-            _run93(_SRC93, 3, -1, fail_insert=True),
+            # ↑ 已经不再写文本了，所以"写失败"这条得用 ↓ 才走得到 InsertLines
+            _run93(_SRC93, 3, +1, fail_insert=True),
             _run93(_SRC93, 3, 0),
         )
         _w93b = (
-            (True, [(3, "    ")], [],
-             ["Sub Foo()", "    Dim a As Long", "    ", "    x = 1", "End Sub"], 3, 5),
+            (True, [], [], _SRC93, 2, 18),
             (True, [], [],
-             ["Sub Foo()", "    Dim a As Long", "", "    x = 1", "End Sub"], 3, 1),
+             ["Sub Foo()", "    Dim a As Long", "", "    x = 1", "End Sub"], 2, 18),
+            (True, [], [], _SRC93, 2, 18),
             (True, [(4, "    ")], [],
              ["Sub Foo()", "    Dim a As Long", "    x = 1", "    ", "End Sub"], 4, 5),
             (True, [(3, "    ")], [(4, 1)],
@@ -17003,13 +17008,15 @@ def main():
             (False, [], [], _SRC93, 3, 1),
             (False, [], [], _SRC93, 3, 1),
         )
-        check("93.2 `VbeBackend.ctrl_nav_jump`（集成）：↑/↓ 各验「插行」与「不插」"
-              "两条路 —— 目标行/参考行行号都对、缩进是过程体层级、光标落在目标"
-              "行行尾（假 pane 不夹列，走 _eol_caret_col 兜底：真空行 1 列、"
-              "带缩进 5 列）；★v110b/2：↓ 落点是真空空白行时用「插一条 + 删旧"
-              "那条」把真空行换成带缩进的（不能 ReplaceLine —— VBE 会 trim 行尾"
-              "空白）；不在过程里 / 没有 Dim / 写失败 / direction=0 一律返回 "
-              "False 且一个字节都没改（调用方据此把按键还给系统）",
+        check("93.2 `VbeBackend.ctrl_nav_jump`（集成）：★v110c ↑ 只落 Dim 行行尾"
+              "（一个字节都不改、光标在第 2 行行尾第 18 列；模块只读也照样跳得成，"
+              "因为它根本不写文本），↓ 各验「插行」与「不插」两条路 —— 目标行/"
+              "参考行行号都对、缩进是过程体层级、光标落在目标行行尾（假 pane 不夹"
+              "列，走 _eol_caret_col 兜底：真空行 1 列、带缩进 5 列、Dim 行 18 列）；"
+              "↓ 落点是真空空白行时用「插一条 + 删旧那条」把真空行换成带缩进的"
+              "（不能 ReplaceLine —— VBE 会 trim 行尾空白）；不在过程里 / 没有 "
+              "Dim / 写失败 / direction=0 一律返回 False 且一个字节都没改"
+              "（调用方据此把按键还给系统）",
               [_g93b], expect_contain=[_w93b])
 
         # ---- 93.3 修饰键门槛（模块级纯函数）----
@@ -17163,7 +17170,7 @@ def main():
             _p94("Sub Foo()\r\nEnd Sub\r\n", 1, +1),
             # 用户已摆好缩进的空白行 -> 不动（绝不加深）
             _p94("Sub Foo()\r\n    x = 1\r\n    \r\nEnd Sub\r\n", 2, +1),
-            # ↑ 照旧：抄 Dim 行的缩进
+            # ★v110c ↑：落在最后一个 Dim 行行尾 —— 不插行、不动文本
             _p94("Sub Foo()\r\n    Dim a As Long\r\n    x = 1\r\nEnd Sub\r\n", 3, -1),
             # 不在过程里 -> None
             _p94("Dim g As Long\r\n\r\nSub Foo()\r\nEnd Sub\r\n", 1, +1),
@@ -17171,13 +17178,14 @@ def main():
         _w94 = (
             (3, "insert", "    "), (3, "swap", "    "), (5, "insert", "    "),
             (3, "insert", "    "), (2, "insert", ""), (3, None, None),
-            (3, "insert", "    "),
+            (2, "eol", None),
             None,
         )
         check("94.1 `ctrl_nav_jump_plan` 的**过程体缩进**：Ctrl+↓ 的落点缩进 = "
-              "尾行上方最后一条非空行的行首空白（与 Ctrl+↑ 抄 Dim 行同一条理）—— "
-              "一级过程体、多级嵌套（抄 `End If` 那一级）、空过程（顶格）都对；"
-              "用户自己摆过缩进的空白行一律不动（绝不加深）",
+              "尾行上方最后一条非空行的行首空白 —— 一级过程体、多级嵌套"
+              "（抄 `End If` 那一级）、空过程（顶格）都对；用户自己摆过缩进的"
+              "空白行一律不动（绝不加深）；★v110c 的 Ctrl+↑ 一个字节都不写"
+              "（写入方式 \"eol\"，只落 Dim 行行尾）",
               [_g94], expect_contain=[_w94])
 
         # ---- 94.2 后端："swap" 真的插一条带缩进的 + 删原真空行；开关关掉退化 ----
