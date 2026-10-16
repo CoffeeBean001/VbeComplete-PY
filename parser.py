@@ -998,6 +998,74 @@ def _paren_depth_at(lines, idx, caret_col):
     return depth
 
 
+_IDENT_TAIL_CHARS = "_$%&!@"
+"""VBA 名字末尾允许出现、但 `str.isalnum()` 不认的字符（类型声明符）。
+
+`Mid$(` / `x%(` / `obj.Tag!(` 里的 `$ % !` 都属于**名字的一部分** ——
+判"括号左边是不是一个名字"时必须认它们，否则这几路会漏判（见
+`enclosing_call_paren`）。
+"""
+
+
+def enclosing_call_paren(line_text, col0):
+    """光标之前【最内层、未闭合、且属于"调用实参表 / 过程形参表"的左括号】下标。
+
+    找不到这样的左括号时返回 None。★v113：自动配对（`vbe_bridge._pair_insertion`）
+    用它回答"光标是不是正待在某个调用的实参表里、或某个过程的形参表里" —— 那种
+    位置敲 `(` 是在**开一层新的**（`foo(bar(`、`Sub Foo(ByVal arr(`），右侧那个
+    `)` 是**外层**的，所以该照旧补一对。
+
+    只答这一问、只答一层：
+      * 先按 `scan_code_states` 跳过字符串与注释里的字符 —— `s = "(" & foo(`
+        里字符串中那个 `(` 不算数（它是这套扫描规则的**唯一实现**，见其 docstring）；
+      * 再在 `line_text[:col0]` 上做一次括号配对，取**最内层没闭合的那个 `(`**
+        （多层未闭合时，包住光标的永远是最后一层）；全角 `（` / `）` 与半角同路
+        ——输入法在中文标点档时整行都是全角，两套混着数才不会漏；
+      * 那个 `(` 前面（跳过空白）必须紧挨一个**标识符字符**。这条是"括号组是
+        调用/形参表"与"括号组只是运算分组"的分界线：
+            `foo(` / `arr(` / `Obj.Method(` / `Sub Foo(` / `Mid$(`  -> 是；
+            `x = (a + (` / 行首 `(` / `If (a And (`               -> 不是。
+        右括号、运算符、行首（左边什么都没有）一律不算 —— **宁可少接管**：判错
+        会平白多插一个 `)`，而漏判只是退回 v112 的"只插左括号"。
+
+    ⚠️ 只吃**当前这一行**。v53 那种 `Sub Foo( _` + 缩进形参行的续行，光标落在
+    续行上时这里看不出括号还开着（跨行的那一份是 `_paren_depth_at`，它跑在整个
+    模块文本上）。那种情形退化成 v112 的行为，不会写错。
+    """
+    line = (line_text or "").rstrip("\r")
+    try:
+        end = max(0, min(int(col0), len(line)))
+    except Exception:
+        end = len(line)
+    if end <= 0:
+        return None
+    try:
+        states = scan_code_states(line)
+    except Exception:
+        states = None
+    stack = []
+    for i in range(end):
+        if states is not None and i < len(states) and states[i]:
+            continue
+        ch = line[i]
+        if ch in "(（":
+            stack.append(i)
+        elif ch in ")）":
+            if stack:
+                stack.pop()
+    if not stack:
+        return None
+    k = stack[-1]
+    j = k - 1
+    while j >= 0 and line[j] in " \t":
+        j -= 1
+    if j < 0:
+        return None
+    if line[j].isalnum() or line[j] in _IDENT_TAIL_CHARS:
+        return k
+    return None
+
+
 def decl_position_keywords(code, caret):
     """光标在【声明位置】上时该提示的语言关键字（小写 frozenset）；None = 照旧静默。
 

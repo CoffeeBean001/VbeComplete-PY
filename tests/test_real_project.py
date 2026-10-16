@@ -3573,9 +3573,12 @@ def main():
         check("35.9 在未闭合字符串里敲 \" -> 只补收尾那一半（算不上\"一对\"）",
               [_pi('s = "abc', 8, '"', '"')],
               expect_contain=[('s = "abc"', 9, False)])
-        check("35.10 ★v112 行中间敲 ( -> 右侧有内容，只插左括号、不补右半边",
-              [_pi("foo(a, b)", 5, "(", ")")],
-              expect_contain=[("foo(a(, b)", 6, False)])
+        # ★v113：原用例写的是 `foo(a, b)` 光标停在 `foo(` 里面 —— 那种"实参表里"
+        # 的位置 v113 起改成**照旧补一对**（见 §97），所以这里换一个**不在**任何
+        # 调用括号里的行来钉 v112 那条规则（右侧有内容 -> 只插左括号）。
+        check("35.10 ★v112 行中间敲 ( -> 右侧有内容、且不在调用括号里，只插左括号",
+              [_pi("x = ab", 4, "(", ")")],
+              expect_contain=[("x = (ab", 5, False)])
 
         # --- 后端集成：真写进"编辑器"（假 VBE）并把光标摆到中间 ---
         class _Mod35(object):
@@ -17497,10 +17500,11 @@ def main():
             _pi96("x = ", 4, "(", ")"),          # 行尾 -> 补一对
             _pi96("x =  ", 5, "(", ")"),         # 右侧只剩空白 -> 仍算"行尾"
             _pi96("x = ab", 4, "(", ")"),        # 右侧有内容 -> 只插左
-            _pi96("foo(a, b)", 5, "(", ")"),     # 光标在行中间 -> 只插左
+            # ★v113：`foo(a, b)` 光标停在 `foo(` 里 -> 实参表里照旧补一对（§97）
+            _pi96("foo(a, b)", 5, "(", ")"),
             _pi96("x = 1", 0, "(", ")"),         # 行首（右侧全是内容）-> 只插左
             _pi96("x = ", 4, "（", "）"),         # 全角行尾 -> 补一对
-            _pi96("foo（a）", 4, "（", "）"),      # 全角中间 -> 只插左
+            _pi96("foo（a）", 4, "（", "）"),      # ★v113：全角实参表里 -> 补一对
             _pi96("s = ", 4, '"', '"'),          # 引号不受影响：行尾仍补一对
             _pi96("    w=4", 4, '"', '"'),       # 引号不受影响：右侧有内容仍补
         )
@@ -17508,17 +17512,19 @@ def main():
             ("x = ()", 5, True),
             ("x =  ()", 6, True),
             ("x = (ab", 5, False),
-            ("foo(a(, b)", 6, False),
+            ("foo(a(), b)", 6, True),
             ("(x = 1", 1, False),
             ("x = （）", 5, True),
-            ("foo（（a）", 5, False),
+            ("foo（（）a）", 5, True),
             ('s = ""', 5, True),
             ('    ""w=4', 5, True),
         )
         check("96.1 `_pair_insertion`：敲左括号时**右侧还有内容就只插左括号**"
               "（用户口径）—— 行尾 / 右侧只剩空白才补一对；半角全角同路；"
               "引号**刻意不走这条**（`w=4` 那种\"右侧有内容仍补一对\"是既有"
-              "行为，且引号另有\"在不在字符串里\"的先判据）",
+              "行为，且引号另有\"在不在字符串里\"的先判据）。"
+              "★v113 起有一个例外：光标在实参表 / 形参表里**仍补一对**"
+              "（这两例照 v113 的期望写，规则本身在 §97 钉）",
               [_g96], expect_contain=[_w96])
 
         # ---- 96.2 集成（假 VBE）----
@@ -17577,7 +17583,10 @@ def main():
         _g96b = (
             _run96("x = ", 1, 5, 1, 5, "("),        # 行尾 -> 补一对
             _run96("x = ab", 1, 5, 1, 5, "("),      # 右侧有内容 -> 只插左
-            _run96("foo(a, b)", 1, 5, 1, 5, "("),   # 行中间 -> 只插左
+            # 行首缩进里（不在任何调用括号里）-> 只插左。
+            # ★v113 起本用例原本是 `foo(a, b)` 光标停在 `foo(` 里 —— 那属于
+            # "实参表里"，现在改成补一对（见 §97），故换一行
+            _run96("    x = ab", 1, 5, 1, 5, "("),
             # 只插左括号后 VBE 补空格：行里没有 `()`，得走前缀定位
             _run96("x=(ab", 1, 3, 1, 3, "(",
                    fmt=lambda s: s.replace("=(", "= (")),
@@ -17599,7 +17608,7 @@ def main():
         _w96b = (
             (True, "x = ()", 6, 6),
             (True, "x = (ab", 6, 6),
-            (True, "foo((a, b)", 6, 6),
+            (True, "    (x = ab", 6, 6),
             (True, "x= ((ab", 5, 5),
             (True, 'x = "abc"', 10, 10),
             (True, "x = “abc”", 10, 10),
@@ -17652,6 +17661,190 @@ def main():
         import traceback as _tp96
         _tp96.print_exc()
         check("第 96 节异常: %s" % _e96, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
+    # 97. ★v113：在【实参表 / 形参表】里敲左括号仍要补全右半边（用户口径）
+    #     用户报："如果在某个函数或过程形参里，或者是对象属性方法参数里输入
+    #     左括号，需要能自动补全右括号的。" —— 即 v112 那条"右侧有内容就只插
+    #     左括号"需要给这两种位置开例外：那里右侧的 `)` 属于**外层**括号组。
+    # ------------------------------------------------------------------
+    print("\n=== 97. ★v113：实参表 / 形参表里敲 ( 仍补一对 ===")
+    try:
+        import parser as _P97
+        import vbe_bridge as VB97
+        _cp97 = _P97.enclosing_call_paren
+
+        # ---- 97.1 纯判据：光标左边最内层未闭合的括号是不是"调用 / 形参表" ----
+        _g97a = (
+            _cp97("foo(bar", 7),              # 调用实参表里
+            _cp97("Sub Foo(ByVal arr", 17),   # 形参表里
+            _cp97("Obj.Method(", 11),         # 对象.方法
+            _cp97("Mid$(", 5),                # 类型声明符结尾的名字也算
+            _cp97("foo（a", 4),               # 全角括号同路
+            _cp97("foo(a) + bar(", 13),       # 前面已闭合的那组不算数
+            _cp97("foo(1, (2 + 3", 13),       # 最内层是**运算分组** -> 不算
+            _cp97("x = (a + (", 9),           # 同上
+            _cp97("x = (a ", 7),              # 括号左边是 `=` -> 不算
+            _cp97("(", 1),                    # 行首括号 -> 不算
+            _cp97("x = (a + b)", 12),         # 括号已闭合 -> 不算
+            _cp97("foo(a)", 6),               # 同上
+            _cp97('s = "(" & foo(', 14),      # 字符串里那个 `(` 不算、foo( 算
+            _cp97('s = "(" & foo(', 13),      # 光标还在字符串里 -> 不算
+            _cp97("' foo(", 6),               # 注释里 -> 不算
+            _cp97("", 0),                     # 空行
+        )
+        _w97a = (
+            3, 7, 10, 4, 3, 12,
+            None, None, None, None, None, None,
+            13, None, None, None,
+        )
+        check("97.1 `parser.enclosing_call_paren`：只认【最内层未闭合、且紧挨着"
+              "标识符】的那个左括号（实参表 / 形参表）；运算分组、行首括号、"
+              "已闭合的组一律不认；字符串 / 注释里的括号不算数；半角全角同路；"
+              "`$` 这类类型声明符结尾的名字也算名字",
+              [_g97a], expect_contain=[_w97a])
+
+        # ---- 97.2 纯判据：`_pair_insertion` 在这两种位置照旧补一对 ----
+        _pi97 = VB97._pair_insertion
+        _g97b = (
+            _pi97("foo(bar", 7, "(", ")"),                  # 行尾（本来也补）
+            _pi97("x = ", 4, "(", ")"),                     # 行尾（v112 既有）
+            _pi97("foo(a, b)", 5, "(", ")"),                # ★实参表里、右侧有内容
+            _pi97("Sub Foo(ByVal arr)", 17, "(", ")"),      # ★形参表里（形参数组）
+            _pi97("foo（a）", 4, "（", "）"),                 # ★全角实参表里
+            _pi97("x = ab", 4, "(", ")"),                   # 不在调用括号里 -> 只插左
+            _pi97("x = (a + b)", 7, "(", ")"),              # 运算分组里 -> 只插左
+            _pi97("x = 1", 0, "(", ")"),                    # 行首 -> 只插左
+            _pi97("    w=4", 4, '"', '"'),                  # 引号不受影响（v112）
+        )
+        _w97b = (
+            ("foo(bar()", 8, True),
+            ("x = ()", 5, True),
+            ("foo(a(), b)", 6, True),
+            ("Sub Foo(ByVal arr())", 18, True),
+            ("foo（（）a）", 5, True),
+            ("x = (ab", 5, False),
+            ("x = (a (+ b)", 8, False),
+            ("(x = 1", 1, False),
+            ('    ""w=4', 5, True),
+        )
+        check("97.2 `_pair_insertion`：**在实参表 / 形参表里敲左括号仍补一对**"
+              "（用户口径）—— 那里右侧的 `)` 是外层的，不补用户每次都得自己"
+              "补一个；实参表外的老规则（v112：右侧有内容只插左）原样保留，"
+              "引号也不受影响",
+              [_g97b], expect_contain=[_w97b])
+
+        # ---- 97.3 集成（假 VBE）：真写进"编辑器"、光标落在新括号中间 ----
+        class _Mod97(object):
+            def __init__(self, text, fmt=None):
+                self.lines = [text]
+                self.fmt = fmt
+
+            def Lines(self, n, _c):
+                if 1 <= n <= len(self.lines):
+                    return self.lines[n - 1]
+                return ""
+
+            @property
+            def CountOfLines(self):
+                return len(self.lines)
+
+            def ReplaceLine(self, n, t):
+                if self.fmt is not None:
+                    t = self.fmt(t)
+                self.lines[n - 1] = t
+
+            def InsertLines(self, n, t):
+                self.lines.insert(n - 1, t)
+
+        class _Pane97(object):
+            def __init__(self, mod, sl, sc, el, ec):
+                self.CodeModule = mod
+                self.sel = [sl, sc, el, ec]
+
+            def GetSelection(self):
+                return tuple(self.sel)
+
+            def SetSelection(self, sl, sc, el, ec):
+                self.sel = [sl, sc, el, ec]
+
+        class _Vbe97(object):
+            def __init__(self, pane):
+                self.ActiveCodePane = pane
+
+        def _run97(text, sl, sc, el, ec, ch, fmt=None,
+                   sem=("char", 4, False)):
+            mod = _Mod97(text, fmt)
+            pane = _Pane97(mod, sl, sc, el, ec)
+            _o_vbe = VB97._get_vbe_cached
+            _o_sem = VB97._sem_cache.get("info")
+            VB97._sem_cache["info"] = sem
+            VB97._get_vbe_cached = lambda: _Vbe97(pane)
+            try:
+                ok = VB97.VbeBackend().insert_pair(ch)
+            finally:
+                VB97._get_vbe_cached = _o_vbe
+                VB97._sem_cache["info"] = _o_sem
+            return bool(ok), mod.lines[sl - 1], pane.sel[1], pane.sel[3]
+
+        _g97c = (
+            _run97("foo(bar)", 1, 8, 1, 8, "("),             # 实参表里开一层新的
+            _run97("Sub Foo(ByVal arr)", 1, 18, 1, 18, "("),  # 形参数组
+            _run97("Sub Foo（ByVal arr）", 1, 18, 1, 18, "（"),  # 全角形参表
+            # 补完一对后 VBE 补空格（`x=foo(...)` -> `x= foo(...)`）：
+            # 仍要落在新插入的 `()` 中间（走 _locate_inserted 的前缀指纹）
+            _run97("x=foo(bar)", 1, 10, 1, 10, "(",
+                   fmt=lambda s: s.replace("=", "= ", 1)),
+            # 反面：运算分组里只插左（v112 规则没被松动）
+            _run97("x = (a + b)", 1, 5, 1, 5, "("),
+        )
+        _w97c = (
+            (True, "foo(bar())", 9, 9),
+            (True, "Sub Foo(ByVal arr())", 19, 19),
+            (True, "Sub Foo（ByVal arr（））", 19, 19),
+            (True, "x= foo(bar())", 12, 12),
+            (True, "x = ((a + b)", 6, 6),
+        )
+        check("97.3 `VbeBackend.insert_pair`（集成）：实参表 / 形参表（含全角）里"
+              "敲 `(` 真的补出成对的右半边，光标落在两者中间；VBE 重排整行也认"
+              "得回原位；**运算分组里仍只插左**（v112 的规则只在这两种位置开"
+              "例外）",
+              [_g97c], expect_contain=[_w97c])
+
+        # ---- 97.4 结构护栏（AST）：单一实现 + 接线（查 AST，不查源码字符串）----
+        import ast as _ast97
+
+        def _fdefs97(path):
+            _tree = _ast97.parse(io.open(os.path.join(ROOT, path),
+                                         encoding="utf-8").read())
+            _out = {}
+            for _n in _ast97.walk(_tree):
+                if isinstance(_n, _ast97.FunctionDef):
+                    _out.setdefault(_n.name, []).append(_n)
+            return _out
+
+        _pf97 = _fdefs97("parser.py")
+        _vf97 = _fdefs97("vbe_bridge.py")
+        _a97 = len(_pf97.get("enclosing_call_paren", [])) == 1
+        _b97 = bool(_pf97.get("enclosing_call_paren")) and any(
+            isinstance(_x, _ast97.Call) and isinstance(_x.func, _ast97.Name)
+            and _x.func.id == "scan_code_states"
+            for _x in _ast97.walk(_pf97["enclosing_call_paren"][0]))
+        _c97 = len(_vf97.get("enclosing_call_paren", [])) == 0
+        _d97 = bool(_vf97.get("_pair_insertion")) and any(
+            isinstance(_x, _ast97.Call) and isinstance(_x.func, _ast97.Attribute)
+            and _x.func.attr == "enclosing_call_paren"
+            for _x in _ast97.walk(_vf97["_pair_insertion"][0]))
+        check("97.4 结构护栏（AST）：(a) `enclosing_call_paren` 只有一处实现"
+              "（在 parser）；(b) 它复用 `scan_code_states`（字符串/注释扫描的"
+              "唯一实现）；(c) vbe_bridge 里没有第二份；(d) `_pair_insertion`"
+              "确实调用了它",
+              [(_a97, _b97, _c97, _d97)],
+              expect_contain=[(True, True, True, True)])
+    except Exception as _e97:
+        import traceback as _tp97
+        _tp97.print_exc()
+        check("第 97 节异常: %s" % _e97, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原

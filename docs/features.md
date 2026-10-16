@@ -51,6 +51,11 @@
   a quote over a **selection** wraps the selection instead of replacing it (`abc` -> `"abc"`);
   single-line selections only (a VBA string cannot span lines), and brackets over a selection are
   still handed to VBE.
+- **v113:** the rule above has one exception — **inside a call's argument list or a procedure's
+  parameter list the bracket is still auto-closed** (`foo(bar(` -> `foo(bar())`,
+  `Sub Foo(ByVal arr(` -> `Sub Foo(ByVal arr())`), because the code to the right of the caret
+  belongs to an **outer** pair. Only the innermost unclosed `(` that sits right next to an
+  identifier counts; grouping parens (`x = (a + b`), a leading `(` and already-closed pairs do not.
 - `Backspace` deletes both halves of an empty pair, and removes a whitespace-only line in one stroke.
 - `Enter` at end of line indents to the right depth, aligns `Else` / `ElseIf` / `Case`, and closes a
   block you just opened (`End Sub`, `Next i`, …).

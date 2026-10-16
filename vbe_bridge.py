@@ -3296,6 +3296,10 @@ def _pair_insertion(line_text, col0, open_ch, close_ch):
     不替用户补右半边。光标在 `foo(|bar)` 这种"行中间 / 标识符之前"时，补出
     `()` 会把后面的代码顶走；现代编辑器的通用规则也是"右侧不是空白/行尾就
     不自动闭合"。右侧只剩空白（或已在行尾）才补一对。
+    ★v113：**但光标在实参表 / 形参表里时例外，照旧补一对** ——
+    `foo(bar(`（在 `foo` 的实参里开一层新的调用）、`Sub Foo(ByVal arr(`（形参
+    数组）右侧那个 `)` 是**外层**的，v112 一律"只插左"会让用户每次都得自己
+    补一个右括号。判据是 `parser.enclosing_call_paren`（纯函数，只吃这一行）。
     ⚠️ 引号**刻意不走这条**：`w""` 那种"右侧有内容仍补一对引号"是既有行为
     （见 §35.23 的 `    w=4` -> `    w ""=4`），且引号另有"在不在字符串里"
     的先判据，不是同一个问题。
@@ -3314,9 +3318,12 @@ def _pair_insertion(line_text, col0, open_ch, close_ch):
         return (line_text[:col0] + open_ch + close_ch + line_text[col0:],
                 col0 + 1, True)
     if open_ch in ("(", "（"):
-        if line_text[col0:].strip():
+        if (line_text[col0:].strip()
+                and vba_parser.enclosing_call_paren(line_text, col0) is None):
             # ★v112：右侧还有内容 -> 只插左括号（右半边用户自己敲；那时若
             # 右边恰好是 `)` 还会走"跨过去"，不会多出一个）。
+            # ★v113：除非光标正待在实参表 / 形参表里 —— 那是"开一层新的"，
+            # 右侧内容是**外层**的，照旧补一对（判据见 enclosing_call_paren）。
             return (line_text[:col0] + open_ch + line_text[col0:],
                     col0 + 1, False)
         return (line_text[:col0] + open_ch + close_ch + line_text[col0:],
@@ -4542,6 +4549,11 @@ class VbeBackend:
           * 敲**左括号**时**右侧还有内容就不补右半边** —— 判据在 `_pair_insertion`；
           * **选中一段文本再敲引号** -> 用引号把选区包起来（`abc` -> `"abc"`），
             由 `_wrap_selection` 完成；多行选区仍照旧交给 VBE。
+
+        ★v113（用户口径）：上面第一条有个例外 —— **在某个调用的实参表里、或某个
+        过程的形参表里敲 `(`，仍要补全右半边**（`foo(bar(` -> `foo(bar()`、
+        `Sub Foo(ByVal arr(` -> `Sub Foo(ByVal arr())`），因为那里的右侧内容属于
+        **外层**括号。判据是 `parser.enclosing_call_paren`（纯函数）。
 
         返回 True = "这一下我代为输入了"（调用方据此吞掉原按键）；
         返回 False = "我没管"（在注释里 / 有选区 / COM 出问题），调用方必须

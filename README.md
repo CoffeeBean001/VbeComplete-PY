@@ -55,7 +55,9 @@ VBE's own parameter info pops up** (so you can see the signature while filling i
 and a keyword gets a space. Typing `(` / `"` auto-closes the pair (caret in the middle, never inside
 a comment); with a Chinese IME in full-width / Chinese-punctuation mode the Chinese pair `（）` / `“”`
 is inserted instead of being converted to ASCII. A `(` only auto-closes when nothing but whitespace
-is to its right, and typing `"` over a selection wraps it (`abc` -> `"abc"`). Suggested: your variables, constants and
+is to its right — **except inside a call's argument list or a procedure's parameter list, where it
+always closes** (`foo(bar` + `(` -> `foo(bar())`) — and typing `"` over a selection wraps it
+(`abc` -> `"abc"`). Suggested: your variables, constants and
 procedures, plus modules, forms
 and control names, keywords and built-in functions / types (≈260) — enums (`vb*` / `xl*` / `mso*`)
 are excluded. While you *declare* a new name (`Dim …`, `Sub …`) no existing symbol is offered,
