@@ -4648,14 +4648,25 @@ class VbeBackend:
                         cm.Lines(sl - 1, 1))
                 except Exception:
                     cont_decl = False
+            # ★v111：声明位置上【该提示哪些语言关键字】（形参表 / 声明头）。
+            # 与 decl_names 同源同路：都只在声明行上算，平时为空、开销极小。
+            # 空 = 这个声明位置没有关键字可提示（变量名 / 过程名 / Type 成员行），
+            # 引擎那边照 v105 静默。
+            decl_keywords = []
             if in_decl or cont_decl:
                 try:
                     full = cm.Lines(1, cm.CountOfLines)
                     dn = vba_parser.decl_names_at_caret(full, (sl, ec_char))
                     if dn:
                         decl_names = sorted(dn)
+                    if in_decl:
+                        _kw = vba_parser.decl_position_keywords(
+                            full, (sl, ec_char))
+                        if _kw:
+                            decl_keywords = sorted(_kw)
                 except Exception:
                     decl_names = []
+                    decl_keywords = []
 
             try:
                 module_name = str(cm.Name)
@@ -4688,6 +4699,8 @@ class VbeBackend:
                 "in_type_position": in_type,
                 "in_decl_position": in_decl,
                 "decl_names": decl_names,
+                # ★v111：声明位置上该提示的语言关键字（空 = 照旧静默）。
+                "decl_keywords": decl_keywords,
                 "proc_name": _proc_of_line(cm, sl),
                 "module_name": module_name,
                 # ★v98：点号左边那个标识符的名字；None = 那里没有标识符。

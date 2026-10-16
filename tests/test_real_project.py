@@ -17296,6 +17296,193 @@ def main():
         check("第 94 节异常: %s" % _e94, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
+    # 95. ★v111：声明位置只提示【该处的语言关键字】（v105 收得太狠了）
+    #     用户口径（原话）："1. 在定义函数或过程，我写了 private 或 public，
+    #     后面写 sub，function 不会提示。2. 定义函数或过程，形参里的关键字不会
+    #     提示，比如形参里写 byref，byval。这 2 个 bug 应该是之前 private，
+    #     public 后面不提示变量名，你限制的太多了，导致完全不提示了。"
+    #
+    #     v105 让声明位置**整个静默**（"正在造名字，候选全是噪音"），但它把
+    #     **语言关键字**也一起静默了 —— `Private s` 里的 Sub 不是"既有符号"，
+    #     那正是用户此刻要敲的东西。v111 改成"只留该处的关键字"。
+    # ------------------------------------------------------------------
+    print("\n=== 95. ★v111：声明位置只提示该处的语言关键字 ===")
+    try:
+        # ---- 95.1 纯判据：两档（声明头 / 形参表）+ 该静默的位置 ----
+        _DH95 = P._DECL_HEAD_KEYWORDS
+        _PL95 = P._PARAM_LIST_KEYWORDS
+        _g95 = (
+            P.decl_position_keywords("Private s", (1, 10)),
+            P.decl_position_keywords("Public f", (1, 9)),
+            P.decl_position_keywords("Private su", (1, 11)),
+            P.decl_position_keywords("    Private F", (1, 14)),
+            P.decl_position_keywords("Private Cons", (1, 13)),
+            P.decl_position_keywords("Private Sub Foo(By", (1, 19)),
+            P.decl_position_keywords("Sub Foo(ByVal x As Long, ", (1, 26)),
+            P.decl_position_keywords("Public Function GetName( _\n"
+                                     "        By", (2, 11)),
+            P.decl_position_keywords("Private Sub Foo()", (1, 19)),
+            P.decl_position_keywords("Private Sub F", (1, 14)),
+            P.decl_position_keywords("Dim x", (1, 6)),
+            P.decl_position_keywords("Private gA As Long", (1, 20)),
+            P.decl_position_keywords("x = Foo(", (1, 9)),
+        )
+        _w95 = (
+            _DH95, _DH95, _DH95, _DH95, _DH95,     # 声明头（含只打了前缀的）
+            _PL95, _PL95, _PL95,                   # 形参表（含 v53 续行）
+            None,                                  # `Private Sub Foo()` 头写完了
+            None,                                  # 正在起过程名
+            None,                                  # 正在起变量名
+            None,                                  # 模块级变量声明
+            None,                                  # 调用不是声明
+        )
+        check("95.1 `parser.decl_position_keywords`（纯函数）：声明头"
+              "（`Private |` / `Private Su|` / `Public f|`）给 `_DECL_HEAD_KEYWORDS`；"
+              "形参表（`Sub Foo(By|`、第二段、v53 续行）给 `_PARAM_LIST_KEYWORDS`；"
+              "过程名 / 变量名 / 完整的声明 / 调用行一律返回 None（= 照 v105 静默）",
+              [_g95], expect_contain=[_w95])
+
+        # ---- 95.2 引擎集成（假后端）：只留 decl_keywords 里的候选 ----
+        import vba_builtins as _VB95
+
+        class _UI95:
+            def __init__(self):
+                self.shown = False
+            def show(self, *a, **k):
+                self.shown = True
+            def update_selection(self, *a, **k):
+                pass
+            def hide(self, *a, **k):
+                self.shown = False
+            def contains_point(self, *a, **k):
+                return False
+
+        class _B95:
+            """池子 = 语言关键字 + 内建函数/类型 + 两个工程内变量名。
+
+            刻意给 `get_builtin_names()`（生产后端有这一路）：引擎对"语言自带的
+            公共词汇"另有一道收紧，少了它这条路径就与真机不同。
+            """
+            def __init__(self, line_text, in_decl, decl_keywords, in_type=False):
+                self._ctx = {"line_no": 1, "caret_col": len(line_text) + 1,
+                             "line_text": line_text, "in_string": False,
+                             "in_comment": False, "in_type_position": in_type,
+                             "in_decl_position": in_decl,
+                             "decl_names": ["customerName"],
+                             "decl_keywords": list(decl_keywords or ()),
+                             "proc_name": "Foo", "module_name": "M1"}
+                _ids = [("customerName", "M1", None, False),
+                        ("customerCode", "M1", None, False),
+                        ("saveAll", "M1", None, False)]
+                for _k in (list(_VB95.BUILTIN_KEYWORDS) + list(_VB95.BUILTIN_FUNCTIONS)
+                           + list(_VB95.BUILTIN_TYPE_NAMES)):
+                    _ids.append((_k, "(builtin)", None, False))
+                self._ids = _ids
+                self._bl = set()
+                for _n in (list(_VB95.BUILTIN_KEYWORDS) + list(_VB95.BUILTIN_FUNCTIONS)
+                           + list(_VB95.BUILTIN_TYPE_NAMES)):
+                    self._bl.add(_n.lower())
+            def get_context(self):
+                return self._ctx
+            def get_identifiers(self):
+                return self._ids
+            def get_declared_names(self):
+                return [n[0] for n in self._ids]
+            def get_builtin_names(self):
+                return sorted(self._bl)
+
+        def _run95(line_text, in_decl, decl_kw, in_type=False, manual=False):
+            _ui = _UI95()
+            _c = E.Completer(_B95(line_text, in_decl, decl_kw, in_type), _ui)
+            _c.trigger(manual=manual)
+            return (_ui.shown, sorted(_c.current_matches()))
+
+        _DHKW95 = ["Sub", "Function", "Property", "Type", "Enum", "Declare",
+                   "Event", "Const", "WithEvents", "Static", "Dim"]
+        _g95b = (
+            _run95("Private s", True, ["Sub", "Static"]),
+            _run95("Public f", True, _DHKW95),
+            _run95("Private Sub Foo(By", True,
+                   ["ByVal", "ByRef", "Optional", "ParamArray", "As"]),
+            _run95("Dim x", True, []),
+            # in_decl=False 时那批关键字【不许】生效：照常出工程内候选
+            # （同样带着 decl_keywords，但它管不着非声明位置）
+            _run95("Private Sub Foo(cus", False, ["ByVal", "ByRef"]),
+        )
+        _w95b = (
+            (True, ["Static", "Sub"]),
+            (True, ["Function"]),
+            (True, ["ByRef", "ByVal"]),
+            (False, []),
+            (True, ["customerCode", "customerName"]),
+        )
+        check("95.2 `Completer.trigger`（集成）：声明位置只留 ctx[\"decl_keywords\"] "
+              "里的候选（`Private s` -> Sub / Static；`Private Sub Foo(By` -> "
+              "ByRef / ByVal —— 既有符号一个都不出现）；decl_keywords 为空 -> "
+              "照 v105 静默；in_decl=False 时那批关键字不生效（照常出工程内候选）",
+              [_g95b], expect_contain=[_w95b])
+
+        # ---- 95.2b 点名的列表（manual）在 v111 里照旧不过滤 ----
+        _m95 = _run95("Private s", True, ["Sub", "Static"], manual=True)
+        check("95.2b Ctrl+Space（manual）在声明位置【不受 v111 收窄】"
+              "（用户点名的列表照弹全量，同 87.6）",
+              [(_m95[0], "customerName" in _m95[1])],
+              expect_contain=[(True, True)])
+
+        # ---- 95.3 结构护栏（AST）：单一实现 + 接线 ----
+        # ⚠️ 一律走 AST，不数源码字符串 —— 注释里提一句就会喂饱字符串护栏
+        #    （v108 教训）。AST 里根本没有注释。
+        import ast as _ast95
+        _et95 = _ast95.parse(io.open(os.path.join(ROOT, "engine.py"),
+                                     encoding="utf-8").read())
+        _pt95 = _ast95.parse(io.open(os.path.join(ROOT, "parser.py"),
+                                     encoding="utf-8").read())
+        _vt95 = _ast95.parse(io.open(os.path.join(ROOT, "vbe_bridge.py"),
+                                     encoding="utf-8").read())
+
+        def _fn95(tree, name):
+            for n in _ast95.walk(tree):
+                if isinstance(n, _ast95.FunctionDef) and n.name == name:
+                    return n
+            return None
+
+        _trig95 = _fn95(_et95, "trigger")
+        _e_ok95 = ("decl_keywords" in _ast95.dump(_trig95)
+                   if _trig95 is not None else False)
+        # 引擎里不许再有一份关键字清单（同一语义只能一份实现）
+        _e_single95 = ("_DECL_HEAD_KEYWORDS" not in _ast95.dump(_et95)
+                       and "_PARAM_LIST_KEYWORDS" not in _ast95.dump(_et95))
+        # 后端 get_context 的返回字典里必须真有这个键（不是只写在注释里）
+        _gc95 = _fn95(_vt95, "get_context")
+        _v_ok95 = False
+        if _gc95 is not None:
+            for n in _ast95.walk(_gc95):
+                if isinstance(n, _ast95.Dict) and any(
+                        isinstance(k, _ast95.Constant)
+                        and k.value == "decl_keywords" for k in n.keys):
+                    _v_ok95 = True
+        # parser 侧：判据函数 + 两个常量都在
+        _p_names95 = set()
+        for n in _pt95.body:
+            if isinstance(n, _ast95.Assign):
+                for t in n.targets:
+                    if isinstance(t, _ast95.Name):
+                        _p_names95.add(t.id)
+        _p_ok95 = (_fn95(_pt95, "decl_position_keywords") is not None
+                   and "_DECL_HEAD_KEYWORDS" in _p_names95
+                   and "_PARAM_LIST_KEYWORDS" in _p_names95)
+        check("95.3 结构护栏（AST）：(a) engine.trigger 读了 ctx[\"decl_keywords\"]；"
+              "(b) 关键字清单只有 parser 一份（引擎里不重复实现）；"
+              "(c) vbe_bridge.get_context 的返回字典里真有这个键；"
+              "(d) parser 有 decl_position_keywords 与两个常量",
+              [(_e_ok95, _e_single95, _v_ok95, _p_ok95)],
+              expect_contain=[(True, True, True, True)])
+    except Exception as _e95:
+        import traceback as _tp95
+        _tp95.print_exc()
+        check("第 95 节异常: %s" % _e95, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原
     #     这不是在测产品代码，而是在测【测试网自己】：一节忘了还原，后面每一节
     #     都会悄悄跑在别人的假对象上，而**不会有任何一条用例变红**。

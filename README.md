@@ -57,8 +57,10 @@ a comment); with a Chinese IME in full-width / Chinese-punctuation mode the Chin
 is inserted instead of being converted to ASCII. Suggested: your variables, constants and
 procedures, plus modules, forms
 and control names, keywords and built-in functions / types (≈260) — enums (`vb*` / `xl*` / `mso*`)
-are excluded. While you *declare* a new name (`Dim …`, `Sub …`) the list stays closed, exactly like
-IDEA; after `As` / `New` it still offers types.
+are excluded. While you *declare* a new name (`Dim …`, `Sub …`) no existing symbol is offered,
+exactly like IDEA — but the keywords that belong at the caret are: after `Private` / `Public` you get
+`Sub` / `Function` / …, inside a parameter list `ByVal` / `ByRef` / `Optional` / `ParamArray` / `As`;
+after `As` / `New` it still offers types.
 
 **No popup?** Check note 3 first — that is it nine times out of ten. Then look for `pythonw.exe` in
 Task Manager; if a list won't close, run `stop.bat` then `run.bat`.

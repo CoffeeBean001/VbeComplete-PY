@@ -1922,6 +1922,9 @@ class Completer:
         # 变量与过程名依旧静默（v22 的初衷：填类型名时冒出一堆变量名是噪音）。
         in_type = bool(ctx.get("in_type_position"))
         type_names = self._type_name_set() if in_type else None
+        # ★v111：本次触发是否在【声明位置】上收窄成了"该处该出现的语言关键字"。
+        # None = 不走这条路（正常补全）；空集不会出现在这里（那种情形直接 hide）。
+        decl_kw = None
         # ★v105：声明位置（正在"造一个新名字"）不弹候选 —— 与 IDEA 一致。
         #
         # 后端 parser.is_caret_in_declaration()（那边称之为"第一道防线"）一直在算
@@ -1929,7 +1932,8 @@ class Completer:
         # "只把正在输入的那个名字本身过滤掉、其它候选照弹"。用户看到的正是：
         # 定义变量 / 函数 / 过程时，旁边冒出一堆无关的变量名、过程名、关键字。
         #
-        # 这里把它接上：造名字的地方没有"既有符号"可补，直接静默。
+        # 这里把它接上：造名字的地方没有"既有符号"可补 —— 直接静默（v105），
+        # 只留该处的语言关键字（★v111，见下面那段）。
         # ⚠️ 必须放行 `As` 之后的类型名位置（in_type）—— 那里是在【引用】类型，
         #    不是造名字，要照常提示类型名（v22/v93 的能力，别一起掐掉）。
         # ⚠️ 放在下面那段"让位 / 轮询触发"之前：声明位置上我们自己永远不弹，也就
@@ -1937,13 +1941,32 @@ class Completer:
         #    也会走到这里直接返回）。语法上 vbe_list_expected() 只认成员访问与
         #    `As`/`New`，名字位置上本来就返回 False，所以提前返回不影响让位记账。
         # ⚠️ Ctrl+Space（manual=True）例外：用户点名的列表照弹（同 MEMBER_POPUP）。
+        # ★v111：声明位置上**不再一律静默**，而是"只提示该处该出现的语言关键字"。
+        #
+        # 用户口径（原话）："1. 在定义函数或过程，我写了 private 或 public，后面写
+        # sub，function 不会提示。2. 定义函数或过程，形参里的关键字不会提示，比如
+        # 形参里写 byref，byval。这 2 个 bug 应该是之前 private，public 后面不提示
+        # 变量名，你限制的太多了，导致完全不提示了。"
+        #
+        # v105 的出发点是"造名字的地方没有既有符号可补"，但它把**语言关键字**也
+        # 一起静默了 —— `Private s` 里的 Sub 不是"既有符号"，那正是用户此刻要写的
+        # 东西。所以现在改成：声明位置照样不提示任何既有符号，只留
+        # ctx["decl_keywords"]（后端在声明行上算出：形参表 = ByVal / ByRef /
+        # Optional / ParamArray；声明头 = Sub / Function / Property / …，见
+        # parser.decl_position_keywords）。它是空的时候就退回 v105 的静默 ——
+        # 变量名、过程名、Type 成员行这些位置本来就没有关键字可提示。
         if ((not DECL_POPUP) and (not manual)
                 and ctx.get("in_decl_position") and not in_type):
-            _log("trigger: 声明位置（正在起新名字）-> 不出候选（v105）"
-                 " line=%r word=%r" % (ctx.get("line_text"),
-                                       ctx.get("decl_names")))
-            self.hide()
-            return
+            _dkw = ctx.get("decl_keywords") or ()
+            if not _dkw:
+                _log("trigger: 声明位置（正在起新名字）-> 不出候选（v105）"
+                     " line=%r word=%r" % (ctx.get("line_text"),
+                                           ctx.get("decl_names")))
+                self.hide()
+                return
+            decl_kw = frozenset(str(k).lower() for k in _dkw)
+            _log("trigger: 声明位置 -> 只留该处的语言关键字 %r（v111）"
+                 " line=%r" % (sorted(decl_kw), ctx.get("line_text")))
         # v55：光标停在 `标识符.` 之后输入成员名时，VBE 自己会弹「自动列出成员」
         # 列表 -> 我们让位，不跟它抢同一块地方（两个列表会互相遮挡、还抢键盘）。
         # 只拦【轮询自动触发】：手动 Ctrl+Space 是用户点名要我们的列表，照旧弹。
@@ -2577,6 +2600,13 @@ class Completer:
         self.match_hits = {name: pos for _, name, pos in scored}
         if in_type:
             matches = [i for i in matches if i.lower() in type_names]
+        elif decl_kw:
+            # ★v111：声明位置只留该处的语言关键字（见上面 decl_kw 的说明）。
+            # 与 in_type 那支同理：这批候选是【确证】的（语言关键字表就在
+            # vba_builtins 里），不该再过一遍回声防护 —— 回声防护问的是"这个名字
+            # 在工程里出现过吗"，而 `Sub` / `ByVal` 是用户此刻要敲的，工程里
+            # 一次都没出现过才是常态。
+            matches = [i for i in matches if i.lower() in decl_kw]
         else:
             # 自我提示防护（声明行 / 用法行一律生效）：
             # 正在输入的词有可能只是"自己的回声"——光标处那几个字符被当成

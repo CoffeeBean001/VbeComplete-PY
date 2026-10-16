@@ -713,6 +713,31 @@ _RE_DECL_HEAD = re.compile(r"^\s*(?:Dim|Const|Static|WithEvents)\b", re.I)
 _RE_PROC_HEAD = re.compile(
     r"^\s*(?:Sub|Function|Property|Event|Type|Enum|Declare)(?![A-Za-z0-9_])", re.I)
 
+# ★v111：声明位置上【该提示哪些语言关键字】。
+#
+# 背景（用户报的 bug）：v105 让"正在造新名字"的声明位置**整个静默**，结果连
+#   * 敲完 `Private` / `Public` 之后要写的 `Sub` / `Function`、
+#   * 形参表里的 `ByVal` / `ByRef`
+# 也一起静默了 —— 用户原话："这2个bug应该是之前 private，public 后面不提示
+# 变量名，你限制的太多了，导致完全不提示了。"
+#
+# 口径修正：声明位置不再"一律静默"，而是**只把候选收窄到该位置该出现的语言
+# 关键字**；既有符号（变量名 / 过程名 / 模块名 / 组件名）照旧一个都不提示 ——
+# 那才是 v105 真正要拦的东西。两档见 decl_position_keywords()。
+_DECL_HEAD_KEYWORDS = frozenset((
+    "sub", "function", "property", "type", "enum", "declare", "event",
+    "const", "withevents", "static", "dim"))
+# 形参表里会出现的：修饰词 + `As`（`ByVal x As Long` 里那三个词）。
+# 加 `As` 是因为它和这几个修饰词出现在同一处（`ByVal x a|` 该提示 As），
+# 而 `As` 之后的类型名位置本来就另有 in_type 一路在管。
+_PARAM_LIST_KEYWORDS = frozenset(
+    ("byval", "byref", "optional", "paramarray", "as"))
+
+# 只剥【可见性修饰词】。刻意**不含** Dim / Const / Static / WithEvents ——
+# 它们是"声明的种类"本身，剥掉就分不清 `Private |`（还得写 Sub / Function…）
+# 与 `Dim |`（正在起变量名）了。
+_RE_VISIBILITY_MODIFIER = re.compile(
+    r"^\s*(?:Public|Private|Global|Friend)\s+", re.I)
 
 
 def _logical_line_at(lines, idx):
@@ -925,6 +950,103 @@ def is_caret_in_declaration(line_text, caret_col=None):
     if _RE_DECL_HEAD.match(s):
         return True
     return bool(_mod_stripped and _RE_LEADING_IDENT.match(s))
+
+
+def _visibility_stripped(line):
+    """剥掉开头的可见性修饰词（Public / Private / Global / Friend）。
+
+    与 is_caret_in_declaration() 里那段"剥访问修饰词"同源，但**不含** Static /
+    WithEvents —— 见 `_RE_VISIBILITY_MODIFIER` 的说明。
+    """
+    s = line or ""
+    for _ in range(4):
+        m = _RE_VISIBILITY_MODIFIER.match(s)
+        if not m:
+            break
+        s = s[m.end():]
+    return s
+
+
+def _trailing_word(text):
+    """text 末尾那一段标识符词（小写）；末尾不是标识符字符则返回空串。"""
+    t = text or ""
+    i = len(t)
+    while i > 0 and (t[i - 1].isalnum() or t[i - 1] == "_"):
+        i -= 1
+    return t[i:].lower()
+
+
+def _paren_depth_at(lines, idx, caret_col):
+    """第 idx 行（0-based）光标处的圆括号深度。
+
+    ★v111：从【逻辑行】开头累计（`_RE_CONT_AT_END` 往上找起点），于是 v53 那种
+    "长签名被 VBE 拆成 `Sub Foo( _` + 缩进形参行"的情形，续行上的深度同样正确。
+    caret_col 缺省按行尾算。
+    """
+    start = idx
+    while start > 0 and _RE_CONT_AT_END.search(lines[start - 1].rstrip("\r")):
+        start -= 1
+    depth = 0
+    for i in range(start, idx):
+        t = lines[i].rstrip("\r")
+        depth += t.count("(") - t.count(")")
+    t = lines[idx].rstrip("\r")
+    end = len(t)
+    if caret_col:
+        end = max(0, min(len(t), int(caret_col) - 1))
+    depth += t[:end].count("(") - t[:end].count(")")
+    return depth
+
+
+def decl_position_keywords(code, caret):
+    """光标在【声明位置】上时该提示的语言关键字（小写 frozenset）；None = 照旧静默。
+
+    ★v111。只覆盖两处，其余声明位置（变量名 / 过程名 / Type 成员行）返回 None，
+    由调用方按 v105 静默；`As` 之后的类型名位置另有 is_caret_in_type_position 一路。
+
+      * 【形参表】里（`Sub Foo(` 之后、`)` 之前，含 v53 的续行）：
+        ByVal / ByRef / Optional / ParamArray / As（= `_PARAM_LIST_KEYWORDS`）；
+      * 【声明头】上（只敲了可见性修饰词、或正在敲 `Sub` / `Function` / …）：
+        `_DECL_HEAD_KEYWORDS`。
+
+    ⚠️ 声明头那一档额外要求"光标处那个词是修饰词之后的**第一个**词"：否则
+    `Private Sub st|`（正在起过程名）也会被当成"正在敲关键字"，把 Static 提示
+    出来 —— 一按 Tab 就把用户刚写的过程名换掉了。
+    """
+    if not caret:
+        return None
+    try:
+        line_no = int(caret[0])
+    except Exception:
+        return None
+    lines = code.split("\n")
+    if not (1 <= line_no <= len(lines)):
+        return None
+    idx = line_no - 1
+    col = caret[1] if len(caret) > 1 else None
+    raw = lines[idx].rstrip("\r")
+    if not _mask_strings_and_comments(raw).strip():
+        return None
+    # ---- 1) 形参表：逻辑行是过程/属性/事件/API 声明头，且光标处括号还没闭合 ----
+    if (_RE_PROC_HEAD.match(_visibility_stripped(_logical_line_at(lines, idx)))
+            and _paren_depth_at(lines, idx, col) > 0):
+        return _PARAM_LIST_KEYWORDS
+    # ---- 2) 声明头：`Private |` / `Private Su|` ----
+    m = _RE_VISIBILITY_MODIFIER.match(raw)
+    if not m:
+        return None
+    end = len(raw)
+    if col:
+        end = max(0, min(len(raw), int(col) - 1))
+    if end < m.end():
+        return None                        # 光标还停在修饰词里
+    before = raw[m.end():end]
+    word = _trailing_word(before)
+    if before.rstrip(" \t").lower() != word:
+        return None                        # 修饰词之后已经写过别的词了
+    if word and not any(k.startswith(word) for k in _DECL_HEAD_KEYWORDS):
+        return None
+    return _DECL_HEAD_KEYWORDS
 
 
 def _caret_decl_names(code, caret):

@@ -22,10 +22,15 @@
   keyword gets its own trailing space (`public `). Inside a `Function`, its **own** name is the
   return-value variable, so completing it there — `MyFunc = …` — inserts nothing
   (no `MyFunc() = …`).
-- **Quiet while you declare.** At a declaration — `Dim …`, `Const …`, `Sub …`, `Function …`,
-  `Property …`, `Type …` — the list stays closed, exactly like IDEA: you are *inventing* a name, so
-  there is nothing to complete. The type position after `As` / `New` is unaffected (there you *are*
-  referring to an existing type, so type names are still offered).
+- **Quiet while you declare — except for the keywords that belong there.** At a declaration —
+  `Dim …`, `Const …`, `Sub …`, `Function …`, `Property …`, `Type …` — the list never offers
+  *existing symbols* (variable names, procedure names, module names): you are *inventing* a name, so
+  there is nothing to complete, exactly like IDEA. Since v111 it does offer the **language keywords
+  that belong at the caret**: after `Private` / `Public` you get `Sub` / `Function` / `Property` /
+  `Type` / … , and inside a parameter list you get `ByVal` / `ByRef` / `Optional` / `ParamArray` /
+  `As`. Positions that really are just a new name (`Dim x…`, `Private Sub F…`) stay silent. The type
+  position after `As` / `New` is unaffected (there you *are* referring to an existing type, so type
+  names are still offered).
 - **Parameter info on accept.** Accepting a `Function` inserts `()` with the caret inside, and
   VbeComplete then presses `Ctrl+Shift+I` for you so the VBE's *own* parameter-info window appears —
   the native signature bubble that highlights the argument you are filling in and follows your
