@@ -3275,11 +3275,15 @@ def _locate_by_prefix(after, written, col0):
 
 
 def _pair_insertion(line_text, col0, open_ch, close_ch):
-    """算出自动配对后的 (新行文本, 光标字符下标 0-based)。
+    """算出自动配对后的 (新行文本, 光标字符下标 0-based, 是否插了完整一对)。
 
     新行文本为 None 表示"一个字符都不用写，只把光标挪到 caret_off"—— 右半边
     已经在光标右边时（打完 `s = "abc` 再按 `"`），再插一对就会变成 `""`，
     此时应当像现代编辑器那样"跨过去"。
+
+    第三元 `paired` = "这次插入的文本里含一对完整符号"（`()` / `""`），供
+    调用方在 VBE 重排整行后**选对定位方式**：v112 起括号可能只插一个左括号，
+    那种行里根本没有 `()` 可找，得改按"压平前缀"定位（见 insert_pair）。
 
     引号是特殊的一个键（既开又闭），所以额外看【光标左边引号数的奇偶】：
     奇数说明正处在未闭合的字符串里，这一下是收尾的那一半，只补一个。
@@ -3287,21 +3291,39 @@ def _pair_insertion(line_text, col0, open_ch, close_ch):
     ★v108：全角引号 `“`/`”` 是**两个不同的字符**（半角 `"` 开收同字），
     所以"在不在字符串里"改成比 `“` 与 `”` 的个数（`“` 多出来就是没闭合）。
     其余逻辑（`（`/`）`）与半角完全同路。
+
+    ★v112（用户口径）：**敲左括号时先看右侧还有没有内容，有就只插左括号**、
+    不替用户补右半边。光标在 `foo(|bar)` 这种"行中间 / 标识符之前"时，补出
+    `()` 会把后面的代码顶走；现代编辑器的通用规则也是"右侧不是空白/行尾就
+    不自动闭合"。右侧只剩空白（或已在行尾）才补一对。
+    ⚠️ 引号**刻意不走这条**：`w""` 那种"右侧有内容仍补一对引号"是既有行为
+    （见 §35.23 的 `    w=4` -> `    w ""=4`），且引号另有"在不在字符串里"
+    的先判据，不是同一个问题。
     """
     if open_ch in ('"', "“"):
         if col0 < len(line_text) and line_text[col0] == close_ch:
-            return None, col0 + 1                       # 跨过去
+            return None, col0 + 1, False                # 跨过去，不写文本
         if open_ch == "“":
             _pre = line_text[:col0]
             inside = _pre.count("“") > _pre.count("”")
         else:
             inside = line_text[:col0].count('"') % 2 == 1
         if inside:
-            return line_text[:col0] + close_ch + line_text[col0:], col0 + 1
+            # 补收尾那一半：只有一个字符，算不上"一对"
+            return line_text[:col0] + close_ch + line_text[col0:], col0 + 1, False
         return (line_text[:col0] + open_ch + close_ch + line_text[col0:],
-                col0 + 1)
+                col0 + 1, True)
+    if open_ch in ("(", "（"):
+        if line_text[col0:].strip():
+            # ★v112：右侧还有内容 -> 只插左括号（右半边用户自己敲；那时若
+            # 右边恰好是 `)` 还会走"跨过去"，不会多出一个）。
+            return (line_text[:col0] + open_ch + line_text[col0:],
+                    col0 + 1, False)
+        return (line_text[:col0] + open_ch + close_ch + line_text[col0:],
+                col0 + 1, True)
+    # 兜底：将来若给 _PAIR_CLOSE 添了新符号，默认仍按"补一对"处理
     return (line_text[:col0] + open_ch + close_ch + line_text[col0:],
-            col0 + 1)
+            col0 + 1, True)
 
 
 def _norm_code(s):
@@ -4516,6 +4538,11 @@ class VbeBackend:
         收符号查 _PAIR_CLOSE。**绝不在这一层自己"猜"输入法状态**：钩子线程
         已经问过一次了，后端再问一次就是两份判据（项目铁律第 23 条）。
 
+        ★v112 两条（用户口径）：
+          * 敲**左括号**时**右侧还有内容就不补右半边** —— 判据在 `_pair_insertion`；
+          * **选中一段文本再敲引号** -> 用引号把选区包起来（`abc` -> `"abc"`），
+            由 `_wrap_selection` 完成；多行选区仍照旧交给 VBE。
+
         返回 True = "这一下我代为输入了"（调用方据此吞掉原按键）；
         返回 False = "我没管"（在注释里 / 有选区 / COM 出问题），调用方必须
         **放行按键**让 VBE 按原生行为处理 —— 绝不吞掉用户的按键却什么都没发生。
@@ -4534,6 +4561,11 @@ class VbeBackend:
             cm = cp.CodeModule
             sl, sc, el, ec = cp.GetSelection()
             if sl != el or sc != ec:
+                # ★v112：单行选区 + 引号 -> 用引号把选中的内容包起来。
+                # 其余选区（多行 / 括号）仍是"替换语义交给 VBE，别插"。
+                if sl == el and sc < ec and open_ch in ('"', "“"):
+                    return self._wrap_selection(cm, cp, sl, sc, ec,
+                                                open_ch, close_ch)
                 return False          # 有选区：替换语义交给 VBE，别插
             line_text = cm.Lines(sl, 1)
             col, sem, tabw, wide2 = _caret_char_col(
@@ -4547,6 +4579,7 @@ class VbeBackend:
                 # 返回 False 让按键【原样交给 VBE】，它自己插入 `(`；
                 # 用户接着输参数时得到 `Call judge(1, 2)`，那对括号会保留。
                 return False
+            paired = False
             if open_ch in (")", "）"):
                 # 右半边已经在光标右边 -> 只跨过去（补完 `()` 后再按 `)` 不该
                 # 多出一个）；否则【放行】，让用户真的插入一个右括号。
@@ -4556,7 +4589,7 @@ class VbeBackend:
                     return False
                 new_line, caret_off = None, col0 + 1
             else:
-                new_line, caret_off = _pair_insertion(
+                new_line, caret_off, paired = _pair_insertion(
                     line_text, col0, open_ch, close_ch)
             if new_line is not None:
                 if not self._write_line(cm, sl, new_line):
@@ -4569,8 +4602,14 @@ class VbeBackend:
                     # VBE 把整行重新格式化过了（见 _locate_inserted 的说明）：
                     # 在改写后的行里重新定位我们插入的那对符号，把光标钉到
                     # 它中间；实在认不出来才退到行尾附近（绝不越界）。
-                    off = _locate_inserted(actual, new_line, open_ch, close_ch,
-                                           col0)
+                    if paired:
+                        off = _locate_inserted(actual, new_line, open_ch,
+                                               close_ch, col0)
+                    else:
+                        # ★v112：这次只插了左括号（右侧有内容），行里根本没有
+                        # `()` 可找 —— 改按"压平前缀"定位（与 _locate_inserted
+                        # 首选同一指纹口径，只是指纹里没有收符号）。
+                        off = _locate_by_prefix(actual, new_line, col0 + 1)
                     # v79 起把这一路记进日志：VBE 到底怎么重排的、我们又把它
                     # 认到了哪儿 —— 以后再出"光标没落在括号里"，一眼就能看出是
                     # 定位错了还是 VBE 根本没重排（仅 run_debug.bat 下有开销）。
@@ -4597,6 +4636,68 @@ class VbeBackend:
             # 与 apply_completion 同理：写过代码（VBAProject 变脏），立刻放手。
             if new_line is not None:
                 _release_vbe_proxy()
+
+    def _wrap_selection(self, cm, cp, sl, sc, ec, open_ch, close_ch):
+        """★v112：把【单行选区】用一对符号包起来（`abc` -> `"abc"`）。
+
+        用户口径（原话）："我可以选中一段文本，然后输入双引号后，能自动给
+        选中的内容括上双引号。"
+
+        只做单行 —— 调用方已经判过 `sl == el`：VBA 的字符串不能跨行，多行
+        选区仍交给 VBE 的替换语义（那也是本函数不存在时的老行为）。
+
+        列口径：`sc` / `ec` 都是 **VBE 的显示列**（全角占 2 格），而
+        `line_text` 是字符序列 —— 必须换回字符列。这里复用 `_caret_char_col`
+        + `_col_to_char_index`（`get_context` / `insert_pair` 同一套），
+        **绝不在这里自己另写一份换算**（项目铁律第 16/23 条）。
+        两个列用同一组 (sem, tabw, wide2)：一次探测同时管住两端，避免
+        "起点按这套、终点按那套"的错位。
+
+        光标落在末尾收符号**之后**。VBE 若重排了整行（补空格 / 改大小写），
+        用 `_locate_by_prefix` 按压平后的前缀找回位置 —— 与 insert_pair
+        只插左括号时同一条兜底。写不成就返回 False，调用方把按键还给系统。
+        """
+        try:
+            line_text = cm.Lines(sl, 1)
+            ec_char, sem, tabw, wide2 = _caret_char_col(
+                cm, cp, sl, line_text, ec)
+            if sem == "disp":
+                sc_char = _col_to_char_index(line_text, sc, tabw, wide2) + 1
+            else:
+                sc_char = min(sc, len(line_text) + 1)
+            a = max(0, min(sc_char - 1, len(line_text)))
+            b = max(a, min(ec_char - 1, len(line_text)))
+            if b <= a:
+                return False          # 实际没选中字符：交给 VBE，别乱包
+            new_line = (line_text[:a] + open_ch + line_text[a:b]
+                        + close_ch + line_text[b:])
+            if not self._write_line(cm, sl, new_line):
+                return False
+            try:
+                actual = cm.Lines(sl, 1)
+            except Exception:
+                actual = new_line
+            tgt = a + len(open_ch) + (b - a) + len(close_ch)
+            if actual != new_line:
+                off = _locate_by_prefix(actual, new_line, tgt)
+                if off is None:
+                    off = min(tgt, len(actual))
+                _log("autopair: 包裹选区后 VBE 重排了整行 -> 重新定位"
+                     " (写入=%r 实际=%r 定位=%r)" % (new_line, actual, off))
+            else:
+                off = tgt
+            if sem == "disp":
+                col = _disp_width(actual, tabw, wide2, upto=off) + 1
+            else:
+                col = off + 1
+            cp.SetSelection(sl, col, sl, col)
+            return True
+        except Exception:
+            return False
+        finally:
+            # 与 insert_pair 同理：写过代码（VBAProject 变脏），立刻放手。
+            # （没写时也走一下，release 只是丢缓存引用，无副作用。）
+            _release_vbe_proxy()
 
     # ---- 当前光标上下文 ----
     def get_context(self):

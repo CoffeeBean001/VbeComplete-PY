@@ -46,6 +46,11 @@
   Auto-pairing asks the IME for its conversion mode first: with a Chinese IME in **full-width /
   Chinese-punctuation** mode it inserts the Chinese pair (`（` `）`, `“` `”`) instead of silently
   converting what you typed to ASCII. `VBECOMPLETE_NO_IME_PUNCT=1` forces the half-width pair.
+- **v112:** an opening bracket auto-closes **only when nothing but whitespace is to its right** —
+  with code to the right, just the bracket itself is inserted (same as modern editors). And typing
+  a quote over a **selection** wraps the selection instead of replacing it (`abc` -> `"abc"`);
+  single-line selections only (a VBA string cannot span lines), and brackets over a selection are
+  still handed to VBE.
 - `Backspace` deletes both halves of an empty pair, and removes a whitespace-only line in one stroke.
 - `Enter` at end of line indents to the right depth, aligns `Else` / `ElseIf` / `Case`, and closes a
   block you just opened (`End Sub`, `Next i`, …).

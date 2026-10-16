@@ -54,7 +54,8 @@ On accept a `Sub` gets a trailing space, a `Function` gets `()` with the caret i
 VBE's own parameter info pops up** (so you can see the signature while filling in the arguments),
 and a keyword gets a space. Typing `(` / `"` auto-closes the pair (caret in the middle, never inside
 a comment); with a Chinese IME in full-width / Chinese-punctuation mode the Chinese pair `（）` / `“”`
-is inserted instead of being converted to ASCII. Suggested: your variables, constants and
+is inserted instead of being converted to ASCII. A `(` only auto-closes when nothing but whitespace
+is to its right, and typing `"` over a selection wraps it (`abc` -> `"abc"`). Suggested: your variables, constants and
 procedures, plus modules, forms
 and control names, keywords and built-in functions / types (≈260) — enums (`vb*` / `xl*` / `mso*`)
 are excluded. While you *declare* a new name (`Dim …`, `Sub …`) no existing symbol is offered,

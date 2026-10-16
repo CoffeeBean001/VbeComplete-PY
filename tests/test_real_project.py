@@ -3561,21 +3561,21 @@ def main():
         # --- 插什么、光标落哪（纯函数）---
         import vbe_bridge as VB35
         _pi = VB35._pair_insertion
-        check("35.6 行尾敲 ( -> 补成 ()，光标在中间",
-              list(_pi("x = ", 4, "(", ")")),
-              expect_contain=["x = ()", 5])
+        check("35.6 行尾敲 ( -> 补成 ()，光标在中间（第三元 = 插了完整一对）",
+              [_pi("x = ", 4, "(", ")")],
+              expect_contain=[("x = ()", 5, True)])
         check("35.7 行尾敲 \" -> 补成 \"\"，光标在中间",
-              list(_pi("s = ", 4, '"', '"')),
-              expect_contain=['s = ""', 5])
+              [_pi("s = ", 4, '"', '"')],
+              expect_contain=[('s = ""', 5, True)])
         check("35.8 右边已经有 \" -> 只跨过去，一个字符都不写",
-              list(_pi('s = "abc"', 8, '"', '"')),
-              expect_contain=[None, 9])
-        check("35.9 在未闭合字符串里敲 \" -> 只补收尾那一半",
-              list(_pi('s = "abc', 8, '"', '"')),
-              expect_contain=['s = "abc"', 9])
-        check("35.10 行中间敲 ( -> 就地补一对（不会去补别人的右括号）",
-              list(_pi("foo(a, b)", 5, "(", ")")),
-              expect_contain=["foo(a(), b)", 6])
+              [_pi('s = "abc"', 8, '"', '"')],
+              expect_contain=[(None, 9, False)])
+        check("35.9 在未闭合字符串里敲 \" -> 只补收尾那一半（算不上\"一对\"）",
+              [_pi('s = "abc', 8, '"', '"')],
+              expect_contain=[('s = "abc"', 9, False)])
+        check("35.10 ★v112 行中间敲 ( -> 右侧有内容，只插左括号、不补右半边",
+              [_pi("foo(a, b)", 5, "(", ")")],
+              expect_contain=[("foo(a(, b)", 6, False)])
 
         # --- 后端集成：真写进"编辑器"（假 VBE）并把光标摆到中间 ---
         class _Mod35(object):
@@ -17481,6 +17481,177 @@ def main():
         import traceback as _tp95
         _tp95.print_exc()
         check("第 95 节异常: %s" % _e95, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
+    # 96. ★v112：自动配对两条（用户口径）
+    #     （1）敲左括号时右侧还有内容 -> 只插左括号，不补右半边；
+    #     （2）选中一段文本再敲引号 -> 用引号把选区包起来。
+    # ------------------------------------------------------------------
+    print("\n=== 96. ★v112：左括号右侧有内容不补全 / 选中文本加引号 ===")
+    try:
+        import vbe_bridge as VB96
+        _pi96 = VB96._pair_insertion
+
+        # ---- 96.1 纯判据：右侧有没有内容决定补不补右半边 ----
+        _g96 = (
+            _pi96("x = ", 4, "(", ")"),          # 行尾 -> 补一对
+            _pi96("x =  ", 5, "(", ")"),         # 右侧只剩空白 -> 仍算"行尾"
+            _pi96("x = ab", 4, "(", ")"),        # 右侧有内容 -> 只插左
+            _pi96("foo(a, b)", 5, "(", ")"),     # 光标在行中间 -> 只插左
+            _pi96("x = 1", 0, "(", ")"),         # 行首（右侧全是内容）-> 只插左
+            _pi96("x = ", 4, "（", "）"),         # 全角行尾 -> 补一对
+            _pi96("foo（a）", 4, "（", "）"),      # 全角中间 -> 只插左
+            _pi96("s = ", 4, '"', '"'),          # 引号不受影响：行尾仍补一对
+            _pi96("    w=4", 4, '"', '"'),       # 引号不受影响：右侧有内容仍补
+        )
+        _w96 = (
+            ("x = ()", 5, True),
+            ("x =  ()", 6, True),
+            ("x = (ab", 5, False),
+            ("foo(a(, b)", 6, False),
+            ("(x = 1", 1, False),
+            ("x = （）", 5, True),
+            ("foo（（a）", 5, False),
+            ('s = ""', 5, True),
+            ('    ""w=4', 5, True),
+        )
+        check("96.1 `_pair_insertion`：敲左括号时**右侧还有内容就只插左括号**"
+              "（用户口径）—— 行尾 / 右侧只剩空白才补一对；半角全角同路；"
+              "引号**刻意不走这条**（`w=4` 那种\"右侧有内容仍补一对\"是既有"
+              "行为，且引号另有\"在不在字符串里\"的先判据）",
+              [_g96], expect_contain=[_w96])
+
+        # ---- 96.2 集成（假 VBE）----
+        class _Mod96(object):
+            def __init__(self, text, fmt=None):
+                self.lines = [text]
+                self.fmt = fmt
+
+            def Lines(self, n, _c):
+                if 1 <= n <= len(self.lines):
+                    return self.lines[n - 1]
+                return ""
+
+            @property
+            def CountOfLines(self):
+                return len(self.lines)
+
+            def ReplaceLine(self, n, t):
+                if self.fmt is not None:
+                    t = self.fmt(t)
+                self.lines[n - 1] = t
+
+            def InsertLines(self, n, t):
+                self.lines.insert(n - 1, t)
+
+        class _Pane96(object):
+            def __init__(self, mod, sl, sc, el, ec):
+                self.CodeModule = mod
+                self.sel = [sl, sc, el, ec]
+
+            def GetSelection(self):
+                return tuple(self.sel)
+
+            def SetSelection(self, sl, sc, el, ec):
+                self.sel = [sl, sc, el, ec]
+
+        class _Vbe96(object):
+            def __init__(self, pane):
+                self.ActiveCodePane = pane
+
+        def _run96(text, sl, sc, el, ec, ch, fmt=None,
+                   sem=("char", 4, False)):
+            mod = _Mod96(text, fmt)
+            pane = _Pane96(mod, sl, sc, el, ec)
+            _o_vbe = VB96._get_vbe_cached
+            _o_sem = VB96._sem_cache.get("info")
+            VB96._sem_cache["info"] = sem
+            VB96._get_vbe_cached = lambda: _Vbe96(pane)
+            try:
+                ok = VB96.VbeBackend().insert_pair(ch)
+            finally:
+                VB96._get_vbe_cached = _o_vbe
+                VB96._sem_cache["info"] = _o_sem
+            return bool(ok), mod.lines[sl - 1], pane.sel[1], pane.sel[3]
+
+        _g96b = (
+            _run96("x = ", 1, 5, 1, 5, "("),        # 行尾 -> 补一对
+            _run96("x = ab", 1, 5, 1, 5, "("),      # 右侧有内容 -> 只插左
+            _run96("foo(a, b)", 1, 5, 1, 5, "("),   # 行中间 -> 只插左
+            # 只插左括号后 VBE 补空格：行里没有 `()`，得走前缀定位
+            _run96("x=(ab", 1, 3, 1, 3, "(",
+                   fmt=lambda s: s.replace("=(", "= (")),
+            # 选区包裹（半角 / 全角 / 整行）
+            _run96("x = abc", 1, 5, 1, 8, '"'),
+            _run96("x = abc", 1, 5, 1, 8, "“"),
+            _run96("abc", 1, 1, 1, 4, '"'),
+            # 包裹后 VBE 补空格：按前缀找回末尾收符号之后
+            _run96("x=abc", 1, 3, 1, 6, '"',
+                   fmt=lambda s: s.replace('="', '= "')),
+            # 反面：多行选区 / 括号带选区一律不接管
+            _run96("x = abc", 1, 5, 2, 5, '"'),
+            _run96("x = abc", 1, 5, 1, 8, "("),
+            # 空选区（sc == ec）= 没有选区，照常配对
+            _run96("x = ", 1, 5, 1, 5, '"'),
+            # 选区两端含全角：显示列 -> 字符列必须换算对（disp 语义）
+            _run96("x = 中文字", 1, 5, 1, 11, '"', sem=("disp", 4, True)),
+        )
+        _w96b = (
+            (True, "x = ()", 6, 6),
+            (True, "x = (ab", 6, 6),
+            (True, "foo((a, b)", 6, 6),
+            (True, "x= ((ab", 5, 5),
+            (True, 'x = "abc"', 10, 10),
+            (True, "x = “abc”", 10, 10),
+            (True, '"abc"', 6, 6),
+            (True, 'x= "abc"', 9, 9),
+            (False, "x = abc", 5, 5),
+            (False, "x = abc", 5, 8),
+            (True, 'x = ""', 6, 6),
+            (True, 'x = "中文字"', 13, 13),
+        )
+        check("96.2 `VbeBackend.insert_pair`（集成）："
+              "（a）行尾敲 `(` 补一对、**右侧有内容只插左括号**，且只插左时"
+              "VBE 重排整行也照样落在左括号之后（走前缀定位 —— 行里根本没有"
+              "`()` 可找）；"
+              "（b）**选中一段文本敲引号 -> 用引号把选区包起来**（半角 / 全角 /"
+              "整行选中 / VBE 重排都算对），光标落在末尾收符号之后；"
+              "（c）多行选区 / 括号带选区**仍交给 VBE**，空选区照常配对；"
+              "（d）选区两端含全角时按【显示列】换算（`x = 中文字` 选中三个字，"
+              "不是两个字）",
+              [_g96b], expect_contain=[_w96b])
+
+        # ---- 96.3 结构护栏（AST）：单一实现 + 接线（查运行时对象，不查源码）----
+        import ast as _ast96
+        _esrc96 = io.open(os.path.join(ROOT, "vbe_bridge.py"),
+                          encoding="utf-8").read()
+        _etree96 = _ast96.parse(_esrc96)
+        _fns96 = {}
+        for _n96 in _ast96.walk(_etree96):
+            if isinstance(_n96, _ast96.FunctionDef):
+                _fns96.setdefault(_n96.name, []).append(_n96)
+        _a96 = len(_fns96.get("_wrap_selection", [])) == 1
+        _ip96 = _fns96.get("insert_pair", [])
+        _b96 = bool(_ip96) and all(
+            k in _ast96.dump(_ip96[0])
+            for k in ("_wrap_selection", "paired", "_locate_by_prefix"))
+        _pi96f = _fns96.get("_pair_insertion", [])
+        _c96 = bool(_pi96f) and any(
+            isinstance(_nn, _ast96.Call)
+            and isinstance(_nn.func, _ast96.Attribute)
+            and _nn.func.attr == "strip"
+            for _nn in _ast96.walk(_pi96f[0]))
+        check("96.3 结构护栏（AST）：(a) `_wrap_selection` 只有一处实现；"
+              "(b) `insert_pair` 里既调用了 `_wrap_selection`、又用了 `paired`"
+              "与 `_locate_by_prefix`（只插左括号时改走前缀定位）；"
+              "(c) `_pair_insertion` 的括号分支确实按 `strip()` 判\"右侧有没有"
+              "内容\"（不查源码字符串 —— 注释会把它喂饱）",
+              [(_a96, _b96, _c96)],
+              expect_contain=[(True, True, True)])
+    except Exception as _e96:
+        import traceback as _tp96
+        _tp96.print_exc()
+        check("第 96 节异常: %s" % _e96, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原
