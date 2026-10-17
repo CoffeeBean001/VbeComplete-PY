@@ -3647,9 +3647,12 @@ def main():
               [_pair_run("' x = ", 7, "(")[2],
                _pair_run("' x = ", 7, "(")[0]],
               expect_contain=[False, "' x = "])
-        check("35.14 有选区 -> 不管（替换语义交给 VBE）",
-              [_pair_run("x = ab", 3, "(", ec=6)[2],
-               _pair_run("x = ab", 3, "(", ec=6)[0]],
+        # ★v114：本用例原先用左括号，而左括号带选区从 v114 起改成"包裹"
+        # （§98 钉）。"有选区就不接管"这条规则本身没变，改用**收符号** `)`
+        # 继续守着它（收符号没有"包起来"的语义，仍交给 VBE 替换）。
+        check("35.14 有选区 + 非包裹符号（收括号） -> 不管（替换语义交给 VBE）",
+              [_pair_run("x = ab", 3, ")", ec=6)[2],
+               _pair_run("x = ab", 3, ")", ec=6)[0]],
               expect_contain=[False, "x = ab"])
         _orig_g = VB35._get_vbe_cached
         try:
@@ -17597,8 +17600,11 @@ def main():
             # 包裹后 VBE 补空格：按前缀找回末尾收符号之后
             _run96("x=abc", 1, 3, 1, 6, '"',
                    fmt=lambda s: s.replace('="', '= "')),
-            # 反面：多行选区 / 括号带选区一律不接管
+            # 反面：多行选区 / 收符号带选区一律不接管
             _run96("x = abc", 1, 5, 2, 5, '"'),
+            _run96("x = abc", 1, 5, 1, 8, ")"),
+            # ★v114：**括号带选区改成"包裹"**（v112 时期望 False）——
+            # 期望随口径更新，规则本身在 §98 钉
             _run96("x = abc", 1, 5, 1, 8, "("),
             # 空选区（sc == ec）= 没有选区，照常配对
             _run96("x = ", 1, 5, 1, 5, '"'),
@@ -17616,6 +17622,7 @@ def main():
             (True, 'x= "abc"', 9, 9),
             (False, "x = abc", 5, 5),
             (False, "x = abc", 5, 8),
+            (True, "x = (abc)", 10, 10),
             (True, 'x = ""', 6, 6),
             (True, 'x = "中文字"', 13, 13),
         )
@@ -17625,7 +17632,8 @@ def main():
               "`()` 可找）；"
               "（b）**选中一段文本敲引号 -> 用引号把选区包起来**（半角 / 全角 /"
               "整行选中 / VBE 重排都算对），光标落在末尾收符号之后；"
-              "（c）多行选区 / 括号带选区**仍交给 VBE**，空选区照常配对；"
+              "（c）多行选区 / **收符号**带选区**仍交给 VBE**，空选区照常配对"
+              "（★v114 起左括号带选区也包裹，见 §98）；"
               "（d）选区两端含全角时按【显示列】换算（`x = 中文字` 选中三个字，"
               "不是两个字）",
               [_g96b], expect_contain=[_w96b])
@@ -17845,6 +17853,155 @@ def main():
         import traceback as _tp97
         _tp97.print_exc()
         check("第 97 节异常: %s" % _e97, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
+    # 98. ★v114：选中文本敲【左括号】也把选区包起来（用户口径）
+    #     用户口径（原话）："之前有个打双引号可以自动把选中文本用双引号括
+    #     起来，我想加个类似的，括号也可以实现同样效果。"
+    #     ⇒ v112 那条包裹只对引号开的门，对 `(` / `（` 同样开。
+    # ------------------------------------------------------------------
+    print("\n=== 98. ★v114：选中文本敲左括号也包裹 ===")
+    try:
+        import vbe_bridge as VB98
+
+        # ---- 98.1 白名单：哪些开符号带选区时"包裹"，收符号不算 ----
+        _wr98 = VB98.VbeBackend._WRAP_OPEN
+        _pc98 = VB98.VbeBackend._PAIR_CLOSE
+        _g98 = (
+            # 包裹：引号（v112）+ 左括号半角/全角（v114）
+            tuple(ch in _wr98 for ch in ('"', "“", "(", "（")),
+            # 不包裹：收符号（没有"包起来"的语义）+ 根本不相配的符号
+            tuple(ch in _wr98 for ch in (")", "）", "'")),
+            # 每个开符号都必须查得到收符号（否则 insert_pair 一进来就 return False，
+            # 包裹的路走不到 —— v108 踩过同样的坑）
+            tuple(ch in _pc98 for ch in _wr98),
+            # 没有重复项
+            len(set(_wr98)) == len(_wr98),
+        )
+        check("98.1 包裹白名单 `VbeBackend._WRAP_OPEN`：引号（v112）+ 左括号"
+              "半角/全角（v114）**带选区时包裹**；收符号 `)` / `）` 与不相配的"
+              "`'` **不包裹**（仍交给 VBE 替换）；每个开符号都在 `_PAIR_CLOSE`"
+              "里查得到收符号",
+              [_g98],
+              expect_contain=[((True, True, True, True),
+                               (False, False, False),
+                               (True, True, True, True),
+                               True)])
+
+        # ---- 98.2 集成（假 VBE）：真写进"编辑器"、光标落在收括号之后 ----
+        class _Mod98(object):
+            def __init__(self, text, fmt=None):
+                self.lines = [text]
+                self.fmt = fmt
+
+            def Lines(self, n, _c):
+                if 1 <= n <= len(self.lines):
+                    return self.lines[n - 1]
+                return ""
+
+            @property
+            def CountOfLines(self):
+                return len(self.lines)
+
+            def ReplaceLine(self, n, t):
+                if self.fmt is not None:
+                    t = self.fmt(t)
+                self.lines[n - 1] = t
+
+            def InsertLines(self, n, t):
+                self.lines.insert(n - 1, t)
+
+        class _Pane98(object):
+            def __init__(self, mod, sl, sc, el, ec):
+                self.CodeModule = mod
+                self.sel = [sl, sc, el, ec]
+
+            def GetSelection(self):
+                return tuple(self.sel)
+
+            def SetSelection(self, sl, sc, el, ec):
+                self.sel = [sl, sc, el, ec]
+
+        class _Vbe98(object):
+            def __init__(self, pane):
+                self.ActiveCodePane = pane
+
+        def _run98(text, sl, sc, el, ec, ch, fmt=None,
+                   sem=("char", 4, False)):
+            mod = _Mod98(text, fmt)
+            pane = _Pane98(mod, sl, sc, el, ec)
+            _o_vbe = VB98._get_vbe_cached
+            _o_sem = VB98._sem_cache.get("info")
+            VB98._sem_cache["info"] = sem
+            VB98._get_vbe_cached = lambda: _Vbe98(pane)
+            try:
+                ok = VB98.VbeBackend().insert_pair(ch)
+            finally:
+                VB98._get_vbe_cached = _o_vbe
+                VB98._sem_cache["info"] = _o_sem
+            return bool(ok), mod.lines[sl - 1], pane.sel[1], pane.sel[3]
+
+        _g98b = (
+            _run98("x = abc", 1, 5, 1, 8, "("),        # 半角：包起来
+            _run98("x = abc", 1, 5, 1, 8, "（"),        # 全角：包起来
+            _run98("abc", 1, 1, 1, 4, "("),             # 整行选中
+            # 包裹后 VBE 补空格（`x=(abc)` -> `x= (abc)`）：仍落在收括号之后
+            _run98("x=abc", 1, 3, 1, 6, "(",
+                   fmt=lambda s: s.replace("=(", "= (")),
+            # 选区两端含全角：显示列 -> 字符列必须换算对（disp 语义）
+            _run98("x = 中文字", 1, 5, 1, 11, "(",
+                   sem=("disp", 4, True)),
+            # 反面：多行选区 / 收符号带选区 / 不相配的符号 一律不接管
+            _run98("x = abc", 1, 5, 2, 5, "("),
+            _run98("x = abc", 1, 5, 1, 8, ")"),
+            _run98("x = abc", 1, 5, 1, 8, "）"),
+            _run98("x = abc", 1, 5, 1, 8, "'"),
+        )
+        _w98b = (
+            (True, "x = (abc)", 10, 10),
+            (True, "x = （abc）", 10, 10),
+            (True, "(abc)", 6, 6),
+            (True, "x= (abc)", 9, 9),
+            (True, "x = (中文字)", 13, 13),
+            (False, "x = abc", 5, 5),
+            (False, "x = abc", 5, 8),
+            (False, "x = abc", 5, 8),
+            (False, "x = abc", 5, 8),
+        )
+        check("98.2 `VbeBackend.insert_pair`（集成）："
+              "**选中一段文本敲左括号 -> 用括号把选区包起来**（半角 / 全角 /"
+              "整行选中 / VBE 重排 / 选区含全角都算对），光标落在收括号之后；"
+              "多行选区、收符号 `)` `）`、不相配的 `'` **仍交给 VBE**（不吞键）",
+              [_g98b], expect_contain=[_w98b])
+
+        # ---- 98.3 结构护栏（AST + 运行时对象，不查源码字符串）----
+        import ast as _ast98
+        _etree98 = _ast98.parse(io.open(os.path.join(ROOT, "vbe_bridge.py"),
+                                        encoding="utf-8").read())
+        _cls98 = [n for n in _ast98.walk(_etree98)
+                  if isinstance(n, _ast98.ClassDef) and n.name == "VbeBackend"]
+        _a98 = bool(_cls98) and any(
+            isinstance(_st, _ast98.Assign) and any(
+                isinstance(_tg, _ast98.Name) and _tg.id == "_WRAP_OPEN"
+                for _tg in _st.targets)
+            for _st in _cls98[0].body)
+        _ip98 = [n for n in _ast98.walk(_etree98)
+                 if isinstance(n, _ast98.FunctionDef) and n.name == "insert_pair"]
+        _b98 = bool(_ip98) and any(
+            isinstance(_x, _ast98.Attribute) and _x.attr == "_WRAP_OPEN"
+            for _x in _ast98.walk(_ip98[0]))
+        _c98 = len([n for n in _ast98.walk(_etree98)
+                    if isinstance(n, _ast98.FunctionDef)
+                    and n.name == "_wrap_selection"]) == 1
+        check("98.3 结构护栏（AST）：(a) `_WRAP_OPEN` 是 `VbeBackend` 的类体"
+              "常量；(b) `insert_pair` 确实按它决定\"包不包\"；(c) `_wrap_selection`"
+              "仍然只有一处实现（括号与引号共用同一份，不另写第二份）",
+              [(_a98, _b98, _c98)],
+              expect_contain=[(True, True, True)])
+    except Exception as _e98:
+        import traceback as _tp98
+        _tp98.print_exc()
+        check("第 98 节异常: %s" % _e98, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原

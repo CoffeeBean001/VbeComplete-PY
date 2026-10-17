@@ -49,13 +49,20 @@
 - **v112:** an opening bracket auto-closes **only when nothing but whitespace is to its right** —
   with code to the right, just the bracket itself is inserted (same as modern editors). And typing
   a quote over a **selection** wraps the selection instead of replacing it (`abc` -> `"abc"`);
-  single-line selections only (a VBA string cannot span lines), and brackets over a selection are
-  still handed to VBE.
+  single-line selections only (a VBA string cannot span lines). Brackets over a selection were
+  still handed to VBE in v112 — v114 changes that.
 - **v113:** the rule above has one exception — **inside a call's argument list or a procedure's
   parameter list the bracket is still auto-closed** (`foo(bar(` -> `foo(bar())`,
   `Sub Foo(ByVal arr(` -> `Sub Foo(ByVal arr())`), because the code to the right of the caret
   belongs to an **outer** pair. Only the innermost unclosed `(` that sits right next to an
   identifier counts; grouping parens (`x = (a + b`), a leading `(` and already-closed pairs do not.
+- **v114:** typing `(` over a **selection** now wraps it, exactly like the quote path
+  (`abc` -> `(abc)`, full-width -> `（abc）`). One whitelist does both jobs:
+  `VbeBackend._WRAP_OPEN` = `"` `“` `(` `（`; closing characters (`)` `）`) are deliberately
+  absent — they have no "wrap" meaning, so a selection is still replaced by VBE. Still
+  single-line only (a bracket pair cannot span lines in VBA without `_` continuations), and the
+  wrapping itself is still `_wrap_selection` — one implementation shared with quotes, pinned by
+  an AST guard (test 98.3).
 - `Backspace` deletes both halves of an empty pair, and removes a whitespace-only line in one stroke.
 - `Enter` at end of line indents to the right depth, aligns `Else` / `ElseIf` / `Case`, and closes a
   block you just opened (`End Sub`, `Next i`, …).
