@@ -5,7 +5,7 @@
 
     py -3 tests\\probe_outline.py
 
-它做四件事，**一个字节都不写用户代码**：
+它做五件事，**一个字节都不写用户代码**：
 
   1. 把 VBE 里第一个已打开的代码窗切到前台（`CodePanes.Item(1).Show()`）；
   2. 读当前模块全文，列出过程（大纲的数据源）；
@@ -13,7 +13,9 @@
   4. 跳回那个过程的第一行，读回 `GetSelection()` 核对；
   5. 再挑一个**没有打开代码窗**的模块，确认 `goto_location` 老老实实返回 False
      （这条是 v121 的真机教训：`VBComponent` 上没有 `CodePane` 属性，
-     没打开过的模块在 COM 里根本打不开 —— 假对象测不出来）。
+     没打开过的模块在 COM 里根本打不开 —— 假对象测不出来）；
+  6. ★v121b：**真把窗弹出来**，往里发一次"鼠标左键松开" —— 验"单击即跳"
+     和"跳完窗不关"这两条手感（用例只能验绑定，手感得真点一次）。
 
 副作用：会让 VBE 停在某个模块的某个位置（不写文本、不改代码）。
 """
@@ -102,6 +104,51 @@ def main():
            b.goto_location(closed, 1) is False, closed)
     else:
         print("（本工程每个有代码的模块都开着代码窗，跳过这一条）")
+
+    # ---- 5. 窗的真机手感：单击即跳、跳完不关（★v121b）----
+    # 这一段用**真 tkinter**，把窗真的弹出来、真的发一个"左键松开"进去。
+    try:
+        import tkinter as _tk
+        import jump_ui as _JU
+
+        _root = _tk.Tk()
+        _root.withdraw()
+        _w = _JU.JumpWindow(_root)
+        _items = [{"label": "%s %s" % (r[1], r[0]), "module": mod, "line": r[2],
+                   "kind": r[1], "expect": r[0], "text": r[4]} for r in procs]
+        if not _items:
+            _items = [{"label": "（本模块没有过程）", "module": mod, "line": 1,
+                       "kind": "", "expect": "", "text": ""}]
+        _seen = []
+        _w.on_pick = lambda it: (bool(_seen.append(it["label"])),
+                                 b.goto_location(it["module"], it["line"],
+                                                 expect=it.get("expect") or None))[1]
+        _w.show_items(None, _items, title="过程大纲", subtitle="真机探针")
+        try:
+            _w.win.attributes("-topmost", False)   # 别浮在 Excel 上面
+        except Exception:
+            pass
+        _root.update()
+        _w.lb.selection_clear(0, "end")
+        _w.lb.selection_set(0)
+        _w.lb.event_generate("<ButtonRelease-1>")   # ← 一次**单击**
+        _root.update()
+        ck("单击列表项就跳（回调收到那一行）", bool(_seen), _seen)
+        ck("跳完窗仍然开着（要手动关）", bool(_w.is_open()))
+        ck("状态栏回报「已跳到」", "已跳到" in str(_w.lbl_status.cget("text")),
+           _w.lbl_status.cget("text"))
+        if procs:
+            try:
+                _sl, _sc, _el, _ec = first.GetSelection()
+                ck("单击后光标落在那一行", int(_sl) == int(procs[0][2]),
+                   (_sl, _sc, _el, _ec))
+            except Exception as _e:
+                ck("单击后读回 GetSelection", False, _e)
+        _w.close()
+        ck("手动 close() 真的收起窗", not _w.is_open())
+        _root.destroy()
+    except Exception as _e:
+        print("（GUI 部分跳过：%r）" % (_e,))
 
     print("\n结果: %s" % ("全部通过" if not fails else "失败 %d 项: %s"
                         % (len(fails), fails)))

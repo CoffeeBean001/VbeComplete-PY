@@ -51,8 +51,8 @@ autostart on login · `run_tests.bat` runs the offline regression suite.
 | `Ctrl+↓` | Jump to the blank line above `End Sub` / `End Function` (inserting one if needed) and write it at the procedure's indent level |
 | `Ctrl+Q` | Open the **snippet window** at the caret: title list on the left (fuzzy search box), code on the right; add / edit / delete, and insert the snippet at the caret |
 | `Ctrl+/` | **Toggle line comment** (IDEA-style): on every line of the selection, or the caret's line when there is none — removes the comment when all of them already have one, otherwise adds it |
-| `Ctrl+Shift+O` | **Outline of this module**: every `Sub` / `Function` / `Property` / `Declare` in it — fuzzy search, `Enter` to jump |
-| `Ctrl+Shift+F` | **Find references** (text level): with the caret inside a name, lists every occurrence of it in the active project — fuzzy search, `Enter` to jump |
+| `Ctrl+Shift+O` | **Outline of this module**: every `Sub` / `Function` / `Property` / `Declare` in it — fuzzy search, **click** (or `Enter`) to jump |
+| `Ctrl+Shift+F` | **Find references** (text level): with the caret inside a name, lists every occurrence of it in the active project — fuzzy search, **click** (or `Enter`) to jump |
 
 On accept a `Sub` gets a trailing space, a `Function` gets `()` with the caret inside **and the
 VBE's own parameter info pops up** (so you can see the signature while filling in the arguments),
@@ -76,11 +76,14 @@ adds. Removal strips one `' ` (quote + space) and falls back to a bare `'`, so h
 command groups), so `Ctrl+Z` needs to be pressed N times to get all the way back.
 
 **Outline (`Ctrl+Shift+O`) and find references (`Ctrl+Shift+F`)** both open one list at the caret:
-type a few characters to filter, press `Enter` to jump. The outline lists the **current module's**
-`Sub` / `Function` / `Property Get|Let|Set` / `Declare` (`Event` is left out — event names are not
-in the completion pool). Find references wants the caret **inside a name** (or right after it), and
-lists every **whole-word** hit in the **active project**, current module first. When a jump is not
-possible the window stays open and says why in red underneath.
+type a few characters to filter, **click a row** (or press `Enter`) to jump. The outline lists the
+**current module's** `Sub` / `Function` / `Property Get|Let|Set` / `Declare` (`Event` is left out —
+event names are not in the completion pool). Find references wants the caret **inside a name** (or
+right after it), and lists every **whole-word** hit in the **active project**, current module first.
+When a jump is not possible the window stays open and says why in red underneath.
+
+⚠️ **The window never closes itself** — it stays put after a jump so you can click the next hit.
+Three ways out: `Esc`, the window's close button, or pressing the same shortcut again.
 
 Three honest notes: ① references are **textual** — two different variables that happen to share a
 name are listed together, and it cannot tell a `Call` from an assignment; it answers "where do these

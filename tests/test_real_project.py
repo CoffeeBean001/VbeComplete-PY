@@ -19693,6 +19693,145 @@ def main():
                            True, True)])
 
     # ------------------------------------------------------------------
+    # 107. ★v121b：单击即跳转 + 导航窗手动关（用户口径）
+    #   两条都是"手感"要求，只能拿**真 tkinter** 验：
+    #     (a) 单击列表项 = 跳转（不再要求记住"双击"）；
+    #     (b) 跳完窗**不消失** ⇒ 连点几处引用不用反复开窗；关窗必须手动。
+    #   ⚠️ 测试网顶部把 tkinter 塞成了桩 ⇒ 这一节临时换真模块、跑完原样换回
+    #      （与 §99.6 / §101.2 同一套写法，不然这一节会被静默跳过）。
+    # ------------------------------------------------------------------
+    print("\n=== 107. ★v121b：单击跳转 + 导航窗手动关 ===")
+    import jump_ui as JU107
+    _g107 = None
+    _root107 = None
+    _tk107_had = JU107.tk
+    _tk107_saved = None
+    try:
+        import importlib as _il107
+        _tk107 = sys.modules.get("tkinter")
+        if not hasattr(_tk107, "Tk"):
+            _tk107_saved = {k: sys.modules[k] for k in list(sys.modules)
+                            if k == "tkinter" or k.startswith("tkinter.")}
+            for _k107 in _tk107_saved:
+                del sys.modules[_k107]
+            try:
+                _tk107 = _il107.import_module("tkinter")
+            except Exception:
+                _tk107 = None
+        if _tk107 is not None and hasattr(_tk107, "Tk"):
+            JU107.tk = _tk107          # jump_ui 里 `import tkinter as tk`
+            _root107 = _tk107.Tk()
+            _root107.withdraw()
+            _w107 = JU107.JumpWindow(_root107)
+            _hit107 = []
+            _w107.on_pick = lambda it: (_hit107.append(it["label"]), True)[1]
+            _w107.show_items((100, 100, 116), [
+                {"label": "Sub DoWork", "module": "模块1", "line": 3,
+                 "kind": "Sub", "expect": "DoWork", "text": "Sub DoWork()"},
+                {"label": "Sub Other", "module": "模块2", "line": 9,
+                 "kind": "Sub", "expect": "Other", "text": "Sub Other()"},
+            ], title="过程大纲", subtitle="模块1　·　2 个过程")
+            try:
+                # 别让测试窗浮在 Excel 上面干扰后面几节
+                _w107.win.attributes("-topmost", False)
+            except Exception:
+                pass
+            _root107.update()
+
+            def _click107(row):
+                # 真事件：选中某行 → 发一个"鼠标左键松开"给列表
+                _w107.lb.selection_clear(0, "end")
+                _w107.lb.selection_set(row)
+                _w107.lb.event_generate("<ButtonRelease-1>")
+                _root107.update()
+
+            _click107(0)
+            _open1 = _w107.is_open()
+            _st1 = _w107.lbl_status.cget("text")
+            _click107(1)
+            _open2 = _w107.is_open()
+            _st2 = _w107.lbl_status.cget("text")
+            # 跳不过去（模块没打开代码窗）也**不许**收窗，只换红字
+            _w107.on_pick = lambda it: False
+            _click107(0)
+            _open3 = _w107.is_open()
+            _st3 = _w107.lbl_status.cget("text")
+            # 手动关：Esc / 关闭按钮 / 再按一次快捷键走的都是 close()
+            _w107.close()
+            _closed107 = (not _w107.is_open())
+            _g107 = (_hit107, _open1, _open2, _open3, _closed107,
+                     ("已跳到" in _st1 and "模块1" in _st1 and "第 3 行" in _st1),
+                     ("已跳到" in _st2 and "模块2" in _st2 and "第 9 行" in _st2),
+                     ("跳不过去" in _st3))
+    except Exception:
+        _g107 = None
+    finally:
+        JU107.tk = _tk107_had
+        if _tk107_saved is not None:
+            for _k107b in [k for k in list(sys.modules)
+                           if k == "tkinter" or k.startswith("tkinter.")]:
+                del sys.modules[_k107b]
+            sys.modules.update(_tk107_saved)
+        try:
+            if _root107 is not None:
+                _root107.destroy()
+        except Exception:
+            pass
+    if _g107 is not None:
+        _hit107v, _o1, _o2, _o3, _cls107, _say1, _say2, _say3 = _g107
+        check("107.1 **单击列表项就跳转**（不必记「双击」）：点第一行、点第二行"
+              "各跳一次，回调拿到的正是点中的那一行；★而且**两次都没把窗关掉**"
+              "（连点几处引用不用反复开窗）",
+              [(_hit107v, _o1, _o2)],
+              expect_contain=[(["Sub DoWork", "Sub Other"], True, True)])
+        check("107.2 跳成了在状态栏报「已跳到 模块 · 第 N 行」；**跳不过去也不收窗**"
+              "（只把提示换成红字）—— 收起窗再什么都不发生是最差的手感",
+              [(_say1, _say2, _o3, _say3)],
+              expect_contain=[(True, True, True, True)])
+        check("107.3 手动关窗（`close()`：Esc / 关闭按钮 / 再按一次快捷键走的都是它）"
+              "真的收起了窗 —— 关的**唯一**途径",
+              [(_cls107,)], expect_contain=[(True,)])
+
+    # ---- 107.4 结构护栏（AST，不受注释影响）----
+    try:
+        import io as _io107
+        _src107 = _io107.open(JU107.__file__, "r", encoding="utf-8").read()
+    except Exception:
+        _src107 = ""
+    _tree107 = _ast106.parse(_src107) if _src107 else None
+    _pick_no_close107 = True
+    _onclick107 = False
+    _bound107 = False
+    _dbl107 = "<Double-Button-1>" in _src107
+    if _tree107 is not None:
+        for _nd107 in _ast106.walk(_tree107):
+            if (isinstance(_nd107, _ast106.FunctionDef)
+                    and _nd107.name == "_pick"):
+                for _sub107 in _ast106.walk(_nd107):
+                    if (isinstance(_sub107, _ast106.Call)
+                            and isinstance(_sub107.func, _ast106.Attribute)
+                            and _sub107.func.attr == "close"
+                            and isinstance(_sub107.func.value, _ast106.Name)
+                            and _sub107.func.value.id == "self"):
+                        _pick_no_close107 = False
+            if (isinstance(_nd107, _ast106.FunctionDef)
+                    and _nd107.name == "_on_click"):
+                _onclick107 = True
+            if (isinstance(_nd107, _ast106.Call)
+                    and isinstance(_nd107.func, _ast106.Attribute)
+                    and _nd107.func.attr == "bind"):
+                for _a107 in _nd107.args:
+                    if (isinstance(_a107, _ast106.Constant)
+                            and _a107.value == "<ButtonRelease-1>"):
+                        _bound107 = True
+    check("107.4 结构护栏（AST）：`_pick` 里**没有** `self.close()`（跳转不再自动"
+          "关窗，以后有人加回来这里会红）；列表绑了 `<ButtonRelease-1>` 且有 "
+          "`_on_click`；`<Double-Button-1>` 那套已经撤掉（不留两套跳转口径）",
+          [(_pick_no_close107, _bound107, _onclick107, _dbl107)],
+          expect_contain=[(True, True, True, False)])
+
+
+    # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原
     #     这不是在测产品代码，而是在测【测试网自己】：一节忘了还原，后面每一节
     #     都会悄悄跑在别人的假对象上，而**不会有任何一条用例变红**。

@@ -180,9 +180,10 @@
   IDEA. `VBECOMPLETE_NO_COMMENT=1` turns it off.
 
 - **v121 — module outline (`Ctrl+Shift+O`) and textual find references (`Ctrl+Shift+F`).**
-  Both keys open **one** window (`jump_ui.JumpWindow`): a single fuzzy-searchable column, `Enter` to
-  jump. Nothing is uploaded, nothing is guessed, and **not a single byte of code is written** — these
-  are navigation only. The outline lists the **current module's** `Sub` / `Function` /
+  Both keys open **one** window (`jump_ui.JumpWindow`): a single fuzzy-searchable column, **one
+  click** (or `Enter`) to jump. Nothing is uploaded, nothing is guessed, and **not a single byte of
+  code is written** — these are navigation only. The outline lists the **current module's**
+  `Sub` / `Function` /
   `Property Get|Let|Set` / `Declare`, with line numbers, a `Private` marker and the procedure header
   as the subtitle. Find references takes the name under the caret and lists every **whole-word** hit
   in the **active project** (module + line + that line's text), current module first, declaring
@@ -197,6 +198,15 @@
   and before jumping, the target line is re-checked (must be non-blank, must contain the expected
   name) — if the line number has drifted, **it does not jump** rather than dropping the caret into
   unrelated code. A failed jump **keeps the window open** and explains itself in red underneath.
+
+  Two feel requirements as of v121b: **a single click jumps** (no need to remember "double click" —
+  the binding is on `ButtonRelease-1`, because a Listbox changes its selection on button *press*, so
+  releasing is the moment the clicked row is known), and **the window never closes itself**. It stays
+  put after a jump so you can hit the next reference without reopening it; `_pick()` deliberately has
+  no `self.close()` (pinned by an AST test). The status bar reports `jumped to <module> · line N` on
+  success and turns the same line red when the jump was refused. Three ways to close it: `Esc`, the
+  window's close button, or pressing the same shortcut again (in the window it is bound locally; with
+  the VBE focused the hook sees the window is already open and closes it).
 
   One hard COM limit: a `VBComponent` has **no `CodePane` property** (verified: `AttributeError:
   <unknown>.CodePane`), and `vbe.CodePanes` only contains panes that **have already been opened**
@@ -239,7 +249,7 @@ semantic infrastructure.
 | Smart indentation and automatic block closers | ✅ |
 | Start a new line (`Shift+Enter`) | ✅ |
 | Toggle line comment (`Ctrl+/`) | ✅ |
-| File structure outline (`Ctrl+Shift+O`) | ✅ |
+| File structure outline (`Ctrl+Shift+O`) | ✅ (single click jumps; the window stays open) |
 | Find usages (`Ctrl+Shift+F`) — textual only, no scope resolution | ⚠️ partial |
 | Trailing space for keywords; `()` after functions | ✅ |
 | No completion while declaring a new name | ✅ |
@@ -310,7 +320,7 @@ different ini file (portable installs and tests).
 | `settings.py` | The configuration centre (v120): `settings.ini` parsing, the three-layer lookup, the `KNOWN` table and the commented-out template. Imports nothing from the project — `log.py` depends on it, not the other way round. `py -3 settings.py` dumps every value with its source. |
 | `settings.example.ini` | The template that `settings.py` generates, checked in so you can read it without running anything (every line commented out). |
 | `log.py` | Optional diagnostic log (off by default, zero overhead) |
-| `tests/` | Regression suite (`test_real_project.py`, 1096 checks) and the sample project it runs against. Five one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand), and `probe_outline.py` verifies v121 on the same setup (list procedures, find references, jump and read `GetSelection()` back, confirm a module without an open code pane is refused — **without writing a single byte**). |
+| `tests/` | Regression suite (`test_real_project.py`, 1100 checks) and the sample project it runs against. Five one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand), and `probe_outline.py` verifies v121 on the same setup (list procedures, find references, jump and read `GetSelection()` back, confirm a module without an open code pane is refused; it also **opens the real window and injects a real left-button release** to check that a single click jumps and that the window stays open — **without writing a single byte**). |
 
 ## Credits
 

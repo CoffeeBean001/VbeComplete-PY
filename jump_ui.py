@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 """过程大纲 / 查找引用窗（★v121）。
 
-两个功能**共用同一个窗** —— 它们其实是同一件事：一列可模糊搜索的结果，回车
-跳过去。差别只在数据来源：
+两个功能**共用同一个窗** —— 它们其实是同一件事：一列可模糊搜索的结果，点一下
+（或回车）跳过去。差别只在数据来源：
 
   * `Ctrl+Shift+O` 过程大纲：当前模块里所有 `Sub` / `Function` / `Property`…
   * `Ctrl+Shift+F` 查找引用：某个名字在本工程里出现的每一处（**文本级**）
+
+★v121b：**单击即跳转**（不必记"双击"），而且**跳完窗不关** —— 连点几处引用
+不用反复开窗。关窗只有三条路：`Esc`、窗口右上角的关闭按钮、再按一次同一条
+快捷键（钩子侧 `_open_outline` / `_open_usages` 见到窗开着就收起）。
 
 分工与 v115 片段窗完全一致（同一套教训）：
   * 本模块只碰 tkinter，**不碰 COM**。读模块、跳光标都在 `main`（主线程），
@@ -30,7 +34,7 @@ MIN_W = 440
 MIN_H = 220
 LIST_ROWS = 16
 
-_HINT = "↑↓ 选择 · 回车跳转 · Esc 关闭"
+_HINT = "单击 / 回车跳转　·　Esc 关闭（窗不会自动关）"
 
 
 class JumpWindow(object):
@@ -111,7 +115,10 @@ class JumpWindow(object):
         self.lb.bind("<<ListboxSelect>>", self._on_select)
         self.lb.bind("<Return>", lambda e: (self._pick(), "break")[1])
         self.lb.bind("<KP_Enter>", lambda e: (self._pick(), "break")[1])
-        self.lb.bind("<Double-Button-1>", self._on_dbl)
+        # ★v121b：**单击**（松手那一下）就跳转 —— 不再要求记住"双击"。
+        # 选中项是在**按下**时改的（`<<ListboxSelect>>` 已刷过预览），所以松手
+        # 时 `_cur_item()` 就是用户点的那一行。
+        self.lb.bind("<ButtonRelease-1>", self._on_click)
 
         # ---- 第四行：选中那一行的原文（长行折行显示）----
         self.lbl_preview = tk.Label(w, text="", bg=BG, fg=MUTED, font=UI_FONT,
@@ -294,8 +301,11 @@ class JumpWindow(object):
         except Exception:
             pass
 
-    def _on_dbl(self, _evt):
-        # 双击列表项 = 跳转；把"双击还会改选中项"那条默认行为挡掉
+    def _on_click(self, _evt):
+        """单击列表项 = 跳转。
+
+        空列表 / 点在空白处 ⇒ 没有选中项，`_pick()` 静默返回（不弹任何东西）。
+        """
         self._pick()
         return "break"
 
@@ -318,30 +328,37 @@ class JumpWindow(object):
             pass
 
     def _pick(self):
-        """回车 / 双击：把选中项交给调用方（跳转）。
+        """单击 / 回车：把选中项交给调用方（跳转）。
 
-        回调返回 False = **跳不过去**（最常见：那个模块还没打开代码窗）。这时
-        **不收窗**，只在状态栏说清楚该干什么 —— 收起窗再什么都不发生，就是
-        "按了没反应"，是本项目最忌讳的手感。
+        ★v121b：**跳完成不成都不收窗**（用户口径：导航窗要手动关）。跳成了在
+        状态栏说"已跳到 模块1 · 第 3 行"，跳不成红字说原因 —— 这样连点几处引用
+        不用反复开窗。关窗只有三条路：`Esc`、关闭按钮、再按一次同一条快捷键。
         """
         it = self._cur_item()
         if not it:
             return False
         cb = self.on_pick
         if cb is None:
-            self.close()
-            return True
-        ok = False
+            self._hint("跳转动作没接上（这是配置问题，不是你的操作问题）")
+            return False
         try:
             ok = bool(cb(it))
         except Exception:
             ok = False
         if ok:
-            self.close()
+            self._say("已跳到 %s　·　第 %d 行"
+                      % (it.get("module") or "", int(it.get("line") or 0)))
         else:
             self._hint("跳不过去：那个模块还没有打开代码窗"
-                       "（在 VBE 里双击它一次，再回来按回车）")
+                       "（在 VBE 里双击它一次，再回来点这一项）")
         return ok
+
+    def _say(self, msg):
+        """状态栏报一句正常结果（颜色用前景色，不是错误色）。"""
+        try:
+            self.lbl_status.configure(text=msg, fg=FG)
+        except Exception:
+            pass
 
     def _hint(self, msg):
         """状态栏临时显示一句提示（下次刷新列表时会被 `_status()` 覆盖）。"""
