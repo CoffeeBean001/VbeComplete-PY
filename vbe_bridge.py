@@ -226,19 +226,106 @@ AUTO_SPACE_AFTER_KEYWORD = _env_flag("VBECOMPLETE_AUTO_SPACE", True)
 # 用户口径（原话）："提示词选中了过程名或函数名，按 tab 键，当自动补充完双括号后，
 # 光标落在双括号中间，再加个自动显示形参列表参数的功能。"
 #
-# 为什么是"替用户按一下 Ctrl+Shift+I"、而不是我们画一个窗：形参信息本来就是
-# VBE 自带的能力 —— 它会**高亮当前正在填的那个参数**、跟着逗号往下走、按 Esc
-# 收起、跟着你继续改签名。我们手上只有 CodeModule 的纯文本，重画一遍既费事又
-# 做不到位（v103b 曾在详情行里显示过形参表，用户明确说不要那种）。
-# v63 真机实测过：Ctrl+Shift+I 之后 VBE 的 `PopupTipWndClass` 立刻可见、Esc
-# 立刻不可见 —— 确实有效的是带 Shift 那个。所以这里只是"替用户按一下"。
+# 为什么是"让 VBE 自己弹"、而不是我们画一个窗：形参信息本来就是 VBE 自带的能力
+# —— 它会**高亮当前正在填的那个参数**、跟着逗号往下走、按 Esc 收起、跟着你继续
+# 改签名。我们手上只有 CodeModule 的纯文本，重画一遍既费事又做不到位（v103b 曾
+# 在详情行里显示过形参表，用户明确说不要那种）。
 #
-# ⚠️ 只在【我们自己补了括号】这条路上做（`added_parens`）：括号本来就是用户敲
-# 出来的那种情况，VBE 早就在他敲 `(` 的当下弹过了，我们再来一下只会让它闪一下。
-# ⚠️ 注入失败 / 拿不到注入函数一律静默跳过 —— 形参信息和"补全本身"无关，
-# 绝不能因为它没出来就影响补全（与 v103b 注入空格同一条规矩）。
-# 想关掉：`set VBECOMPLETE_NO_PARAM_INFO=1`。
-AUTO_PARAM_INFO = not _env_flag("VBECOMPLETE_NO_PARAM_INFO", False)
+# ★★v124c（2026-10-18，用户第一次报"按 Tab 补括号会有一个提示音"）：v107c~v123 用
+# `SendInput` 模拟 Ctrl+Shift+I。真机实测（独立 Excel 实例，Excel 2016 / VBE 7.1）：
+#   * VBE 的「参数信息」是 CommandBars 里 **Id=2532** 的菜单项（"参数信息(&M)"），
+#     Ctrl+Shift+I 只是它的加速键；Id=2531 是另一个东西（"快速信息(&Q)"）。
+#   * `ReplaceLine` 写完 `()` 之后再注入 Ctrl+Shift+I，`PopupTipWndClass`
+#     **一直不可见** —— 命令在这个上下文里取不到可显示的签名，而 VBE 对"命令不可用"
+#     会响一声系统提示音。**用户听到的就是这一声**（也解释了为什么从来没人见过那个窗）。
+#
+# ★★v124d（2026-10-18，用户第二次报"还是会响"，实测推翻 v124c 的结论）：
+# v124c 把注入改成了 `CommandBars.FindControl(1, 2532).Execute()`，以为"不可用就静默"。
+# **这是错的** —— 用设备级音量计（WASAPI `IAudioMeterInformation.GetPeakValue`，
+# 20ms 轮询）逐动作测量，结果：
+#     A `Execute()`（光标在空行，Enabled=True）  peak = 0.3457  ← 响
+#     B `Execute()`（光标在 `()` 内，Enabled=True） peak = 0.3457  ← 响
+#     C 只 `ReplaceLine` + `SetSelection`          peak = 0.0000  ← 静
+#     D 注入 Ctrl+Shift+I                          peak = 0.0000  ← 静（但也不弹）
+#     E 注入一个空格（关键字补空格那条路）            peak = 0.0000  ← 静
+# 并且 A/B 之后 `PopupTipWndClass` 仍然 `IsWindowVisible == False`（rect 有值，
+# 说明那个提示窗对象存在、只是不显示）。
+# ⇒ **`Execute()` 在这个由 COM 造出来的上下文里永远不可用，每次都会响一声**；
+#   `Enabled` 返回 True 是假的（CommandBars 的 Enabled 只反映"用户能否自定义"）。
+# ⇒ **参数信息无法从外部可靠唤出**（按键不行、菜单命令不行），主动去做只有代价。
+#
+# 所以 v124d 起：`AUTO_PARAM_INFO` **默认关闭**，只有显式
+# `set VBECOMPLETE_PARAM_INFO=1` 才尝试（那时用户自己承担一声提示音）。
+# VBE 自己的"工具-选项-编辑器-自动显示参数信息"仍然有效 —— 用户在括号里键入
+# 第一个实参时它会自己弹，不需要我们插手。
+AUTO_PARAM_INFO = (_env_flag("VBECOMPLETE_PARAM_INFO", False)
+                   and not _env_flag("VBECOMPLETE_NO_PARAM_INFO", False))
+
+# ★v124：没有 CommandBars 时要不要退回"注入 Ctrl+Shift+I"。
+#   默认 **0（不退回）** —— 那条路会响，正是用户要摆脱的东西。
+#   开成 1 只在"确认这个宿主的参数信息只能靠按键唤出、并且不在乎那一声"时用。
+PARAM_INFO_KEY_FALLBACK = _env_flag("VBECOMPLETE_PARAM_INFO_KEY", False)
+
+# VBE 的「参数信息」菜单项 Id（VBE 7.1 实测；菜单条上写作"参数信息(&M)"）。
+# 「快速信息」是 2531，别混 —— 那是显示变量值/类型的浮动提示，不是形参签名。
+_PARAM_INFO_CTRL_ID = 2532
+
+# 控件对象按 vbe 实例缓存：它绑在那个 VBE 上，宿主重启后旧对象会失效，
+# 失效时调用方清空这里、下次重新 FindControl。零缓存的话每次都要一次
+# COM 调用（FindControl 实测 ~1ms，补全路径上不值得反复付）。
+_param_info_cache = {"owner": None, "ctrl": None}
+
+
+def _param_info_control(vbe):
+    """拿到 VBE 的「参数信息」菜单项（Id=2532），拿不到返回 None。★v124"""
+    ent = _param_info_cache
+    try:
+        if ent["owner"] is vbe and ent["ctrl"] is not None:
+            return ent["ctrl"]
+    except Exception:
+        pass
+    ctrl = None
+    try:
+        # FindControl(Type=1, Id=2532)：1 = msoControlButton。
+        # 不用遍历那三十来个 CommandBars —— 实测要逐个 bar 再逐个控件，
+        # 而 FindControl 一次就命中（覆盖所有菜单条上的同一个命令）。
+        ctrl = vbe.CommandBars.FindControl(1, _PARAM_INFO_CTRL_ID)
+    except Exception:
+        ctrl = None
+    if ctrl is not None:
+        ent["owner"] = vbe
+        ent["ctrl"] = ctrl
+    return ctrl
+
+
+def _show_param_info(vbe):
+    """让 VBE 弹出它自己的【参数信息】窗，返回是否真的发了一条命令。★v124
+
+    ⚠️ **默认根本不会被调用**（`AUTO_PARAM_INFO` 默认 False）—— 真机实测这个
+    命令在我们造出来的上下文里取不到签名，`Execute()` 只会响一声而窗不出现
+    （v124d 的 peak 实测见 `AUTO_PARAM_INFO` 上面那段）。留着它只给
+    `VBECOMPLETE_PARAM_INFO=1` 的用户显式尝试。
+
+    任何一步不成立都静默返回 False：形参信息与"补全本身"无关，绝不能因为它
+    没出来就影响补全（与 v103b 注入空格同一条规矩）。
+    """
+    ctrl = _param_info_control(vbe)
+    if ctrl is None:
+        return False
+    try:
+        # 命令灰着时 Execute 反而更容易响 —— 先问一句（虽然 Enabled 常是假的）。
+        if not bool(ctrl.Enabled):
+            return False
+    except Exception:
+        pass          # 有的宿主不给 Enabled，那就直接试
+    try:
+        ctrl.Execute()
+        return True
+    except Exception:
+        # 控件随 VBE 重启/换工程失效：清缓存，下次重新 FindControl。
+        _param_info_cache["owner"] = None
+        _param_info_cache["ctrl"] = None
+        return False
 
 # ★v110：Ctrl+↑ / Ctrl+↓ 在【当前过程】内跳转（用户 2026-10-15 提的两条）：
 #   Ctrl+↑：光标落到本过程最后一个 `Dim` 语句【那一行】的行尾；
@@ -5880,26 +5967,35 @@ class VbeBackend:
                         _set_caret(actual2, end0)
                     except Exception:
                         pass
-            # ★v107c：光标已经在括号中间了 -> 替用户按一下 Ctrl+Shift+I，
-            # 让 VBE 弹它自己的【参数信息】窗（形参签名）。
+            # ★v107c：光标已经在括号中间了 -> 可选地唤出 VBE 的【参数信息】窗。
+            # ★v124c：从"注入 Ctrl+Shift+I"改成"调 VBE 的菜单命令"。
+            # ★v124d：真机实测两条路都唤不出窗（`PopupTipWndClass` 始终不可见），
+            #         而且 `Execute()` 每次都响一声 ⇒ **默认整段不做**，只有
+            #         `VBECOMPLETE_PARAM_INFO=1` 才进来。详见 AUTO_PARAM_INFO
+            #         上面那段 peak 实测记录。
             # 三道条件缺一不可，且全部是"宁可不做"的方向：
             #   ① `added_parens` —— 只有【我们补出来的】那对括号才管；
             #      用户自己敲的 `(`，VBE 在敲下去的那一刻就弹过了；
-            #   ② 开关 `AUTO_PARAM_INFO`；
+            #   ② 开关 `AUTO_PARAM_INFO`（默认关）；
             #   ③ 光标此刻**真的**停在 `(` 右边（位置判据只此一份实现）。
-            # 注入失败 / 没有注入函数 -> 静默跳过：形参信息与"补全本身"无关，
-            # 绝不能因为它没出来就影响补全（同 v103b 注入空格那条规矩）。
+            # 命令拿不到 / 宿主不支持 CommandBars -> 静默跳过。
             if added_parens and AUTO_PARAM_INFO \
                     and _caret_inside_parens(param_line, end0):
-                try:
-                    _qi = getattr(self, "_send_quick_info", None)
-                    if callable(_qi):
-                        _ok = _qi()          # 先注入，再（可选地）记日志
-                        _log("apply_completion: 唤出参数信息 -> %s" % (_ok,))
-                    else:
-                        _log("apply_completion: 没有注入函数，跳过参数信息")
-                except Exception as _e107c:
-                    _log("apply_completion: 唤出参数信息异常 %r" % (_e107c,))
+                if _show_param_info(vbe):
+                    _log("apply_completion: 参数信息命令已发出（菜单命令）")
+                elif PARAM_INFO_KEY_FALLBACK:
+                    # 只有用户显式要求时才退回"模拟按键"那条会响的老路。
+                    try:
+                        _qi = getattr(self, "_send_quick_info", None)
+                        if callable(_qi):
+                            _log("apply_completion: 退回注入 Ctrl+Shift+I -> %s"
+                                 % (_qi(),))
+                        else:
+                            _log("apply_completion: 无 CommandBars 也无注入函数")
+                    except Exception as _e107c:
+                        _log("apply_completion: 唤出参数信息异常 %r" % (_e107c,))
+                else:
+                    _log("apply_completion: 拿不到参数信息命令 -> 静默跳过")
             return new_line
         except Exception:
             return None

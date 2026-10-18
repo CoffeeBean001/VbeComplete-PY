@@ -16229,7 +16229,7 @@ def main():
     #     PopupTipWndClass），我们只负责"替用户按一下"。所以这一节要钉死的是
     #     【什么时候按、什么时候不按】。
     # ------------------------------------------------------------------
-    print("\n=== 89. ★v107c：补完括号后自动唤出形参信息（Ctrl+Shift+I）===")
+    print("\n=== 89. ★v107c / v124：补完括号后唤出形参信息（★不再注入按键）===")
     try:
         VB89 = VB
 
@@ -16261,17 +16261,52 @@ def main():
             def SetSelection(self, sl, sc, el, ec):
                 self.sel = (sl, sc, el, ec)
 
+        class _FCtrl89:
+            """假的「参数信息」菜单项 —— 只记 Execute 次数。"""
+
+            def __init__(self):
+                self.Enabled = True
+                self.n = 0
+
+            def Execute(self):
+                self.n += 1
+
+        class _FBars89:
+            def __init__(self, ctrl, found=True):
+                self.ctrl = ctrl
+                self.found = found
+                self.id_seen = None
+
+            def FindControl(self, typ, cid):
+                self.id_seen = (typ, cid)
+                return self.ctrl if self.found else None
+
         class _FVBE89:
-            def __init__(self, pane):
+            def __init__(self, pane, bars=None):
                 self.ActiveCodePane = pane
+                if bars is not None:
+                    self.CommandBars = bars
 
         _NOQI = object()
 
         def run89(lines, line_no, start_col, caret_col, completion,
-                  want_parens=True, send=_NOQI):
-            """跑一次 apply_completion，返回 (写回后的行, 光标列, 唤出次数)。"""
+                  want_parens=True, send=_NOQI, bars=True, found=True,
+                  on=False):
+            """跑一次 apply_completion。
+
+            返回 (写回后的行, 光标列, 菜单命令执行次数, 按键注入次数)。
+
+            ★v124：第三个值换成"菜单命令 Execute 了几次"，第四个值才是
+            "有没有注入按键"。
+            ★v124d：`AUTO_PARAM_INFO` 默认 **False**（真机实测 `Execute()` 每次
+            都会响一声、窗还不出现），所以这里默认 `on=False` —— 默认路径必须
+            一声不响。要测"显式开启 PARAM_INFO=1 的老路径"就传 `on=True`；
+            传 `on=None` 表示**不动**模块常量、用调用方当前设好的值（89.6 用）。
+            """
             cm = _FCM89(lines)
             pane = _FPane89(cm)
+            ctrl = _FCtrl89()
+            fb = _FBars89(ctrl, found=found)
             calls = []
 
             def _qi():
@@ -16281,9 +16316,15 @@ def main():
             kw = {"send_quick_info": _qi if send is _NOQI else send}
             _old_vbe = VB89._get_vbe
             _old_gate = VB89._WINDOW_GATE_DISABLED
-            VB89._get_vbe = lambda: _FVBE89(pane)
+            _old_ap = VB89.AUTO_PARAM_INFO
+            _set_ap = on is not None
+            VB89._get_vbe = lambda: _FVBE89(pane, fb if bars else None)
             VB89._WINDOW_GATE_DISABLED = True      # 别让宿主窗口门插手
+            if _set_ap:
+                VB89.AUTO_PARAM_INFO = on
             VB89._vbe_cache["obj"] = None          # 每个用例必须用自己那份假对象
+            VB89._param_info_cache["owner"] = None     # 控件缓存按 vbe 实例来
+            VB89._param_info_cache["ctrl"] = None
             VB89.com_reset()
             try:
                 VB89.VbeBackend(**kw).apply_completion(
@@ -16292,7 +16333,10 @@ def main():
             finally:
                 VB89._get_vbe = _old_vbe
                 VB89._WINDOW_GATE_DISABLED = _old_gate
-            return cm.lines[line_no - 1], pane.sel[3], len(calls)
+                if _set_ap:
+                    VB89.AUTO_PARAM_INFO = _old_ap
+            run89.last_findcontrol = fb.id_seen
+            return (cm.lines[line_no - 1], pane.sel[3], ctrl.n, len(calls))
 
         # ---- 89.1 位置判据（纯函数，可离线钉死）----
         _cip = VB89._caret_inside_parens
@@ -16307,52 +16351,102 @@ def main():
                 _cip("(", 1))],
               expect_contain=[(True, False, False, False, False, False, True)])
 
-        # ---- 89.2 调用点：补出 `()` + 光标进括号 + **按下那一下** ----
-        got89 = run89(["    x = getNa"], 1, 9, 14, "getUserName")
-        check("89.2 调用点确认函数名：写回 `x = getUserName()`、光标落在双括号"
-              "中间（第 21 列），并且**恰好唤出一次**形参信息",
-              [got89], expect_contain=[("    x = getUserName()", 21, 1)])
+        # ---- 89.2 ★默认路径：补出 `()` + 光标进括号 + **一声不响** ----
+        # ★v124c 曾断言"菜单命令 1 次、按键注入 0 次"，以为菜单命令是静默的。
+        # ★v124d 真机峰值实测推翻了它：`CommandBars(...Id=2532).Execute()` 在
+        # 这个由 COM 造出来的上下文里**每次都响一声**（peak 0.346），而
+        # `PopupTipWndClass` 始终 `IsWindowVisible == False` —— 窗根本不出现。
+        # ⇒ 现在的契约是：**默认连菜单命令都不发**（Execute 0 次 / 注入 0 次）。
+        # `on=None` 才是真正的"出厂默认"—— 不吃 run89 里那份覆盖，直接看
+        # 模块常量 `AUTO_PARAM_INFO` 的真值（A/B 时这条必须变红）。
+        got89 = run89(["    x = getNa"], 1, 9, 14, "getUserName", on=None)
+        check("89.2 ★默认路径：写回 `x = getUserName()`、光标落在双括号中间"
+              "（第 21 列）；★一个命令都不发、一个按键都不注入 —— "
+              "用户听到的提示音就是这么来的",
+              [got89], expect_contain=[("    x = getUserName()", 21, 0, 0)])
+
+        # ---- 89.2b 显式 `VBECOMPLETE_PARAM_INFO=1` 才走菜单命令 ----
+        got89 = run89(["    x = getNa"], 1, 9, 14, "getUserName", on=True)
+        check("89.2b 显式打开 `VBECOMPLETE_PARAM_INFO=1`：才发一次参数信息"
+              "菜单命令（仍然不注入任何按键，哪怕它会响也是用户自己选的）",
+              [got89], expect_contain=[("    x = getUserName()", 21, 1, 0)])
 
         # ---- 89.3 ★反面：括号本来就有的调用点 -> 不补、也不唤出 ----
         # 用户自己敲 `(` 的那一刻 VBE 早就弹过形参信息了，我们再来一下只会闪。
-        got89 = run89(["    x = getNa(1)"], 1, 9, 14, "getUserName")
+        got89 = run89(["    x = getNa(1)"], 1, 9, 14, "getUserName", on=True)
         check("89.3 ★反面：括号本来就存在的调用点 -> 不补括号、"
               "**一次都不唤出**（VBE 早已自己弹过）",
-              [got89], expect_contain=[("    x = getUserName(1)", 20, 0)])
+              [got89], expect_contain=[("    x = getUserName(1)", 20, 0, 0)])
 
         # ---- 89.4 ★反面：want_parens=False（Sub / Property / 变量那一档）----
         got89 = run89(["    x = getNa"], 1, 9, 14, "getUserName",
-                      want_parens=False)
+                      want_parens=False, on=True)
         check("89.4 ★反面：want_parens=False（Sub 补空格、Property 补空的那些"
               "档）-> 不补括号，也不唤出形参信息",
-              [got89], expect_contain=[("    x = getUserName", 20, 0)])
+              [got89], expect_contain=[("    x = getUserName", 20, 0, 0)])
 
-        # ---- 89.5 ★反面：没有注入函数（旧式构造 / 离线后端）----
-        got89 = run89(["    x = getNa"], 1, 9, 14, "getUserName", send=None)
-        check("89.5 ★反面：拿不到注入函数（旧式构造 / 离线后端）-> "
-              "补全照常完成、静默跳过唤出，绝不因此出错",
-              [got89], expect_contain=[("    x = getUserName()", 21, 0)])
+        # ---- 89.5 ★反面：宿主没有 CommandBars（WPS / 未验证宿主）----
+        # 拿不到菜单命令就**静默跳过**，绝不退回注入按键 —— 退回就等于把
+        # 提示音放回来。想让它在那种宿主上退回去，得显式开
+        # VBECOMPLETE_PARAM_INFO_KEY=1（见 89.5b）。
+        got89 = run89(["    x = getNa"], 1, 9, 14, "getUserName",
+                      bars=False, on=True)
+        check("89.5 ★反面：拿不到 CommandBars（旧式 / 离线 / 未验证宿主）-> "
+              "补全照常完成、静默跳过，**不注入任何按键**（不响）",
+              [got89], expect_contain=[("    x = getUserName()", 21, 0, 0)])
+
+        # ---- 89.5b 显式退回：PARAM_INFO_KEY_FALLBACK 打开才注入 ----
+        _old_fb89 = VB89.PARAM_INFO_KEY_FALLBACK
+        VB89.PARAM_INFO_KEY_FALLBACK = True
+        try:
+            got89 = run89(["    x = getNa"], 1, 9, 14, "getUserName",
+                          bars=False, on=True)
+        finally:
+            VB89.PARAM_INFO_KEY_FALLBACK = _old_fb89
+        check("89.5b `VBECOMPLETE_PARAM_INFO_KEY=1` 时才退回注入 Ctrl+Shift+I "
+              "那条老路（默认关：那条路会响，用户要的就是不响）",
+              [got89], expect_contain=[("    x = getUserName()", 21, 0, 1)])
+
+        # ---- 89.5c FindControl 找不到控件（Id 变了 / 版本不同）----
+        got89 = run89(["    x = getNa"], 1, 9, 14, "getUserName",
+                      found=False, on=True)
+        check("89.5c `FindControl` 返回 None（别的 VBE 版本没有这个 Id）-> "
+              "静默跳过，不抛、不注入",
+              [got89, run89.last_findcontrol],
+              expect_contain=[("    x = getUserName()", 21, 0, 0),
+                              (1, 2532)])
 
         # ---- 89.6 开关 `VBECOMPLETE_NO_PARAM_INFO=1` 能关掉 ----
+        # `on=None`：不动模块常量，就用下面这行强行压成的 False
+        # —— 它等价于 `VBECOMPLETE_NO_PARAM_INFO=1` 的那个与项。
         _old_ap89 = VB89.AUTO_PARAM_INFO
         VB89.AUTO_PARAM_INFO = False
         try:
-            got89 = run89(["    x = getNa"], 1, 9, 14, "getUserName")
+            got89 = run89(["    x = getNa"], 1, 9, 14, "getUserName", on=None)
         finally:
             VB89.AUTO_PARAM_INFO = _old_ap89
         check("89.6 开关关掉后：括号照补、形参信息不弹（不影响补全本身）",
-              [got89], expect_contain=[("    x = getUserName()", 21, 0)])
+              [got89], expect_contain=[("    x = getUserName()", 21, 0, 0)])
 
-        # ---- 89.7 源码护栏：注入函数 + 接线 + 顺序 ----
+        # ---- 89.7 源码护栏：接线 + 顺序（★v124d 再反转一次）----
+        # v124c 断言的是"默认路径走菜单命令"—— 实测那条命令每次都响，
+        # 所以现在反过来钉：**默认开关必须是 False**（只认显式
+        # VBECOMPLETE_PARAM_INFO=1），且 `_send_quick_info` 只能待在
+        # `PARAM_INFO_KEY_FALLBACK` 的 guard 里。
         _msrc89 = io.open(os.path.join(ROOT, "main.py"),
                           encoding="utf-8").read()
         _vsrc89 = io.open(os.path.join(ROOT, "vbe_bridge.py"),
                           encoding="utf-8").read()
         _i_judge89 = _vsrc89.find("_caret_inside_parens(param_line, end0)")
+        _i_show89 = _vsrc89.find("if _show_param_info(vbe):")
+        _i_guard89 = _vsrc89.find("elif PARAM_INFO_KEY_FALLBACK:")
         _i_send89 = _vsrc89.find('getattr(self, "_send_quick_info", None)')
-        check("89.7 源码护栏：① main 有 `send_quick_info` 且发的是 "
-              "Ctrl+Shift+I（缺 Shift 的那一下 VBE 没反应）；② main 把它交给"
-              "后端；③ vbe_bridge 有独立开关、先过位置判据再注入",
+        check("89.7 源码护栏：① main 仍保留 `send_quick_info`（只作显式退回用），"
+              "发的仍是完整 Ctrl+Shift+I；② 后端把它接上；"
+              "③ ★默认开关 `AUTO_PARAM_INFO` 由 `VBECOMPLETE_PARAM_INFO` 显式"
+              "开启（默认 False —— Execute 每次都响）；"
+              "④ `_send_quick_info` 只出现在 `PARAM_INFO_KEY_FALLBACK` 之后 —— "
+              "顺序反过来就等于把提示音放回来了",
               [("def send_quick_info(" in _msrc89,
                 # ★代码复查（2026-10-18）重构后序列统一走 `_send_inputs`，
                 # 三元组从 (vk, flags) 变成 (vk, scan, flags) —— 断言同步加强：
@@ -16364,11 +16458,13 @@ def main():
                 and "(VK_CONTROL, 0, KEYEVENTF_KEYUP)" in _msrc89,
                 "send_quick_info=send_quick_info" in _msrc89
                 and "VbeBackend(send_char=send_char," in _msrc89,
-                'AUTO_PARAM_INFO = not _env_flag("VBECOMPLETE_NO_PARAM_INFO"'
-                in _vsrc89,
+                "def _show_param_info(" in _vsrc89
+                and "_PARAM_INFO_CTRL_ID = 2532" in _vsrc89
+                and "FindControl(1, _PARAM_INFO_CTRL_ID)" in _vsrc89,
+                '_env_flag("VBECOMPLETE_PARAM_INFO", False)' in _vsrc89
+                and 'not _env_flag("VBECOMPLETE_NO_PARAM_INFO", False)' in _vsrc89,
                 "if added_parens and AUTO_PARAM_INFO" in _vsrc89,
-                "def _caret_inside_parens(" in _vsrc89,
-                0 < _i_judge89 < _i_send89)],
+                0 < _i_judge89 < _i_show89 < _i_guard89 < _i_send89)],
               expect_contain=[(True, True, True, True, True, True, True)])
     except Exception as _e89:
         import traceback as _tp89
@@ -20161,11 +20257,12 @@ def main():
 
         # ---- 108.16 三个开关都登记了 ----
         _keys108 = [k for (k, _d, _s) in _ST108.KNOWN]
+        # ★v124d：KNOWN 总数 54 -> 55（再拆出 PARAM_INFO，见 §112）
         check("108.16 三个开关都进了 `settings.KNOWN`（各自独立，误触哪个关哪个）",
               [(_keys108.count("NO_INSERT_ABOVE"),
                 _keys108.count("NO_DUP_LINE"),
                 _keys108.count("NO_DEL_LINE"), len(_keys108))],
-              expect_contain=[(1, 1, 1, 53)])
+              expect_contain=[(1, 1, 1, 55)])
     finally:
         VB106._get_vbe_cached = _o_vbe108
 
@@ -20464,11 +20561,12 @@ def main():
 
         # ---- 109.13 两个新键都登记了 ----
         _keys109s = [k for k, _d, _s in _ST109.KNOWN]
+        # ★v124d：KNOWN 总数 54 -> 55（再拆出 PARAM_INFO，见 §112）
         check("109.13 两个新键都进了 `settings.KNOWN`：`NO_WORDBANK`（排错开关）、"
               "`WORD_BANK`（库路径）",
               [(_keys109s.count("NO_WORDBANK"), _keys109s.count("WORD_BANK"),
                 len(_keys109s))],
-              expect_contain=[(1, 1, 53)])
+              expect_contain=[(1, 1, 55)])
 
         check("109.14 启动接线在 `main()` 里、且**先建库再加载**"
               "（顺序反了就会先读到「没有库」、退回种子，然后建了库却不生效）",
@@ -21127,6 +21225,146 @@ def main():
           "\"复制了一半\"的中间态",
           [(bool(_ok111h), list(_mod111h.lines), len(_mod111h.inserts))],
           expect_contain=[(True, ["a = 1", "b = 2", "b = 2", "c = 3"], 1)])
+
+    # ------------------------------------------------------------------
+    # 112. ★v124：参数信息改走 VBE 的菜单命令（用户报的"提示音"就是它响的）
+    #
+    #     用户口径（原话）："选中了函数名提示词，然后按 tab 键，后面自动补双括号，
+    #     会有一个提示音……是否能屏蔽掉这个提示音"。
+    #
+    #     根因：补完 `()` 之后我们注入 Ctrl+Shift+I 想唤出 VBE 的参数信息，
+    #     但真机实测（独立 Excel 实例）那个窗**一直不可见** —— 命令取不到可显示
+    #     的签名，VBE 于是响一声"命令不可用"。改成 `CommandBars` 菜单命令
+    #     （Id=2532）之后不再有任何键盘事件进入系统。
+    # ------------------------------------------------------------------
+    print("\n=== 112. ★v124d：参数信息**默认不发命令** —— 只测显式开启那条支路 ===")
+    try:
+        VB112 = VB
+
+        class _Ctrl112:
+            def __init__(self, enabled=True, boom=False):
+                self.Enabled = enabled
+                self.n = 0
+                self.boom = boom
+
+            def Execute(self):
+                if self.boom:
+                    raise RuntimeError("VBE 正忙")
+                self.n += 1
+
+        class _Bars112:
+            def __init__(self, ctrl, boom=False):
+                self.ctrl = ctrl
+                self.boom = boom
+                self.finds = 0
+
+            def FindControl(self, typ, cid):
+                self.finds += 1
+                if self.boom:
+                    raise RuntimeError("宿主没有 CommandBars")
+                return self.ctrl
+
+        class _VBE112:
+            """只带 CommandBars —— 结构越瘦，越能证明 `_show_param_info`
+            除了这一条路之外不碰别的东西（尤其不碰任何按键注入）。"""
+
+            def __init__(self, bars):
+                self.CommandBars = bars
+
+        _o_cache112 = dict(VB112._param_info_cache)
+        try:
+            # ---- 112.1 命中 + 缓存 ----
+            _c1, _b1, _v1 = _Ctrl112(), _Bars112(_Ctrl112()), _VBE112(None)
+            _b1.ctrl = _c1
+            _v1.CommandBars = _b1
+            VB112._param_info_cache["owner"] = None
+            VB112._param_info_cache["ctrl"] = None
+            _r112a = (VB112._show_param_info(_v1),
+                      VB112._show_param_info(_v1))
+            check("112.1 `_show_param_info`：第一次 FindControl + Execute，"
+                  "第二次直接复用缓存控件（补全路径上不重复付 COM）",
+                  [(_r112a, _c1.n, _b1.finds)],
+                  expect_contain=[((True, True), 2, 1)])
+
+            # ---- 112.2 换一个 VBE 实例 -> 缓存必须作废 ----
+            _b2 = _Bars112(_Ctrl112())
+            _v2 = _VBE112(_b2)
+            _r112b = VB112._show_param_info(_v2)
+            check("112.2 缓存**按 VBE 实例**来：换一个宿主/换一个 VBE 对象必须"
+                  "重新 FindControl（否则拿到的是上一个宿主的控件）",
+                  [(_r112b, _b2.finds, _b2.ctrl.n, _b1.finds)],
+                  expect_contain=[(True, 1, 1, 1)])
+
+            # ---- 112.3 命令灰着 -> 不 Execute ----
+            _c3 = _Ctrl112(enabled=False)
+            _b3 = _Bars112(_c3)
+            _r112c = VB112._show_param_info(_VBE112(_b3))
+            check("112.3 `Enabled == False`（命令灰着）-> **不 Execute**，"
+                  "返回 False —— 灰命令 Execute 等于白响一声",
+                  [(_r112c, _c3.n)], expect_contain=[(False, 0)])
+
+            # ---- 112.4 没有 CommandBars / FindControl 抛异常 -> 静默 ----
+            _r112d = VB112._show_param_info(_VBE112(_Bars112(_Ctrl112(), boom=True)))
+            _r112e = VB112._show_param_info(_VBE112(None))
+            check("112.4 宿主没有 CommandBars（或 FindControl 抛异常）-> "
+                  "静默返回 False，绝不抛给补全路径",
+                  [(_r112d, _r112e)], expect_contain=[(False, False)])
+
+            # ---- 112.5 FindControl 返回 None（别的 VBE 版本没这个 Id）----
+            _b5 = _Bars112(None)
+            _r112f = VB112._show_param_info(_VBE112(_b5))
+            check("112.5 `FindControl` 返回 None -> 静默 False（不猜别的 Id、"
+                  "不退回注入按键）",
+                  [(_r112f, _b5.finds)], expect_contain=[(False, 1)])
+
+            # ---- 112.6 Execute 抛异常 -> False 且清缓存 ----
+            _c6 = _Ctrl112(boom=True)
+            _b6 = _Bars112(_c6)
+            _v6 = _VBE112(_b6)
+            _r112g = VB112._show_param_info(_v6)
+            check("112.6 `Execute` 抛异常（VBE 正在跑宏 / 忙）-> 返回 False，"
+                  "并且**清掉缓存**：下次必须重新 FindControl（旧控件已失效）",
+                  [(_r112g, VB112._param_info_cache["ctrl"],
+                    VB112._param_info_cache["owner"])],
+                  expect_contain=[(False, None, None)])
+
+            # ---- 112.7 源码护栏：菜单 Id 是 2532，不是 2531 ----
+            _vsrc112 = io.open(os.path.join(ROOT, "vbe_bridge.py"),
+                               encoding="utf-8").read()
+            check("112.7 菜单 Id 必须是 **2532**（VBE 的「参数信息(&M)」）；"
+                  "2531 是「快速信息(&Q)」—— 那是显示变量值/类型的浮动提示，"
+                  "弹它等于什么都没做",
+                  [("_PARAM_INFO_CTRL_ID = 2532" in _vsrc112,
+                    "_PARAM_INFO_CTRL_ID = 2531" in _vsrc112,
+                    "FindControl(1, _PARAM_INFO_CTRL_ID)" in _vsrc112)],
+                  expect_contain=[(True, False, True)])
+
+            # ---- 112.8 ★默认必须是"什么都不做" ----
+            # 真机 peak 实测（WASAPI 设备音量计，20ms 轮询）：
+            #   Execute@空行 0.346 / Execute@括号内 0.346 / 只写行 0.000 /
+            #   注入 Ctrl+Shift+I 0.000（但也不弹）/ 注入空格 0.000
+            # ⇒ 默认若还去 Execute，用户就还会听到那一声。
+            _on112 = bool(VB112._settings.flag("PARAM_INFO", False))
+            _off112 = bool(VB112._settings.flag("NO_PARAM_INFO", False))
+            check("112.8 ★`AUTO_PARAM_INFO` 必须等于 "
+                  "`PARAM_INFO and not NO_PARAM_INFO` —— 默认两条都不设 = 不做；"
+                  "显式 `VBECOMPLETE_NO_PARAM_INFO=1` 永远能压掉",
+                  [(bool(VB112.AUTO_PARAM_INFO) == (_on112 and not _off112),)],
+                  expect_contain=[(True,)])
+
+            # ---- 112.9 settings 模板 / KNOWN 的默认值也是"关" ----
+            _kd112 = dict((k, d) for k, d, _ in VB112._settings.KNOWN)
+            check("112.9 `settings.py` 的 KNOWN 里 `PARAM_INFO` 默认值是 `0`"
+                  "（模板与代码默认一致，不能一个说开一个说关）",
+                  [(_kd112.get("PARAM_INFO"), _kd112.get("NO_PARAM_INFO"))],
+                  expect_contain=[("0", "0")])
+        finally:
+            VB112._param_info_cache.clear()
+            VB112._param_info_cache.update(_o_cache112)
+    except Exception as _e112:
+        import traceback as _tp112
+        _tp112.print_exc()
+        check("第 112 节异常: %s" % _e112, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原
