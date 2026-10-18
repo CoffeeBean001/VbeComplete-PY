@@ -458,44 +458,24 @@ def _in_rem_comment(line_text, col):
     在注释里算出一个假槽位。同一句语义两处判、其中一处漏了，正是本仓库反复
     栽的坑（MEMORY 第 14 条），所以抽成函数、两边都调它。
 
-    为什么不能并进 parser.scan_code_states：`Rem` 只在【行首 / `:` 之后 /
-    另一个行号标签之后】才是注释 —— 这需要"行首/边界"这个前提，而
-    scan_code_states 是逐字符状态机、看不到"前面是不是行首"。所以它刻意不认
-    Rem，把这层判断留给调用方（见 parser.scan_code_states 的 docstring）。
+    ★代码复查修（2026-10-18）：实现下沉到 `parser.scan_code_kinds` —— 那边
+    的扫描器本来就知道"这一格是字符串 / `'` 注释 / Rem 注释"，本函数只取
+    `KIND_REM` 这一位。（原先是本函数自己用 `find("rem")` 再回头看一个字符，
+    字符串里的 `"a rem b"` 会被误判成注释 ⇒ 该让位给 VBE 的地方不让位。）
 
     ⚠️ 认整词：`Remote.foo` 里的 `rem` 不是注释 —— 要求 `rem` 前面是
-    行首 / 空白 / `:`。
+    行首 / 空白 / `:`（规则在 scan_code_kinds 里，与 `'` / 字符串同源）。
     """
     if not line_text or not col or col < 1:
         return False
     n = min(int(col) - 1, len(line_text))
     if n <= 0:
         return False
-    head = line_text[:n]
-    # ★v93：`Rem` 注释是【到行尾】的 —— 判据必须是"这一行从某个 rem 起到
-    # 底都在注释里"，而不是"光标左边那一个字在不在 rem 三个字母里"。
-    # 一开始我写的是"取光标左边最后一个非空白字符、看它是否落在 rem 三字母
-    # 内"，于是 `Rem a As b` 里问 `As` 那一格（head == "Rem a "）时最后
-    # 一个非空白又是 `a`、根本不在 rem 内 -> 判 False -> 注释里的 `As` 被
-    # 当成真类型位置（假槽位）。正确判据：找出这一行里所有"算注释起点的
-    # rem"，只要光标落在其中一个起点的【右侧】（含起点本身），就是在注释里。
-    #
-    # `rem` 的认定（VBA 规则）：整词，且前面是行首 / 空白 / `:` / 另一个
-    # 行号标签之后。这里用简化的等价判据：往前看一个字符是行首 / 空白 / `:`。
-    low = head.lower()
-    start = 0
-    while True:
-        q = low.find("rem", start)
-        if q < 0:
-            return False
-        # 必须是整词：后面不能紧跟标识符字符（否则是 Remote 这类名字）
-        after_ok = not (q + 3 < len(low)
-                        and (low[q + 3].isalnum() or low[q + 3] == "_"))
-        # 前面必须是行首 / 空白 / `:`
-        before_ok = (q == 0 or low[q - 1] in " \t:")
-        if after_ok and before_ok:
-            return True
-        start = q + 1
+    try:
+        return bool(vba_parser.scan_code_kinds(line_text)[n - 1]
+                    & vba_parser.KIND_REM)
+    except Exception:
+        return False
 
 
 def _member_list_dot_col(line_text, caret_col):
@@ -712,7 +692,6 @@ def _type_list_anchor(line_text, caret_col):
     """
     e = _type_list_kw_end(line_text, caret_col)
     return None if e is None else e + 2
-    return j + 2
 
 
 def list_slot_anchor(line_text, caret_col):
@@ -1910,7 +1889,12 @@ class Completer:
         # 这里只提示真正的"类型名"（窗体名 / 类模块名 / 标准模块名 / Type / Enum 名），
         # 变量与过程名依旧静默（v22 的初衷：填类型名时冒出一堆变量名是噪音）。
         in_type = bool(ctx.get("in_type_position"))
-        type_names = self._type_name_set() if in_type else None
+        # ⚠️ `type_names` 刻意**不在这里取** —— 见下面 `_scoped_ranked` 之后那段
+        #    （★代码复查修 2026-10-18：后端 `get_type_names()` 只是读
+        #    `self._type_names`，真正赋值发生在 `get_identifiers()` 触发的
+        #    `_collect_identifiers()` 里。在这里先取就等于拿【上一次收集】的旧
+        #    快照去筛【本次刚刷新】的候选：冷启动第一次 `Dim x As Lo|` 会被筛成
+        #    空、新加的类模块/Type/Enum 也会在第一帧被漏掉）。
         # ★v111：本次触发是否在【声明位置】上收窄成了"该处该出现的语言关键字"。
         # None = 不走这条路（正常补全）；空集不会出现在这里（那种情形直接 hide）。
         decl_kw = None
@@ -2225,15 +2209,23 @@ class Completer:
             # 那条 `Call` 故障的真实成因尚未定位，`VBECOMPLETE_LOG=1` 下看
             # `accept:` / `apply_completion:` 两行日志（见 log.py）。
                 if not self._accept_pinned:
+                    # ★代码复查修（2026-10-18）：这里原来从 `ctx` 取
+                    # `word` / `word_start_col` / `word_end_col` —— 而真实后端
+                    # `VbeBackend.get_context()` **从不返回这三个键**（它只给
+                    # line_no / caret_col / line_text / decl_* / member_root_name）。
+                    # 于是 `_ws100` 恒为 0、`_word100` 恒为空串，条件
+                    # `(_word100 and _ws100 > 0 and …)` 永远不成立 ——
+                    # 整个"给 VBE 补进来的过程名补括号"从来没执行过，
+                    # v100 那个修复实际是死代码（测试里的假后端自己塞了这些键，
+                    # 所以 1130 条用例全绿也没发现）。
+                    # 现在直接用本函数前面已经算好的 `word / start_col / end_col`
+                    # —— 与 accept() 同一份 extract_word_at 结果，字符列口径一致。
+                    _word_init = ""
                     try:
-                        # 光标左边的词（1-based 字符列）。拿不到就退到 `_ins`
-                        # 去掉可能带的头点号 —— 但那条只是兜底，判据不依赖它。
-                        _ws100 = int(ctx.get("word_start_col") or 0)
-                        _we100 = int(ctx.get("word_end_col") or 0)
+                        _ws100 = int(start_col or 0)
                         _ln100 = int(ctx.get("line_no") or 0)
-                        _word100 = str(ctx.get("word") or "")
-                        if not _word100 and _ws100 > 0 and _we100 >= _ws100:
-                            _word100 = _now_txt[_ws100 - 1:_we100 - 1]
+                        _word100 = str(word or "")
+                        _word_init = _word100
                         if _word100[:1] == ".":
                             _word100 = _word100[1:]
                         # ★v103c：这里也走同一个判据 —— 不再一律补括号：
@@ -2258,8 +2250,12 @@ class Completer:
                     except Exception:
                         # 补不上就算了，绝不因为补括号把这次静默判定弄坏
                         # （下面的 hide / 钉住逻辑必须照常走）。
+                        # ⚠️ 日志只用 try 之前就初始化好的 `_word_init`：
+                        # 在 except 里引用 `_word100` 时它可能还没绑定
+                        # （第一行 `int(start_col)` 就抛的话），那会变成
+                        # NameError，连带跳过后面的 hide / 钉住记账。
                         _log("trigger: 给 VBE 补进的 %r 补括号失败（不影响"
-                             "本次静默）" % (_word100,))
+                             "本次静默）" % (_word_init,))
                 if self._accept_pinned:
                     _log("trigger: 这一行还是 VBE 留下的样子 -> 仍是本次录入的"
                          "回声，不提示自己（行=%r）"
@@ -2347,6 +2343,13 @@ class Completer:
             ctx.get("module_name"),
         )
         visible_ids = [n for n, _r in _scoped_ranked]
+        # ★代码复查修（2026-10-18）：`As |` / `New |` 位置要按"类型名"收窄。
+        # 这份集合必须在 `get_identifiers()` **之后**取 —— 后端的
+        # `get_type_names()` 只是读 `_type_names`，而 `_type_names` 是在
+        # `_collect_identifiers()` 里赋值的（`__init__` 里根本没有它）。
+        # 放在前面取，冷启动第一次补全拿到的是空集 ⇒ 候选被筛空 ⇒ 什么都不弹；
+        # 新建 / 改名类模块后的第一帧也会拿旧集合把新类型漏掉。
+        type_names = self._type_name_set() if in_type else None
         # 名字小写 -> 作用域档位。没记到的（例如收窄后的对象成员）按 2 处理：
         # 那是"别处的/信息不足"的档位，不会被误当成"本过程的局部变量"。
         self._scope_rank = ({n.lower(): r for n, r in _scoped_ranked}
@@ -2852,11 +2855,23 @@ class Completer:
             return 0
         if not data:
             return 0
-        # 文件里的条数可能超过用户后来调小的 RECENT_MAX —— 截到最新的那批
-        if len(data) > RECENT_MAX:
+        # 文件里的条数可能超过用户后来调小的 RECENT_MAX —— 截到最新的那批。
+        # ★代码复查修（2026-10-18）：`RECENT_MAX = 0`（想关掉这个特性的自然
+        # 写法）或负值时，截完 `data` 是空的，下面 `max(data.values())` 会抛
+        # `ValueError: max() iterable argument is empty`。main 启动时用
+        # `except: pass` 包着，症状是"最近使用没恢复"且毫无线索。
+        try:
+            _cap = max(0, int(RECENT_MAX))
+        except Exception:
+            _cap = 0
+        if _cap <= 0:
+            return 0
+        if len(data) > _cap:
             keep = sorted(data.items(), key=lambda kv: kv[1],
-                          reverse=True)[:RECENT_MAX]
+                          reverse=True)[:_cap]
             data = dict(keep)
+        if not data:
+            return 0
         self._recent = data
         self._recent_seq = max(data.values())
         self._recent_dirty = False

@@ -129,41 +129,60 @@ def _is_private(kind, has_priv_kw, has_pub_kw, is_std_module):
     return False      # member/local：priv 字段无意义，调用处另定
 
 
-def scan_code_states(code):
-    """逐字符标注：每个下标处的字符是否落在【字符串 / 注释】里。
+KIND_STRING = 1      # 字符串字面量（含两侧引号）
+KIND_COMMENT = 2     # `'` 注释
+KIND_REM = 4         # `Rem` 注释
 
-    返回一个与 `code` **等长**的 bool 列表（True = 该下标在字符串或注释里）。
 
-    ★v93：这是这套扫描规则的【唯一实现】—— `_mask_strings_and_comments`
-    （要一份抹白后的文本去跑正则）与 `engine._in_comment_or_string`（要问
-    "光标左边那个字符在不在字符串/注释里"）都从它派生。
+def scan_code_kinds(code):
+    """逐字符标注：每一格是代码（0）还是字符串 / 注释（位掩码）。
 
-    为什么必须抽出来：`_mask_strings_and_comments` 的产物是**逐 token 一格**
-    的空格（一整个字符串 / 一整行注释都只落一个空格），**不是逐字符**等长，
-    因此调用方【不能】拿它的下标去对应原文的下标。engine 那边一开始就是这么
-    误用的（`masked[n-1]` 直接 IndexError）。规则本身又很细（`""` 转义、
-    `'` 到行尾），写第二份必然再次分叉 —— 所以只能有一份。
+    返回一个与 `code` **等长**的 int 列表：
+        0            = 真代码
+        KIND_STRING  = 字符串里
+        KIND_COMMENT = `'` 注释里
+        KIND_REM     = `Rem` 注释里
+    后三者可以按位或（理论上不重叠，这里只为"是不是注释"这类问题留出余地）。
+
+    ★v93：这是这套扫描规则的【唯一实现】——
+      * `scan_code_states` 是它的 bool 视图（"在不在字符串/注释里"）；
+      * `_mask_strings_and_comments` 用它抹白文本去跑正则；
+      * `engine._in_comment_or_string` 问"光标左边那一格"；
+      * `engine._in_rem_comment` 问"那一格是不是 **Rem** 注释"——
+        它必须能区分 Rem 与 `'`，所以位掩码要单独导出来。
+    规则本身很细（`""` 转义、`'` 到行尾、Rem 的语句边界），写第二份必然分叉。
 
     规则（与 VBE 一致的常见约定，不含行继续符等跨行情形）：
       * `"` 开启字符串，直到配对的 `"`；串内 `""` 是一个转义的引号，跳过；
       * `'` 开启注释，直到行尾（含 `\\n` 之前）；
+      * `Rem` 开启注释，直到行尾 —— **只在语句开头**才算（行首缩进之后，或
+        `:` 之后），与 VBA 的语法一致；标识符里的 `rem`（`Remote.foo`）不算；
       * 其余字符都不在里面。
-    刻意**不认 `Rem`** —— 它需要"行首 / 语句边界"这条额外的语法前提，
-    那个前提属于调用方的判据（见 engine._member_list_dot_col 的守卫）。
+
+    ★代码复查修（2026-10-18）：原先刻意不认 `Rem`，理由是"它需要行首 / 语句
+    边界这条额外的语法前提"。但这条前提本状态机**看得见**（它逐字符扫过整份
+    代码，往回跳过空白就能判断），而所有直接消费者（`extract_records` /
+    `extract_implicit_records` / `_usage_candidates` / `var_types`）都没有自己
+    处理 Rem，于是同一条语法在两条路径上分叉，出现三类真实缺陷：
+      ① `Rem 说明 _` 的行尾 `_` 被 `_RE_CONTINUATION` 当成续行，把下一行
+         （常常是 `End Sub`）并进来 ⇒ 过程作用域一直不结束，后面整段模块级
+         代码被算成该过程的局部变量；
+      ② `Rem Dim count As Long` 会解析出幻影记录 `Rem` 与幻影变量 `count`；
+      ③ `_usage_candidates` 把注释正文里的裸标识符收进候选池。
     """
     n = len(code)
-    states = [False] * n
+    kinds = [0] * n
     i = 0
     while i < n:
         c = code[i]
         if c == '"':
-            states[i] = True
+            kinds[i] = KIND_STRING
             i += 1
             while i < n:
-                states[i] = True
+                kinds[i] = KIND_STRING
                 if code[i] == '"':
                     if i + 1 < n and code[i + 1] == '"':  # 转义引号 ""
-                        states[i + 1] = True
+                        kinds[i + 1] = KIND_STRING
                         i += 2
                         continue
                     i += 1
@@ -172,11 +191,34 @@ def scan_code_states(code):
             continue
         if c == "'":  # 注释到行尾
             while i < n and code[i] != "\n":
-                states[i] = True
+                kinds[i] = KIND_COMMENT
                 i += 1
             continue
+        # ★代码复查修（2026-10-18）：`Rem` 注释。判据与 VBA 语法一致 ——
+        # 整词 `Rem` 且前面（跳过空格/Tab）是行首或 `:`。放在字符串之后：
+        # `x = "a Rem b"` 里的 Rem 在字符串分支就已经被吃掉了。
+        if c in "Rr" and code[i:i + 3].lower() == "rem":
+            nxt = code[i + 3] if i + 3 < n else ""
+            if not (nxt.isalnum() or nxt == "_"):
+                j = i - 1
+                while j >= 0 and code[j] in " \t":
+                    j -= 1
+                if j < 0 or code[j] == "\n" or code[j] == ":":
+                    while i < n and code[i] != "\n":
+                        kinds[i] = KIND_REM
+                        i += 1
+                    continue
         i += 1
-    return states
+    return kinds
+
+
+def scan_code_states(code):
+    """逐字符标注：每个下标处的字符是否落在【字符串 / 注释】里。
+
+    返回一个与 `code` **等长**的 bool 列表（True = 该下标在字符串或注释里）。
+    规则与唯一实现见 `scan_code_kinds`（本函数只是它的 bool 视图）。
+    """
+    return [bool(k) for k in scan_code_kinds(code)]
 
 
 def _mask_strings_and_comments(code):
@@ -184,16 +226,30 @@ def _mask_strings_and_comments(code):
 
     ⚠️ 产物长度【不等】于原文本：一整个字符串 / 一整行注释只落一个空格
     （逐 token，不是逐字符）。需要按下标对齐的场合请用 scan_code_states。
+
+    ★代码复查修（2026-10-18）：**换行必须原样保留**。原先一整段连续的被掩码
+    字符（含换行）压成一个空格，于是"用户正敲一个还没闭合的字符串"时
+    （`s = "abc`，右引号还没打）字符串状态会一路延伸到下一个 `"`:
+        Sub A() / Dim x As Long / s = "abc / Sub B() / Dim y As Long / End Sub
+    掩码后只剩 3 行（原文 7 行）⇒ `proc_at_line` 把 B 里的代码算成 A 的、
+    `extract_records` 丢掉后面所有声明。这是编辑期最常见的中间态之一。
+    现在按行各留一个空格、换行一个不少（行数严格不变）。
     """
     states = scan_code_states(code)
     out = []
     i, n = 0, len(code)
     while i < n:
         if states[i]:
-            # 一整段连续的字符串 / 注释 -> 合成一个空格
+            # 一整段连续的字符串 / 注释 -> 每行各留一个空格，换行原样保留
+            start = i
             while i < n and states[i]:
                 i += 1
-            out.append(" ")
+            seg = code[start:i]
+            if "\n" in seg:
+                out.append("\n".join(" " if part else ""
+                                     for part in seg.split("\n")))
+            else:
+                out.append(" ")
             continue
         out.append(code[i])
         i += 1
@@ -1790,7 +1846,6 @@ def extract_implicit_records(code, module=None, is_std_module=True,
         if not line:
             continue
         if _RE_PROC_END.match(line):
-            cur_proc = None
             continue
         m_sub = _RE_SUB.match(line) or _RE_PROP.match(line)
         if m_sub:
@@ -2129,7 +2184,6 @@ def var_types(code):
     out = {}
     masked = _mask_strings_and_comments(code)
     masked = _RE_CONTINUATION.sub(" ", masked)
-    cur_proc = None
 
     def note(name, type_name):
         if not name or not type_name:
@@ -2143,18 +2197,19 @@ def var_types(code):
         if not line:
             continue
         if _RE_PROC_END.match(line):
-            cur_proc = None
             continue
         m_sub = _RE_SUB.match(line)
         if m_sub:
-            cur_proc = m_sub.group(1)
             note(m_sub.group(1), None)      # 过程名本身不是变量
             for p, t in _params_with_types(line):
                 note(p, t)
             continue
         m_prop = _RE_PROP.match(line)
         if m_prop:
-            cur_proc = m_prop.group(1)
+            # ★代码复查（2026-10-18）：这里原先把过程名赋给 `cur_proc`，
+            # 但本函数只关心"变量 -> 类型"，`cur_proc` 在 Property 分支之后
+            # 从来没被读过（Sub 分支那次赋值同理，只是它顺带 note 了过程名）。
+            # 只留形参收录，去掉这条死赋值。
             for p, t in _params_with_types(line):
                 note(p, t)
             continue

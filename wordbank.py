@@ -496,6 +496,12 @@ def main(argv):
     cmd = args[0].lower() if args else "stats"
     rest = args[1:]
     path = db_path()
+    # ★代码复查修（2026-10-18）：缺参数时原先直接 `rest[0]` -> IndexError
+    # 堆栈（`py -3 wordbank.py disable` 就会看到），这里给一句能照抄的用法。
+    _need = {"add": "add <名字> [kind]", "disable": "disable <名字>",
+             "enable": "enable <名字>", "remove": "remove <名字>"}
+    if cmd in _need and not rest:
+        raise SystemExit("用法：%s" % _need[cmd])
     if cmd in ("stats", "status"):
         return _cmd_stats(path)
     if cmd == "list":

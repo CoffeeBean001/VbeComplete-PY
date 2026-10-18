@@ -12013,9 +12013,18 @@ def main():
         check("72.1b ★核心·第 2 轮（v92 修的正是这一轮）：紧接着 `_run_trigger` "
               "又让位一次、宽限到之后第 2 次补位 —— 它也不许弹。记账\"只活一次\""
               "时，记忆在第 1 轮就被吃掉了，这一轮无据可依 -> 正是用户看到的"
-              "\"后面还是会提示\"",
-              [(_y72b, _r72b)],
-              expect_contain=[(True, (False, []))])
+              "\"后面还是会提示\"。"
+              "⚠️代码复查（2026-10-18）后这一轮的形态变了：v100 那段\"给 VBE "
+              "补进来的过程名补括号\"原先从 ctx 取永远不存在的 word_start_col，"
+              "是死代码；修好之后第 1 轮就把 `getTitle` 变成了 `getTitle()`、"
+              "光标落进括号，于是第 2 轮**连让位都不再发生**（不再是列表位置）。"
+              "用户可见的保证不变：不弹。",
+              [(_r72b,)], expect_contain=[((False, []),)])
+        check("72.1c ★代码复查（2026-10-18）：v100 的\"补括号\"这次真的发生了 "
+              "—— 第 1 轮命中后行尾必须是 `getTitle()`（此前它因为读错 ctx 键，"
+              "一次都没执行过）",
+              [(_c72.CodeModule.lines[2].rstrip(),)], expect_contain=[
+                  ("    NoExplicitPub.getTitle()",)])
 
         # ---- 72.2 ★真机那条更短的路径（也是用户那次实际走的）----
         # 宽限这一轮刚记过"这一处 VBE 不会弹"，随后的 trigger(True) 便【不再
@@ -12095,6 +12104,12 @@ def main():
         _k72h, _u72h, _c72h, _p72h = _mk72(_AFTER72)
         _note72(_k72h)
         _k72h.trigger(False)                 # 命中 -> 钉住
+        # ★代码复查（2026-10-18）：v100 的补括号修好后，上面这一下会把行改成
+        # `getTitle()` 并把光标送进括号。72.7 要验的是 **TTL**，前提是"VBE 留下
+        # 的那一行此后一个字都没动过" —— 所以这里把行与光标摆回那个状态，
+        # 否则验的就变成"光标在括号里当然没词可补"了。
+        _c72h.CodeModule.lines[2] = _AFTER72
+        _p72h.SetSelection(3, len(_AFTER72), 3, len(_AFTER72))
         _ts72, _ln72, _txt72 = _k72h._accept_key
         _k72h._accept_key = (_ts72 - 9.0, _ln72, _txt72)   # 假装 9s 过去了
         _k72h.trigger(False)
@@ -14596,12 +14611,17 @@ def main():
                 "ReplaceLine" not in _v10079)],
               expect_contain=[(True, True)])
 
-        # ---- 79.2.8 源码护栏：位置列一律用 ctx 的字符列 ----
-        check("79.2.8 补括号用的起止列取自 `ctx` 的 `word_start_col` / "
-              "`word_end_col`（**字符列**，MEMORY 第 19 条：不许自己猜列语义，"
-              "也不许混用 `cur_ctx` 的显示列）",
-              [('ctx.get("word_start_col")' in _v10079,
-                'ctx.get("word_end_col")' in _v10079)],
+        # ---- 79.2.8 源码护栏：位置列一律用【本次 extract_word_at】的字符列 ----
+        # ⚠️代码复查（2026-10-18）：这条护栏原先要求段里出现
+        # `ctx.get("word_start_col")` —— 可真实后端 `get_context()` **从不返回**
+        # 这个键，于是"护栏保护的是一个让整段永久失效的写法"。改成钉住新契约：
+        # 列必须来自 trigger 里那次 extract_word_at（与 accept 同一份字符列）。
+        check("79.2.8 补括号用的起始列取自 `extract_word_at` 算出的 `start_col`"
+              "（**字符列**，与 accept() 同一份，MEMORY 第 19 条：不许自己猜列"
+              "语义、也不许混用 `cur_ctx` 的显示列）；并且**不许**再从 ctx 里"
+              "取那个根本不存在的 `word_start_col`",
+              [("int(start_col or 0)" in _v10079,
+                'ctx.get("word_start_col")' not in _v10079)],
               expect_contain=[(True, True)])
     except Exception as _e79:
         import traceback as _tp79
@@ -16334,7 +16354,14 @@ def main():
               "Ctrl+Shift+I（缺 Shift 的那一下 VBE 没反应）；② main 把它交给"
               "后端；③ vbe_bridge 有独立开关、先过位置判据再注入",
               [("def send_quick_info(" in _msrc89,
-                "(VK_I, 0)" in _msrc89 and "(VK_I, KEYEVENTF_KEYUP)" in _msrc89,
+                # ★代码复查（2026-10-18）重构后序列统一走 `_send_inputs`，
+                # 三元组从 (vk, flags) 变成 (vk, scan, flags) —— 断言同步加强：
+                # Ctrl / Shift 都要按下，且修饰键【反序】松开。
+                "(VK_CONTROL, 0, 0)" in _msrc89
+                and "(VK_SHIFT, 0, 0)" in _msrc89
+                and "(VK_I, 0, KEYEVENTF_KEYUP)" in _msrc89
+                and "(VK_SHIFT, 0, KEYEVENTF_KEYUP)" in _msrc89
+                and "(VK_CONTROL, 0, KEYEVENTF_KEYUP)" in _msrc89,
                 "send_quick_info=send_quick_info" in _msrc89
                 and "VbeBackend(send_char=send_char," in _msrc89,
                 'AUTO_PARAM_INFO = not _env_flag("VBECOMPLETE_NO_PARAM_INFO"'
@@ -18153,7 +18180,11 @@ def main():
                 self.lines[n - 1] = t
 
             def InsertLines(self, n, t):
-                for k, ln in enumerate(t.split("\n")):
+                # ★v124：按真机实测行为建模 —— VBE 的 InsertLines 对 `\r\n` /
+                # `\n` / `\r` 三种换行都拆行（Excel 2016 / VBE7.1 实测）。
+                # `insert_snippet` 现在一次灌中间行，这里也得认 CRLF。
+                _t = str(t).replace("\r\n", "\n").replace("\r", "\n")
+                for k, ln in enumerate(_t.split("\n")):
                     self.lines.insert(n - 1 + k, ln)
 
             def DeleteLines(self, n, c):
@@ -20476,6 +20507,626 @@ def main():
         except Exception:
             pass
 
+
+    # ------------------------------------------------------------------
+    # 110. ★代码复查（2026-10-18）：隐藏 bug 的钉桩
+    #     这一节不是在测"功能对不对"（那种用例前面九十多节都铺满了），
+    #     而是给**复查时查出来并修掉的每一个隐藏 bug** 钉一根桩：
+    #     每条用例都对应一个"当年真的会发生"的具体故障，而且都写成
+    #     **改回旧实现就会红** 的形式（值断言，不是"代码里有没有这句话"）。
+    #
+    #     为什么值得单独一节：这十处里有六处**没有任何既有用例会变红** ——
+    #     它们要么只在"模块最后一行的下一行""未闭合的引号""Rem 注释"
+    #     这类中间态里出现，要么被 `except: pass` 吞掉了异常。
+    # ------------------------------------------------------------------
+    print("\n=== 110. ★代码复查：隐藏 bug 的钉桩（2026-10-18）===")
+    import ast as _ast110
+    import vbe_bridge as VB110
+
+    # ---- 110.1 `parser.scan_code_kinds`：Rem 注释的唯一判据 ----
+    # 这是本仓库"同一语义只能有一份实现"（MEMORY 第 14 条）的典型：
+    # `'` 注释 / 字符串 / Rem 三件事必须由同一个扫描器回答，谁再自己
+    # `find("rem")` 一次就必然分叉（`_in_rem_comment` 原来就是那么干的，
+    # 于是字符串里的 "a rem b" 被当成注释）。
+    _k110 = P.scan_code_kinds
+    _g110a = (
+        _k110("Rem x = 1")[0],                       # 行首 Rem -> KIND_REM
+        _k110("    rem 说明")[4],                    # 缩进之后也算（大小写不敏感）
+        _k110('x = "a Rem b"')[7],                   # 串里的 Rem -> 字符串
+        sorted(set(_k110("Remote.foo"))),            # 标识符里的 rem -> 全是代码
+        _k110("x = 1 : Rem a")[8],                   # `:` 之后的 Rem 也算
+    )
+    check("110.1 `scan_code_kinds` 认 `Rem` 注释：行首 / 缩进之后 / `:` 之后"
+          "都算；字符串里的、标识符里的（`Remote.foo`）都不算 —— 三种注释"
+          "（字符串 / `'` / Rem）只有这一份判据",
+          [_g110a],
+          expect_contain=[(P.KIND_REM, P.KIND_REM, P.KIND_STRING, [0],
+                           P.KIND_REM)])
+
+    # ---- 110.2 `Rem … _` 不能再把下一行并进来 ----
+    # 旧实现里 `_RE_CONTINUATION` 把 `Rem 说明 _` 的续行符当真，于是紧跟的
+    # `End Sub` 被并进注释那一行 ⇒ 过程作用域一直不结束 ⇒ 后面整段**模块级**
+    # 代码被算成该过程的局部变量（模块级变量在别处成片消失）。
+    # ⚠️ 断言必须落在 `extract_records` 上（它才做续行合并），
+    #    `proc_at_line` 不做合并，新旧结果相同、区分不出来。
+    _c110a = "Sub A()\nRem 说明 _\nEnd Sub\nDim m As Long\n"
+    _c110b = "Sub A()\nRem Dim count As Long\nEnd Sub\n"
+    _r110a = P.extract_records(_c110a, "Mod1", True)[0]
+    _r110b = P.extract_records(_c110b, "Mod1", True)[0]
+    _names110b = [n for n, _m, _p, _pv in _r110b]
+    check("110.2 Rem 注释里的 `_` **不是**续行符：`End Sub` 该结束过程 —— "
+          "`Rem 说明 _` 之后那行模块级 `Dim m` 的 proc 必须是 None"
+          "（旧实现里 `End Sub` 被并进注释，它变成 A 的局部变量）；"
+          "`Rem Dim count As Long` 也不能产出幻影记录 `Rem`",
+          [([p for n, _m, p, _pv in _r110a if n == "m"],
+            "Rem" in _names110b, "count" in _names110b)],
+          expect_contain=[([None], False, False)])
+
+    # ---- 110.3 掩码必须保留换行（未闭合引号的中间态）----
+    # 用户正敲一个还没打右引号的字符串，是编辑期最常见的瞬间。旧实现把
+    # "从 `"` 到下一个 `"`" 这**一整段连续的被掩码字符（含换行）**压成
+    # 一个空格 ⇒ 后面所有行的行号整体前移 ⇒ `proc_at_line` / `extract_records`
+    # 把 B 里的代码算成 A 的（实测 7 行压成 3 行）。
+    _c110c = ('Sub A()\nDim x As Long\ns = "abc\nDim y As Long\n"\n'
+              'Sub B()\nDim z As Long\nEnd Sub\n')
+    _m110c = P._mask_strings_and_comments(_c110c)
+    check("110.3 掩码**行数严格不变**（未闭合的引号跨了几行，就留几个换行）："
+          "引号闭在第 5 行之后，第 7 行（`Dim z As Long`）仍该归 B —— 旧实现"
+          "把整段压成一个空格，行号前移，这行会被算成 A 的、甚至算成 None",
+          [(len(_m110c.split("\n")), len(_c110c.split("\n")),
+            P.proc_at_line(_c110c, 7))],
+          expect_contain=[(9, 9, "B")])
+    check("110.4 掩码把字符串 / 注释抹成空格 —— 字符串正文里的 `rem` "
+          "不会被任何走掩码的正则当成 Rem 注释",
+          [(("rem" in P._mask_strings_and_comments('x = "a Rem b"').lower()),
+            ("rem" in P._mask_strings_and_comments("Rem a b").lower()))],
+          expect_contain=[(False, False)])
+
+    # ---- 110.5 `_in_rem_comment` 委托给同一份扫描器 ----
+    # 旧实现自己 `line_text.lower().find("rem")` 再回头看一个字符 ⇒
+    # 字符串里的 "the rem value" 被当成 Rem 注释 ⇒ 成员位置判定被误杀、
+    # `c.` 该让位给 VBE 成员列表的地方**不让位**。
+    _g110e = (
+        E._in_rem_comment('x = "the rem value"', 12),   # 列落在串里 -> 不是注释
+        E._in_rem_comment("Rem a.b", 7),                # 真 Rem 注释 -> 是
+        E._in_rem_comment("Remote.foo", 5),             # 标识符里的 rem -> 不是
+        E._in_rem_comment("x = 1 ' rem a.b", 11),       # `'` 注释不是 Rem
+    )
+    check("110.5 `_in_rem_comment` 只认真正的 Rem 注释：字符串里的 `rem`、"
+          "标识符 `Remote` 里的 `rem`、`'` 注释里的 `rem` 一律 False"
+          "（前两条错了的症状分别是「不让位」和「该补全不出」）",
+          [_g110e], expect_contain=[(False, True, False, False)])
+
+    # ---- 110.6 `settings.source()` 只留一份实现 ----
+    # 曾经被定义了两次：第二份用 `effective(name, None, "flag")` —— 于
+    # `RECENT_MAX = 32` / `LOG_FILE = …` 这类 int / text 键，用户明明写在
+    # ini 里，`source()` 也会报 `default`，排错时正好把人引到反方向。
+    import settings as S110
+    import tempfile as _t110
+    import shutil as _sh110
+    _d110 = _t110.mkdtemp(prefix="vbe_rv_")
+    _ini110 = os.path.join(_d110, "settings.ini")
+    _old_env110 = os.environ.get("VBECOMPLETE_SETTINGS")
+    _old_flags110 = {k: os.environ.get(k)
+                     for k in ("VBECOMPLETE_AUTO_SPACE",
+                               "VBECOMPLETE_RECENT_MAX")}
+    try:
+        os.environ["VBECOMPLETE_SETTINGS"] = _ini110
+        for _k in _old_flags110:
+            os.environ.pop(_k, None)
+        with io.open(_ini110, "w", encoding="utf-8", newline="\n") as _f:
+            _f.write("[settings]\nAUTO_SPACE = 0\nRECENT_MAX = 32\n")
+        S110.reset()
+        _g110f = (S110.source("RECENT_MAX"),           # int 键：默认 kind=text
+                  S110.source("AUTO_SPACE", "flag"),   # flag 键
+                  S110.source("AUTO_SPACE"))           # text 视图也认得出 ini
+        os.environ["VBECOMPLETE_AUTO_SPACE"] = "maybe"  # 垃圾值：跳过这一层
+        _g110g = (S110.source("AUTO_SPACE", "flag"),
+                  S110.effective("AUTO_SPACE", "1", "flag"))
+        os.environ.pop("VBECOMPLETE_AUTO_SPACE", None)
+        check("110.6 `settings.source()` 与 `flag()/int_value()/text()` 走"
+              "**同一个** `pick()` 口径：ini 里写了的 int / flag 键都要如实报 "
+              "`ini`（旧实现只留了一份 flag 版 ⇒ 报 `default`）；env 写了"
+              "垃圾值时也报 `ini`（那一层被跳过，不是掉回默认）",
+              [(_g110f, _g110g)],
+              expect_contain=[(("ini", "ini", "ini"), ("ini", (False, "ini")))])
+    finally:
+        for _k, _v in _old_flags110.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
+        if _old_env110 is None:
+            os.environ.pop("VBECOMPLETE_SETTINGS", None)
+        else:
+            os.environ["VBECOMPLETE_SETTINGS"] = _old_env110
+        try:
+            S110.reset()
+        except Exception:
+            pass
+        _sh110.rmtree(_d110, ignore_errors=True)
+
+    # ---- 110.7 `RECENT_MAX = 0` 不能抛（那个自然写法想关掉特性）----
+    # 旧实现 `max(data.values())` 在截完为空时抛 ValueError，而 main 用
+    # `except: pass` 包着 ⇒ 症状是"最近使用没恢复"且毫无线索。
+    class _Store110(object):
+        """假的落盘层：`load_recent` 只调它一个 `load()`。"""
+
+        def load(self):
+            return {"alpha": 3, "beta": 2, "gamma": 1}
+
+    def _recent110(cap):
+        _saved = (E._recent_store, E.RECENT_MAX, E.PERSIST_RECENT,
+                  E.RANK_BY_RECENT)
+        E._recent_store = _Store110()
+        E.RECENT_MAX = cap
+        E.PERSIST_RECENT = True
+        E.RANK_BY_RECENT = True
+        try:
+            _c = E.Completer.__new__(E.Completer)   # 不跑 __init__（要碰 COM）
+            _c._recent, _c._recent_seq, _c._recent_dirty = {}, 0, False
+            _n = _c.load_recent()
+            return _n, sorted(_c._recent), _c._recent_seq, _c._recent_dirty
+        finally:
+            (E._recent_store, E.RECENT_MAX, E.PERSIST_RECENT,
+             E.RANK_BY_RECENT) = _saved
+
+    check("110.7 `load_recent()` 的上限三档：`RECENT_MAX = 0` 返回 0 且**不抛**"
+          "（`max(())` 那个 ValueError 已被吞掉，现在根本走不到）；"
+          "`= 2` 只留序号最大的两条；够大就全收 —— 三条都要正确",
+          [(_recent110(0), _recent110(2), _recent110(64))],
+          expect_contain=[((0, [], 0, False),
+                           (2, ["alpha", "beta"], 3, False),
+                           (3, ["alpha", "beta", "gamma"], 3, False))])
+
+    # ---- 110.8 "文本已写、落光标失败" 必须按成功返回 ----
+    # 否则调用方（main 的 `_auto_pair_here`）看到 False 会把这一下按键原样
+    # 还给系统 ⇒ 行里已经有 `()`，VBE 又插一个 `(` ⇒ 用户看到 `( (`。
+    # 同一口径适用于 `duplicate_lines` / `delete_lines_here`（前面几节已覆盖）。
+    class _Mod110(object):
+        def __init__(self, lines):
+            self.lines = list(lines)
+
+        def Lines(self, n, c):
+            return "\r\n".join(self.lines[n - 1:n - 1 + c])
+
+        @property
+        def CountOfLines(self):
+            return len(self.lines)
+
+        def ReplaceLine(self, n, t):
+            self.lines[n - 1] = t
+
+        def InsertLines(self, n, t):
+            for _k, _ln in enumerate(t.split("\n")):
+                self.lines.insert(n - 1 + _k, _ln)
+
+        def DeleteLines(self, n, c):
+            del self.lines[n - 1:n - 1 + c]
+
+    class _Pane110(object):
+        def __init__(self, mod, sl, sc, el, ec, boom=False):
+            self.CodeModule = mod
+            self.sel = [sl, sc, el, ec]
+            self.boom = boom          # True = 落光标时 COM 抛异常
+
+        def GetSelection(self):
+            return tuple(self.sel)
+
+        def SetSelection(self, *a):
+            if self.boom:
+                raise RuntimeError("SetSelection 失败（模拟宿主收回编辑器）")
+            self.sel = list(a)
+
+    class _Vbe110(object):
+        def __init__(self, pane):
+            self.ActiveCodePane = pane
+
+    def _pair110(lines, sl, sc, el, ec, ch="(", boom=False, sem=None):
+        _mod = _Mod110(lines)
+        _pane = _Pane110(_mod, sl, sc, el, ec, boom)
+        _o_vbe = VB110._get_vbe_cached
+        _o_sem = VB110._sem_cache.get("info")
+        if sem is not None:
+            VB110._sem_cache["info"] = sem
+        VB110._get_vbe_cached = lambda: _Vbe110(_pane)
+        try:
+            _ok = VB110.VbeBackend().insert_pair(ch)
+        finally:
+            VB110._get_vbe_cached = _o_vbe
+            VB110._sem_cache["info"] = _o_sem
+        return bool(_ok), list(_mod.lines), tuple(_pane.sel)
+
+    check("110.8 `insert_pair` 在**文本已经写进去**之后落光标失败，仍返回 True："
+          "`()` 确实在行里，光标停在原处。返回 False 会让调用方把按键还给"
+          "系统，于是变成 `( (`（这类\"写成功但返回失败\"的坑本仓库踩过好几轮）",
+          [(_pair110(["x = "], 1, 5, 1, 5, "(", boom=True),
+            _pair110(["x = "], 1, 5, 1, 5, "(", boom=False))],
+          expect_contain=[((True, ["x = ()"], (1, 5, 1, 5)),
+                           (True, ["x = ()"], (1, 6, 1, 6)))])
+
+    # ---- 110.9 `type_names` 必须晚于 `get_identifiers()` ----
+    # `_type_names` 是在 `_collect_identifiers()` 里赋的值，`get_type_names()`
+    # 只是读它。旧代码在 `trigger()` 一开头就取 ⇒ 冷启动第一次 `As |` 拿到
+    # 空集 ⇒ 候选被筛空 ⇒ 什么都不弹；新建 / 改名类模块后的第一帧也漏新类型。
+    # ⚠️ 查源码字符串会被注释喂饱（那段注释里就写着 `type_names = ...`），
+    #    所以这里查 **AST**（MEMORY 第 25 条）。
+    def _trigger_marks110():
+        _src = io.open(os.path.join(ROOT, "engine.py"),
+                       encoding="utf-8").read()
+        _tree = _ast110.parse(_src)
+        _fn = None
+        for _nd in _ast110.walk(_tree):
+            if isinstance(_nd, _ast110.FunctionDef) and _nd.name == "trigger":
+                _fn = _nd
+                break
+        _marks = {}
+        _ifs = []
+        for _nd in _ast110.walk(_fn):
+            if isinstance(_nd, _ast110.Assign) and _nd.targets:
+                _t = _nd.targets[0]
+                if isinstance(_t, _ast110.Name) and _t.id in ("visible_ids",
+                                                              "type_names"):
+                    _marks.setdefault(_t.id, _nd.lineno)
+            if (isinstance(_nd, _ast110.If) and isinstance(_nd.test, _ast110.Name)
+                    and _nd.test.id == "in_type"):
+                _ifs.append(_nd.lineno)
+        return _marks.get("visible_ids"), _marks.get("type_names"), _ifs
+
+    _m110 = _trigger_marks110()
+    _g110h = (_m110[0] is not None and _m110[1] is not None
+              and _m110[0] < _m110[1],
+              bool([x for x in _m110[2] if _m110[1] is not None
+                    and x > _m110[1]]))
+    check("110.9 AST 断言：`trigger()` 里 `type_names = self._type_name_set()` "
+          "排在 `visible_ids = [...]`（也就是 `get_identifiers()`）**之后**、"
+          "并且确实在那条 `if in_type:` 收窄之前 —— 顺序反了就是"
+          "\"冷启动 `As |` 一个字都不弹\"，而且不看代码根本查不出来",
+          [_g110h], expect_contain=[(True, True)])
+
+    # ---- 110.10 `insert_snippet` 的终点列必须换算成字符下标 ----
+    # 单行选区原先直接拿 `ec`（**显示列**）当字符下标 ⇒ 含全角 / Tab 的行上
+    # 多删少删一个字符，而 `tail = last[j:]` 之后是【整行重写】，删错就是
+    # 用户代码真的少了几个字。这类"看不见的丢字"必须钉住。
+    def _snip110(lines, sl, sc, el, ec, text, sem):
+        _mod = _Mod110(lines)
+        _pane = _Pane110(_mod, sl, sc, el, ec)
+        _o_vbe = VB110._get_vbe_cached
+        _o_sem = VB110._sem_cache.get("info")
+        VB110._sem_cache["info"] = sem
+        VB110._get_vbe_cached = lambda: _Vbe110(_pane)
+        try:
+            _ok = VB110.VbeBackend().insert_snippet(text)
+        finally:
+            VB110._get_vbe_cached = _o_vbe
+            VB110._sem_cache["info"] = _o_sem
+        return bool(_ok), list(_mod.lines), tuple(_pane.sel)
+
+    # `s = "中文"`：光标停在 `中` 与 `文` 之间 = 显示列 8（字符列 7）。
+    # 旧实现 j = min(ec-1, len) = 7 ⇒ tail = `"` ⇒ `文` 被整段顶掉。
+    check("110.10 `insert_snippet` 单行选区在全角行上：显示列 8 换成字符下标 6，"
+          "把 `X` 插进 `中` / `文` 之间，`文` 一个字符都不能丢"
+          "（旧实现按显示列当下标，结果是 `s = \"中X\"`）",
+          [(_snip110(['s = "中文"'], 1, 8, 1, 8, "X", ("disp", 4, True)))],
+          expect_contain=[(True, ['s = "中X文"'], (1, 9, 1, 9))])
+
+    # ---- 110.11 「光标在行尾」的边界差一格 ----
+    # `enter_indent_wanted` 的纯 ASCII 分支原写 `ec < len(t)`：块头行
+    # `    For i = 1 To 10`（19 字符、行尾显示列 20）上，光标停在**最后一个
+    # 字符之前**时 VBE 报的就是 19，`19 < 19` 为假 ⇒ 那一下本该由 VBE 处理的
+    # 【拆行】被我们接管（回车没拆行 / 缩进被改写）。
+    # 修法：两支合成一条 `ec != _eol_disp_col(t)`（纯 ASCII 时它就是 len+1），
+    # "行尾"这个语义只留一份算法 —— 与 v93 修全角虚高时用的是同一个函数。
+    _t110 = "    For i = 1 To 10"
+    check("110.11 `enter_indent_wanted` 的行尾判据差一格（旧写法 `ec < len`）："
+          "块头行真·行尾（显示列 20）接管；**最后一个字符之前**（19）必须放行 "
+          "-> 交给 VBE 拆行；再往后一格（21，快照过期那类）也放行",
+          [([VB110.enter_indent_wanted(_t110, 19),
+             VB110.enter_indent_wanted(_t110, 20),
+             VB110.enter_indent_wanted(_t110, 21),
+             VB110._eol_disp_col(_t110)])],
+          expect_contain=[[False, True, False, 20]])
+
+    # ------------------------------------------------------------------
+    # 111. ★v124：缓存工程身份 / 片段插入原子性 / InsertLines 口径
+    #     这三件是复查报告里"未修风险"的头三条，修完各钉一根桩：
+    #
+    #     1) 三份缓存（组件列表 / CodeModule / 模块解析）此前**只用模块名做键**。
+    #        同时开两个 .xlsm（各有一个 `Module1`）时会互相命中 —— A 的模块
+    #        解析结果被当成 B 的，补全出另一个工作簿的变量。`_comp_list_cache`
+    #        里那个 `"proj"` 字段写了却从不参与比较，等于没有。
+    #     2) `insert_snippet` 逐行 `InsertLines`：第 3 行抛异常时前 2 行已经
+    #        进了文档、函数却返回 False ⇒ 用户看到"插入失败"再点一次 = 插两遍。
+    #     3) `duplicate_lines` 说"多行原文直接喂回去，VBE 会拆"，`insert_snippet`
+    #        说"VBE 拆行没有文档保证，必须逐行" —— 两处假设互相矛盾，至少一处
+    #        是错的。★真机实测（Excel 2016 / VBE7.1）证明**拆行可靠**
+    #        （`\r\n` / `\n` / `\r` 都对），现在两处统一成"一次调用"。
+    # ------------------------------------------------------------------
+    print("\n=== 111. ★v124：缓存工程身份 / 片段原子性（2026-10-18）===")
+    import vbe_bridge as VB111
+
+    # ---- 111.1 工程身份：`(Name, FileName)` ----
+    # Excel 里每个工作簿的 `VBProject.Name` 默认都是 `VBAProject`，只看它等于
+    # 没分。`FileName` 才是磁盘路径，但★真机实测：**未保存的工作簿读它会抛
+    # com_error（"路径未找到"）而不是返回空串** —— 必须每次 try。
+    class _Proj111(object):
+        def __init__(self, name, fname=None, boom=False):
+            self.Name = name
+            self._fname = fname
+            self._boom = boom
+
+        @property
+        def FileName(self):
+            if self._boom:
+                raise RuntimeError("com_error: 路径未找到")
+            return self._fname
+
+    check("111.1 `_project_key`：同名工程（都叫 VBAProject）靠 `FileName` 分开；"
+          "未保存的工程读 `FileName` 会抛 com_error（真机实测，不是返回空串）"
+          "⇒ 退化成 `(name, \"\")` 而不是整条炸掉；两个都空 -> None（不信任缓存）",
+          [(VB111._project_key(_Proj111("VBAProject", r"C:\a\one.xlsm")),
+            VB111._project_key(_Proj111("VBAProject", r"C:\b\two.xlsm")),
+            VB111._project_key(_Proj111("VBAProject", boom=True)),
+            VB111._project_key(_Proj111("", "")),
+            VB111._project_key(None))],
+          expect_contain=[(("vbaproject", r"c:\a\one.xlsm"),
+                           ("vbaproject", r"c:\b\two.xlsm"),
+                           ("vbaproject", ""), None, None)])
+
+    # ---- 111.2 首尾组件名（同 Count 同模块名时的补充指纹）----
+    class _Item111(object):
+        def __init__(self, name, tag):
+            self.Name = name
+            self.Type = 1
+            self.tag = tag
+
+    class _VBC111(object):
+        def __init__(self, items):
+            self._it = list(items)
+            self.visits = 0
+
+        @property
+        def Count(self):
+            return len(self._it)
+
+        def Item(self, i):
+            return self._it[i - 1]
+
+        def __iter__(self):
+            self.visits += 1
+            return iter(self._it)
+
+    class _P111(object):
+        def __init__(self, name, fname, tags):
+            self.Name = name
+            self.FileName = fname
+            self.VBComponents = _VBC111([_Item111("Module1", t) for t in tags])
+
+    class _VBE111(object):
+        def __init__(self, proj):
+            self.ActiveVBProject = proj
+
+        @property
+        def ActiveCodePane(self):
+            return None
+
+        @property
+        def VBProjects(self):
+            return [self.ActiveVBProject]
+
+    _p111a = _P111("VBAProject", r"C:\a\one.xlsm", ["A"])
+    _p111b = _P111("VBAProject", r"C:\b\two.xlsm", ["B"])
+    _o_clc111 = dict(VB111._comp_list_cache)
+    _o_mce111 = VB111.MOD_CACHE_ENABLED
+    try:
+        VB111._comp_list_cache.update({"ts": 0.0, "count": -1, "key": None,
+                                       "edge": None, "comps": None})
+        VB111.MOD_CACHE_ENABLED = True
+        _vbe111 = _VBE111(_p111a)
+        _r111a1 = VB111._collect_components(_vbe111, None)
+        # 同一个工程再来一轮：必须命中缓存（不重新枚举）
+        _r111a2 = VB111._collect_components(_vbe111, None)
+        _vis_a = _p111a.VBComponents.visits
+        # 换工程：Number / 模块名 / 组件首尾名全一样，只有 FileName 不同
+        _vbe111.ActiveVBProject = _p111b
+        _r111b1 = VB111._collect_components(_vbe111, None)
+    finally:
+        VB111._comp_list_cache.clear()
+        VB111._comp_list_cache.update(_o_clc111)
+        VB111.MOD_CACHE_ENABLED = _o_mce111
+
+    check("111.2 组件列表缓存：同一工程第二轮**复用**（枚举只发生一次）；"
+          "换成一个组件数 / 模块名 / 首尾名都一样的工程时**必须重新枚举** —— "
+          "旧实现只比 Count + TTL，会把 A 的组件列表当成 B 的",
+          [(_r111a1[0].tag, _r111a2[0].tag, _vis_a, _r111b1[0].tag,
+            _p111b.VBComponents.visits)],
+          expect_contain=[("A", "A", 1, "B", 1)])
+
+    # ---- 111.3 `_cm_cache` / `_mod_cache` 的键必须带工程身份 ----
+    # 两个工程同名模块、**行数也相同**（3 行）—— 旧实现下 `_cm_cache["module1"]`
+    # 直接命中 A 的 CodeModule，读出来的 count 是 A 的、代码也是 A 的；
+    # `_mod_cache["module1"]` 同理重放 A 的解析结果。用户看到的就是
+    # "在 B 里补全出了 A 的变量名"。
+    class _CM111(object):
+        def __init__(self, code, tag):
+            self._ls = code.replace("\r\n", "\n").split("\n")
+            self.tag = tag
+            self.Name = "Module1"
+            self.Parent = None
+
+        @property
+        def CountOfLines(self):
+            return len(self._ls)
+
+        def Lines(self, a, b=None):
+            if b is None:
+                return self._ls[a - 1]
+            return "\r\n".join(self._ls[a - 1:a - 1 + b])
+
+    class _Comp111(object):
+        def __init__(self, name, code, tag):
+            self.Name = name
+            self.Type = 1
+            self.CodeModule = _CM111(code, tag)
+
+    class _VBCode111(object):
+        def __init__(self, items):
+            self._it = list(items)
+
+        @property
+        def Count(self):
+            return len(self._it)
+
+        def Item(self, i):
+            return self._it[i - 1]
+
+        def __iter__(self):
+            return iter(self._it)
+
+    class _PCode111(object):
+        def __init__(self, name, fname, code, tag):
+            self.Name = name
+            self.FileName = fname
+            self.VBComponents = _VBCode111([_Comp111("Module1", code, tag)])
+
+    _cd111a = "Sub AAA()\n    Dim alphaOnlyA As Long\nEnd Sub"
+    _cd111b = "Sub BBB()\n    Dim betaOnlyB As Long\nEnd Sub"
+    _pc111a = _PCode111("VBAProject", r"C:\a\one.xlsm", _cd111a, "A")
+    _pc111b = _PCode111("VBAProject", r"C:\b\two.xlsm", _cd111b, "B")
+
+    _o_vbe111 = VB111._get_vbe_cached
+    _o_clc111c = dict(VB111._comp_list_cache)
+    _o_bk111c = (VB111.ENABLE_VBA_BUILTINS, VB111.ENABLE_VBA_KEYWORDS,
+                 VB111.ENABLE_VBA_CONSTANTS, VB111.ENABLE_HOST_ENUMS)
+    try:
+        VB111._comp_list_cache.update({"ts": 0.0, "count": -1, "key": None,
+                                       "edge": None, "comps": None})
+        VB111.ENABLE_VBA_BUILTINS = False
+        VB111.ENABLE_VBA_KEYWORDS = False
+        VB111.ENABLE_VBA_CONSTANTS = False
+        VB111.ENABLE_HOST_ENUMS = False
+        _vb111 = _VBE111(_pc111a)
+        VB111._get_vbe_cached = lambda: _vb111
+        _bk111 = VB111.VbeBackend()
+        _nm111a = set(str(r[0]).lower() for r in _bk111._collect_identifiers())
+        # 换工程（同一个 backend：模拟用户切到另一个工作簿的代码窗）
+        _bk111.invalidate_identifiers()
+        _vb111.ActiveVBProject = _pc111b
+        _nm111b = set(str(r[0]).lower() for r in _bk111._collect_identifiers())
+    finally:
+        VB111._get_vbe_cached = _o_vbe111
+        VB111._comp_list_cache.clear()
+        VB111._comp_list_cache.update(_o_clc111c)
+        (VB111.ENABLE_VBA_BUILTINS, VB111.ENABLE_VBA_KEYWORDS,
+         VB111.ENABLE_VBA_CONSTANTS, VB111.ENABLE_HOST_ENUMS) = _o_bk111c
+
+    check("111.3 两个 .xlsm 各有一个 `Module1`（都是 3 行）：切工程后候选池"
+          "必须是**新工程**的变量 —— 旧实现键里只有模块名，`_cm_cache` 命中"
+          "A 的 CodeModule（读到的行数也来自 A），`_mod_cache` 重放 A 的解析结果",
+          [("alphaonlya" in _nm111a, "betaonlyb" in _nm111a,
+            "betaonlyb" in _nm111b, "alphaonlya" in _nm111b)],
+          expect_contain=[(True, False, True, False)])
+
+    # ---- 111.4 `insert_snippet` 多行：中间行**一次** InsertLines ----
+    class _Mod111(object):
+        def __init__(self, lines, ins_boom=False, rep_boom=False):
+            self.lines = list(lines)
+            self.ins_boom = ins_boom
+            self.rep_boom = rep_boom
+            self.inserts = []
+            self.deletes = []
+
+        def Lines(self, n, c):
+            return "\r\n".join(self.lines[n - 1:n - 1 + c])
+
+        @property
+        def CountOfLines(self):
+            return len(self.lines)
+
+        def ReplaceLine(self, n, t):
+            if self.rep_boom:
+                raise RuntimeError("模块只读")
+            self.lines[n - 1] = t
+
+        def InsertLines(self, n, t):
+            if self.ins_boom:
+                raise RuntimeError("模块只读")
+            self.inserts.append((n, t))
+            _t = str(t).replace("\r\n", "\n").replace("\r", "\n")
+            for _k, _ln in enumerate(_t.split("\n")):
+                self.lines.insert(n - 1 + _k, _ln)
+
+        def DeleteLines(self, n, c):
+            self.deletes.append((n, c))
+            del self.lines[n - 1:n - 1 + c]
+
+    def _snip111(lines, sl, sc, el, ec, text, ins_boom=False, rep_boom=False):
+        _mod = _Mod111(lines, ins_boom, rep_boom)
+        _pane = _Pane110(_mod, sl, sc, el, ec)
+        _o_vbe = VB111._get_vbe_cached
+        _o_sem = VB111._sem_cache.get("info")
+        VB111._sem_cache["info"] = ("char", 4, False)
+        VB111._get_vbe_cached = lambda: _Vbe110(_pane)
+        try:
+            _ok = VB111.VbeBackend().insert_snippet(text)
+        finally:
+            VB111._get_vbe_cached = _o_vbe
+            VB111._sem_cache["info"] = _o_sem
+        return (bool(_ok), list(_mod.lines), len(_mod.inserts),
+                list(_mod.deletes))
+
+    _g111d = _snip111(["x = ab"], 1, 6, 1, 6, "1\n2\n3")
+    check("111.4 `insert_snippet` 插 3 行片段：中间那 2 行只用**一次** "
+          "`InsertLines`（不是逐行）—— 这是\"写一半\"窗口消失的前提；"
+          "以前是 2 次调用，第 2 次抛异常就留下半截片段",
+          [(_g111d[0], _g111d[1], _g111d[2])],
+          expect_contain=[(True, ["x = a1", "2", "3b"], 1)])
+
+    # ---- 111.5 中间行插不进去：原文一个字都不许动 ----
+    # 旧实现先 `ReplaceLine` 首行（成功）、再逐行 `InsertLines`（抛异常）⇒
+    # 返回 False 但首行已经被改成 `x = a`（用户后半行 `b` 丢了）。
+    _g111e = _snip111(["x = ab"], 1, 6, 1, 6, "1\n2\n3", ins_boom=True)
+    check("111.5 `InsertLines` 抛异常（模块只读）：返回 False **且首行保持原样**。"
+          "旧实现先改首行再插行，失败时 `x = ab` 已经变成 `x = a` —— "
+          "调用方提示\"插入失败\"，用户以为没动过，实际少了字",
+          [(_g111e[0], _g111e[1])],
+          expect_contain=[(False, ["x = ab"])])
+
+    # ---- 111.6 首行写不进去：回滚掉刚插的行，且**绝不删原有首行** ----
+    _g111f = _snip111(["x = ab"], 1, 6, 1, 6, "1\n2\n3", rep_boom=True)
+    check("111.6 `ReplaceLine` 失败（模块只读）：中间行已经插进去了，必须回滚 —— "
+          "回到 `[\"x = ab\"]`。回滚只删**新增的** 2 行；把原有首行一起删掉"
+          "就是直接删用户的代码（这个坑第一版真踩了）",
+          [(_g111f[0], _g111f[1], _g111f[3])],
+          expect_contain=[(False, ["x = ab"], [(2, 2)])])
+
+    # ---- 111.7 光标在"虚拟空行"上插多行片段 ----
+    # sl=2 但模块只有 1 行：`InsertLines(3, …)` 会插到行尾之外，必须先把
+    # 第 2 行建出来（纯新增），否则片段中间那行会把首行覆盖掉。
+    _g111g = _snip111(["x = ab"], 2, 1, 2, 1,
+                      "Sub Test()\n    x = 1\nEnd Sub")
+    check("111.7 光标停在模块末尾那个**虚拟空行**（第 2 行，模块只有 1 行）时插"
+          "多行片段：先把空行建出来再插中间行 —— 3 行片段一行都不能少",
+          [(_g111g[0], _g111g[1])],
+          expect_contain=[(True, ["x = ab", "Sub Test()", "    x = 1",
+                                  "End Sub"])])
+
+    # ---- 111.8 `duplicate_lines` 与 `insert_snippet` 口径统一 ----
+    # 两处都改成"整段一次 InsertLines"，这里钉住 `duplicate_lines` 仍然是
+    # **一次**调用（不许哪天又有人把它改成逐行）。
+    _mod111h = _Mod111(["a = 1", "b = 2", "c = 3"])
+    _pane111h = _Pane110(_mod111h, 2, 1, 2, 1)
+    _o_vbe111h = VB111._get_vbe_cached
+    try:
+        VB111._get_vbe_cached = lambda: _Vbe110(_pane111h)
+        _ok111h = VB111.VbeBackend().duplicate_lines()
+    finally:
+        VB111._get_vbe_cached = _o_vbe111h
+    check("111.8 `duplicate_lines`（Ctrl+D）复制整行仍然只用**一次** "
+          "`InsertLines` —— 与 `insert_snippet` 同一口径；一次调用天然没有"
+          "\"复制了一半\"的中间态",
+          [(bool(_ok111h), list(_mod111h.lines), len(_mod111h.inserts))],
+          expect_contain=[(True, ["a = 1", "b = 2", "b = 2", "c = 3"], 1)])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原

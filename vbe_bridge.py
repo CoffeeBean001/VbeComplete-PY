@@ -1286,12 +1286,14 @@ def enter_indent_wanted(line_text, caret_ec):
         return False
     if ec <= 0:
         return False
-    if any(_is_wide(c) for c in t):
-        # 含全角：只认"显示列恰好等于行尾显示列"
-        if ec != _eol_disp_col(t):
-            return False
-    elif ec < len(t):
-        # 纯 ASCII（无 Tab）：显示列 == 字符列，直接比
+    # ★代码复查修（2026-10-18）：纯 ASCII 分支原来写的是 `ec < len(t)`，
+    # 边界上差一格 —— 光标停在**最后一个字符之前**时 VBE 报的就是 `len(t)`
+    # （字符列 = 显示列 = 1-based），这个式子判不出来 ⇒ 那一下本该由 VBE
+    # 处理的【拆行】被我们接管，表现为"回车没拆行 / 缩进被改写"。
+    # 现在两支合成一条：行内已排除 Tab，`_eol_disp_col` 对纯 ASCII 就返回
+    # `len+1`、对全角行返回真实的行尾显示列 —— "行尾"这个语义只有一份算法
+    # （与 v93 修全角虚高时用的是同一个函数，MEMORY 第 21 条）。
+    if ec != _eol_disp_col(t):
         return False
     return bool(_is_comment_only(t) or opens_block(t))
 
@@ -2227,6 +2229,62 @@ def _project_name(proj):
         return ""
 
 
+def _project_key(proj):
+    """工程身份 `(Name, FileName)`（小写）；取不到返回 None。★v124
+
+    **为什么不能只比 `Name`**：Excel 里每个工作簿的工程名默认都叫
+    `VBAProject` —— 同时开两个 .xlsm 时 `Name` 一模一样，缓存（组件列表 /
+    CodeModule / 模块解析）都只用模块名做键，A 的 `Module1` 就会命中 B 的
+    缓存，补全出**另一个工作簿**的变量。`FileName` 才是工程的磁盘路径。
+
+    ★真机实测（Excel 2016 / VBE7.1）：已保存的工作簿返回完整路径；
+    **未保存的工作簿读 `FileName` 会抛 com_error（"路径未找到"）而不是返回
+    空串** —— 所以两个属性各自 try，谁抛了就当空。
+
+    两个都没取到（工程被锁 / COM 抖了）→ None，调用方按"不信任缓存"处理。
+    """
+    if proj is None:
+        return None
+    try:
+        name = str(proj.Name or "")
+    except Exception:
+        name = ""
+    try:
+        fname = str(proj.FileName or "")
+    except Exception:
+        fname = ""
+    name = name.strip().lower()
+    fname = fname.strip().lower()
+    if not name and not fname:
+        return None
+    return (name, fname)
+
+
+def _component_edge(proj, count):
+    """组件列表的**首尾组件名** —— 工程身份的补充指纹。★v124
+
+    只读 `Item(1)` / `Item(count)` 两次属性（比枚举全部便宜一个数量级）。
+
+    ⚠️ 别指望它包打天下：★真机实测两个都用默认模板新建的工作簿，组件名
+    集合**完全相同**（`ThisWorkbook` / `Sheet1` / `模块1`）——这时它分不开，
+    真正起作用的是 `FileName`。它只是多一道几乎免费的信号，用来兜住
+    "`FileName` 读不到（未保存）+ 名字恰好不同"的那一小撮情况；两个都
+    未保存且结构相同时仍会共享缓存，由 `_COMP_LIST_TTL` / `_MOD_CACHE_TTL`
+    到期自愈。
+
+    读不到就给空串（不参与区分），绝不抛。
+    """
+    if not count or count < 1:
+        return ("", "")
+    out = []
+    for i in (1, count):
+        try:
+            out.append(str(proj.VBComponents.Item(i).Name or "").lower())
+        except Exception:
+            out.append("")
+    return tuple(out)
+
+
 def _components_of(proj):
     try:
         out = []
@@ -2270,11 +2328,18 @@ def _code_panes_by_module(vbe):
 # 对象** —— 之后每读一次 `comp.Name` / `comp.Type` / `comp.CodeModule` 都要
 # 重新 Bind 一遍类型信息（实测 24 个模块约 40ms/轮）。
 #
-# 复用上一次那批对象，后续属性访问就几乎免费。失效条件两道：
+# 复用上一次那批对象，后续属性访问就几乎免费。失效条件三道：
 #   * 组件【数量】变了（增删模块）—— 一次 Count 就够，很便宜；
+#   * 工程【身份】变了（`_project_key` + 首尾组件名，★v124）—— 同时开两个
+#     工作簿时 `Count` 和模块名都可能撞车，没有这一道就会把 A 工程的组件
+#     列表当成 B 的（`"proj"` 字段以前写了却从不参与比较，等于没有）。
+#     ★真机实测：两个 .xlsm 的 `Name`（都是 `VBAProject`）**和组件名集合**
+#     （ThisWorkbook / Sheet1 / 模块1）可以完全一样，唯一不同的是 `FileName`
+#     —— 所以身份必须包含它。
 #   * _COMP_LIST_TTL 到点 —— 兜住"改了模块名但数量没变"这种。
 _COMP_LIST_TTL = 15.0
-_comp_list_cache = {"ts": 0.0, "count": -1, "proj": None, "comps": None}
+_comp_list_cache = {"ts": 0.0, "count": -1, "key": None, "edge": None,
+                    "comps": None}
 
 
 def _collect_components(vbe, caret_mod=None):
@@ -2289,6 +2354,8 @@ def _collect_components(vbe, caret_mod=None):
         proj = _active_vb_project(vbe)
         if proj is not None:
             comps = None
+            # 工程身份只算一次（两个属性读），命中判定与写入都要用。
+            _key = _project_key(proj)
             # ★v118：先看缓存 —— 同一批组件对象复用，属性访问免 Bind。
             if MOD_CACHE_ENABLED and _comp_list_cache["comps"] is not None:
                 try:
@@ -2296,8 +2363,15 @@ def _collect_components(vbe, caret_mod=None):
                 except Exception:
                     _cnt = -1
                 if (_cnt == _comp_list_cache["count"]
+                        and _key is not None
+                        and _key == _comp_list_cache["key"]
                         and (time.time() - _comp_list_cache["ts"])
-                        < _COMP_LIST_TTL):
+                        < _COMP_LIST_TTL
+                        # ★v124：再核一道首尾组件名 —— 极便宜的补充信号
+                        # （真正把两个 .xlsm 分开的是上面的 `_key`；
+                        #  这一道只兜"未保存 + 名字恰好不同"的情况）。
+                        and _component_edge(proj, _cnt)
+                        == _comp_list_cache["edge"]):
                     comps = _comp_list_cache["comps"]
                     _log("collect: 复用组件列表（%d 个）" % len(comps))
             if comps is None:
@@ -2305,6 +2379,8 @@ def _collect_components(vbe, caret_mod=None):
                 if comps:
                     _comp_list_cache["ts"] = time.time()
                     _comp_list_cache["count"] = len(comps)
+                    _comp_list_cache["key"] = _key
+                    _comp_list_cache["edge"] = _component_edge(proj, len(comps))
                     _comp_list_cache["comps"] = comps
             if comps:
                 if caret_mod:
@@ -2321,6 +2397,8 @@ def _collect_components(vbe, caret_mod=None):
                         comps = []
                         # 缓存与现场对不上（换工程 / 改了模块名）—— 作废
                         _comp_list_cache["comps"] = None
+                        _comp_list_cache["key"] = None
+                        _comp_list_cache["edge"] = None
             if comps:
                 _log("collect: 仅收集活动工程 %r（%d 个组件）"
                      % (_project_name(proj), len(comps)))
@@ -2843,7 +2921,6 @@ def _focused_hwnd_in_vbe():
     if not tid:
         return 0
     import ctypes
-    import ctypes.wintypes as wt
     gti = _GUI_CACHE["cls"]()
     gti.cbSize = ctypes.sizeof(gti)
     if not u32.GetGUIThreadInfo(tid, ctypes.byref(gti)):
@@ -3808,9 +3885,12 @@ class VbeBackend:
         # 它们数量太大（实测 4538 条），放开跳步匹配会淹没正常候选。
         self._host_enum_names = {}
         # ★v118：见 MOD_CACHE_ENABLED 的说明。
-        #   _mod_cache: 模块名(小写) -> {"count", "ts", "recs", "proc_names",
-        #               "proc_kinds", "type_names", "declared", "decl_by_mod"}
-        #   _cm_cache : 模块名(小写) -> 复用中的 CodeModule 包装对象
+        # ★v124：键是 `(工程身份, 模块名小写)` —— 工程身份见 `_project_key`。
+        #   只按模块名做键时，两个 .xlsm 各自的 `Module1` 会互相命中。
+        #   _mod_cache: (pkey, 模块名小写) -> {"count", "ts", "recs",
+        #               "proc_names", "proc_kinds", "type_names", "declared",
+        #               "decl_by_mod"}
+        #   _cm_cache : (pkey, 模块名小写) -> 复用中的 CodeModule 包装对象
         self._mod_cache = {}
         self._cm_cache = {}
 
@@ -3834,6 +3914,8 @@ class VbeBackend:
         # ★v118：组件列表缓存同样握着 COM 包装 —— 一并作废（模块级全局）。
         _comp_list_cache["comps"] = None
         _comp_list_cache["count"] = -1
+        _comp_list_cache["key"] = None
+        _comp_list_cache["edge"] = None
         _comp_list_cache["ts"] = 0.0
         # 丢掉缓存的 VBE 对象 —— 这是 Excel 能否真正退出的关键一步。
         # 刻意【不】调 CoFreeUnusedLibraries —— 它释放不了我们持有的引用，
@@ -4133,6 +4215,16 @@ class VbeBackend:
         # 因此取不到模块名时宁可对所有模块应用（误伤极小），也不要丢弃 caret。
         caret_mod, caret = _caret_position(vbe)
         _log("collect: caret_mod=%r caret=%r" % (caret_mod, caret))
+        # ★v124：模块级缓存（`_cm_cache` / `_mod_cache`）的键必须带【工程身份】。
+        # 原来只用模块名小写做键 —— 同时开两个 .xlsm（各有一个 `Module1`）时，
+        # A 的 `Module1` 会命中 B 的缓存：补全出另一个工作簿里的变量名，
+        # 而且因为"行数恰好相同"还会一直命中（TTL 到期才自愈）。
+        #
+        # 跨工程模式（ENABLE_CROSS_PROJECT）下一次遍历会混进多个工程的同名
+        # 模块，一个 `_pkey` 根本描述不了 —— 那种模式干脆不吃这两份缓存：
+        # 慢一点，但绝不会串（该模式默认关闭）。
+        _pkey = None if ENABLE_CROSS_PROJECT else _project_key(
+            _active_vb_project(vbe))
         # 注意：早先这里会把"声明行正在声明的名字"从【全部候选】里按名字整体剔除
         # （连前缀一起），用于杜绝"定义变量时提示变量自己"。但这会把合法的前缀
         # 补全也误杀——在 numArr 声明行输入 num，numArr 就再也提示不出来（bug：
@@ -4215,7 +4307,10 @@ class VbeBackend:
                     # 稳定引用，按模块名缓存即可；万一模块被删了重建，旧包装会在
                     # 读数时抛异常 —— 那就丢掉缓存重新拿一次。
                     _mk = str(mod_name).lower()
-                    cm = self._cm_cache.get(_mk)
+                    # `_mk` 保持"模块名小写"—— 它在 `_decl_by_mod` 里当模块名用
+                    # （引擎按模块名比对）。缓存键另起一个 `_ck`。
+                    _ck = (_pkey, _mk) if _pkey is not None else None
+                    cm = self._cm_cache.get(_ck) if _ck is not None else None
                     count = None
                     if cm is not None:
                         try:
@@ -4226,7 +4321,8 @@ class VbeBackend:
                     if cm is None:
                         cm = comp.CodeModule
                         count = int(cm.CountOfLines)
-                        self._cm_cache[_mk] = cm
+                        if _ck is not None:
+                            self._cm_cache[_ck] = cm
                     if count <= 0:
                         continue
                     # 模块名对不上就等于没拿到光标，会出现"打什么就提示什么"
@@ -4241,8 +4337,9 @@ class VbeBackend:
                     # 说明。重放的是"该模块对四路承接的增量"，与原来逐字等价：
                     # records 的顺序（recs 在前、imp 在后）、proc_kinds 的覆盖
                     # 顺序都按同一个模块遍历顺序重演。
-                    _ent = (self._mod_cache.get(_mk)
-                            if (MOD_CACHE_ENABLED and apply_caret is None)
+                    _ent = (self._mod_cache.get(_ck)
+                            if (MOD_CACHE_ENABLED and _ck is not None
+                                and apply_caret is None)
                             else None)
                     if (_ent is not None and _ent["count"] == count
                             and (time.time() - _ent["ts"]) < _MOD_CACHE_TTL):
@@ -4362,8 +4459,9 @@ class VbeBackend:
                     # ★v118：把"本模块对四路承接的增量"整套存下来，下一轮行数
                     # 没变就直接重放（见上面命中分支）。只在【光标不在这块】时
                     # 存 —— 带 caret 的解析结果与光标位置绑定，存了会串。
-                    if MOD_CACHE_ENABLED and apply_caret is None:
-                        self._mod_cache[_mk] = {
+                    if (MOD_CACHE_ENABLED and _ck is not None
+                            and apply_caret is None):
+                        self._mod_cache[_ck] = {
                             "count": count,
                             "ts": time.time(),
                             "recs": list(recs) + list(imp),
@@ -4870,7 +4968,16 @@ class VbeBackend:
                 col = _disp_width(actual, tabw, wide2, upto=caret_off) + 1
             else:
                 col = caret_off + 1
-            cp.SetSelection(sl, col, sl, col)
+            # ★代码复查修（2026-10-18）：落光标单独 try。文本已经写进去了
+            # （`_write_line` 返回 True / 右半边已存在时压根不用写），
+            # 这里再抛异常**不能**把结果拉成 False —— 调用方（main 的
+            # `_auto_pair_here`）看到 False 会把这一下按键原样还给系统，
+            # 于是行里已经有 `()` 又多出一个 `(`。与 duplicate_lines /
+            # delete_lines_here 同一口径。
+            try:
+                cp.SetSelection(sl, col, sl, col)
+            except Exception:
+                _log("autopair: 文本已写、落光标失败（按成功返回）")
             return True
         except Exception:
             return False
@@ -4933,7 +5040,12 @@ class VbeBackend:
                 col = _disp_width(actual, tabw, wide2, upto=off) + 1
             else:
                 col = off + 1
-            cp.SetSelection(sl, col, sl, col)
+            # ★代码复查修（2026-10-18）：同上 —— 包裹已经写进去了，
+            # 落光标失败不能让调用方再注入一个开符号。
+            try:
+                cp.SetSelection(sl, col, sl, col)
+            except Exception:
+                _log("autopair: 包裹已写、落光标失败（按成功返回）")
             return True
         except Exception:
             return False
@@ -4956,9 +5068,14 @@ class VbeBackend:
         于是"光标在行中间"也能插（后半行会被接在片段末尾那一行后面），
         "有选区"则是替换语义（单行 / 多行选区都支持）。
 
-        ⚠️ 为什么不用 `InsertLines` 一次性灌多行：VBE 对含 `\\r\\n` 的字符串
-        怎么拆行没有文档保证（有的宿主按 `\\r\\n`、有的按 `\\n`）。这里逐行
-        `InsertLines`，行号可控、下标可算 —— 多行选区删除的行号也才推得准。
+        ⚠️ **写入是"尽量原子"的**（★v124 代码复查）：中间的 n-1 行用**一次**
+        `InsertLines` 灌进去，然后才覆盖首行 —— 原先是逐行插，第 3 行抛异常时
+        前 2 行已经进了文档、函数却返回 False，调用方提示"插入失败"，用户再点
+        一次就是**片段插两遍**。现在任何一步失败的落点都是：
+          * 中间行插入失败 → 一次调用失败 = 行数没变，原文档一个字没动；
+          * 首行覆盖失败 → 把刚插的中间行删掉，回到"什么都没发生"。
+        `InsertLines` 支持多行是**真机实测**过的（Excel 2016 / VBE7.1：`\\r\\n`、
+        `\\n`、`\\r` 三种都正确拆行），与 `duplicate_lines` 同一口径。
 
         ⚠️ `ReplaceLine` 会把**行尾空格 trim 掉**（v103b 实测），而 `InsertLines`
         不会。所以片段末行带尾随空格时，只有"片段是单行且要替换当前行"这一
@@ -4996,11 +5113,20 @@ class VbeBackend:
             # 起点：VBE 的列是显示列（全角 2 格 / Tab 展开），必须换回字符下标
             col_s, sem, tabw, wide2 = _caret_char_col(cm, cp, sl, first, sc)
             i = max(0, min(col_s - 1, len(first)))
+            # ★代码复查修（2026-10-18）：终点也必须换算。原先单行选区
+            # （`el == sl`）直接拿 `ec`（**显示列**）当字符下标用 —— 含全角
+            # 字符或 Tab 的行上会多删/漏删一个字符；而 `tail = last[j:]` 之后
+            # 是【整行重写】，删错就是用户代码真的少了几个字。
+            # 多行选区那一支本来就换算，两端口径必须一致（同一组 sem/tabw/wide2）。
+            col_e, _s2, _t2, _w2 = _caret_char_col(cm, cp, el, last, ec)
+            # ★代码复查修（2026-10-18）：`max(i, …)` 只对单行选区有意义 ——
+            # 多行时 `i` 是【首行】的字符下标，跟末行 `last` 毫无关系，
+            # 从某行中部往下选到下一行行首（很常见的选法）会把 `j` 顶到 `i`，
+            # 末行没被选中的那一段被整段丢弃。
             if el == sl:
-                col_e = ec
+                j = max(i, min(col_e - 1, len(last)))
             else:
-                col_e, _s2, _t2, _w2 = _caret_char_col(cm, cp, el, last, ec)
-            j = max(i, min(col_e - 1, len(last)))
+                j = max(0, min(col_e - 1, len(last)))
             head, tail = first[:i], last[j:]
 
             block = text.split("\n")
@@ -5011,16 +5137,70 @@ class VbeBackend:
                 out.extend(block[1:-1])
                 out.append(block[-1] + tail)
 
+            # ★v124（代码复查）：写入顺序改成"先插中间行（一次调用）、再覆盖
+            # 首行"，让"写了一半"的窗口消失。原来的写法是逐行 `InsertLines`，
+            # 第 3 行抛异常时前 2 行已经进去了、函数却返回 False —— 调用方提示
+            # "插入失败"，用户再点一次 = 片段插两遍。
+            #
+            # 为什么现在敢一次灌多行：★真机实测（Excel 2016 / VBE7.1）
+            # `InsertLines` 对 `\r\n`、`\n`、`\r` 三种换行**都正确拆行**
+            # （3 行文本插进去就是 3 行，含尾随换行时多一个空行）。原先那段
+            # "没有文档保证所以逐行插"的注释是多余的谨慎，`duplicate_lines`
+            # 一直在用整段插 —— 两处口径现在已经统一。
+            k = len(out) - 1
+            # 光标可能停在【模块末尾的虚拟空行】（sl == CountOfLines+1）：
+            # 那一行还不存在，`InsertLines(sl+1, …)` 会插到行尾之外。先把它
+            # 建成一个真实的空行 —— 这是纯新增，失败等于什么都没动。
+            # （单行片段不用这一步：`_write_line` 自己会建，只有一次写。）
+            _virtual = n_lines is not None and sl > n_lines and k > 0
+            if _virtual:
+                try:
+                    cm.InsertLines(sl, "")
+                except Exception:
+                    _log("snippet: 建首行失败（原文未改动）")
+                    return False
+                wrote = True
+            # 1) 中间行：一次调用，要么全成要么全不成。
+            if k:
+                try:
+                    cm.InsertLines(sl + 1, "\r\n".join(out[1:]))
+                except Exception:
+                    if _virtual:
+                        # 只多了刚才那个空行 —— 收掉就回到原样。
+                        try:
+                            cm.DeleteLines(sl, 1)
+                            wrote = False
+                        except Exception:
+                            _log("snippet: 中间行插入失败且回滚失败")
+                    _log("snippet: 中间 %d 行插入失败（原文未改动）" % k)
+                    return False
+            # 2) 首行：走到这里它一定已经存在（虚拟空行上面刚建过）。
             if not self._write_line(cm, sl, out[0]):
+                # 半截片段比"失败"更糟：把刚插进去的行全删掉。
+                # ⚠️ 只删【新增的】那些行 —— 第 sl 行原本就有内容（`_write_line`
+                # 失败说明它没被改），连它一起删就是把用户代码删没了；只有
+                # `_virtual`（那一行本来不存在、是我们刚建的）才连 sl 一起删。
+                try:
+                    if _virtual:
+                        cm.DeleteLines(sl, k + 1)
+                    elif k:
+                        cm.DeleteLines(sl + 1, k)
+                    wrote = False
+                    _log("snippet: 首行写入失败，已回滚 %d 行" % (k + 1 if _virtual else k))
+                except Exception:
+                    _log("snippet: 首行写入失败且回滚失败（多出 %d 行）"
+                         % (k + 1 if _virtual else k))
                 return False
             wrote = True
-            k = len(out) - 1
-            for d, ln in enumerate(out[1:]):
-                cm.InsertLines(sl + 1 + d, ln)
             # 多行选区：把被替换掉的旧行收掉（插进来的 k 行把它们挤下去了）
+            # 片段已经完整写进去了 —— 失败只记日志、不返回 False：内容在文档里，
+            # 报失败会让用户再插一遍。
             drop = el - sl
             if drop > 0:
-                cm.DeleteLines(sl + 1 + k, drop)
+                try:
+                    cm.DeleteLines(sl + 1 + k, drop)
+                except Exception:
+                    _log("snippet: 片段已插入，旧行删除失败（多出 %d 行）" % drop)
 
             # 摆光标：落在片段最后一个字符之后（= 尾部原文的起点）
             line_no = sl + k
@@ -5033,7 +5213,12 @@ class VbeBackend:
                 col = _disp_width(actual, tabw, wide2, upto=pos) + 1
             else:
                 col = pos + 1
-            cp.SetSelection(line_no, col, line_no, col)
+            # ★代码复查修（2026-10-18）：片段已经插进去了，落光标失败不能让
+            # 调用方看到 False —— 那会提示"插入失败"，用户再点一次就重复插入。
+            try:
+                cp.SetSelection(line_no, col, line_no, col)
+            except Exception:
+                _log("snippet: 已插入、落光标失败（按成功返回）")
             _log("snippet: 插入 %d 行 -> 行=%d 光标列=%d (前=%r 后=%r)"
                  % (len(block), line_no, col,
                     (head or "")[-20:], (tail or "")[:20]))
@@ -5995,8 +6180,17 @@ class VbeBackend:
                 # 收尾插在"新起的空行"下面：块头下面留出缩进好了的一行给用户写
                 # 内容，收尾再往下、缩进回到块头同级。原有行整体再下移一行。
                 cm.InsertLines(anchor + 2, closer_text)
-            col = _indent_end_col(indent, _resolve_sem_info(cm, cp, anchor + 1))
-            cp.SetSelection(anchor + 1, col, anchor + 1, col)
+            # ★代码复查修（2026-10-18）：新行**已经插进去了** —— 下面这一段
+            # （重新探测行语义 + 摆光标）再出任何异常都不能返回 False。
+            # 原先它整段在同一个 try 里，抛异常就 return False ⇒ 调用方
+            # （main `_enter_indent_here` / `_new_line_here`）会再注入一个回车
+            # ⇒ 用户按一下回车多出一行。与 delete_lines_here 同一口径。
+            try:
+                col = _indent_end_col(
+                    indent, _resolve_sem_info(cm, cp, anchor + 1))
+                cp.SetSelection(anchor + 1, col, anchor + 1, col)
+            except Exception:
+                _log("newline: 行已插入、落光标失败（按成功返回）")
             return True
         except Exception:
             return False
@@ -6089,8 +6283,14 @@ class VbeBackend:
             cm.InsertLines(anchor, indent)
             # 插入后新行就是 anchor 行；缩进末尾的列由 _indent_end_col 给
             # （它按"缩进只有空白"的语义直接算，不需要问光标列）。
-            col = _indent_end_col(indent, _resolve_sem_info(cm, cp, anchor))
-            cp.SetSelection(anchor, col, anchor, col)
+            # ★代码复查修（2026-10-18）：行已经插进去了，落光标失败不能返回
+            # False（否则调用方补一个回车 = 多出一行）。
+            try:
+                col = _indent_end_col(
+                    indent, _resolve_sem_info(cm, cp, anchor))
+                cp.SetSelection(anchor, col, anchor, col)
+            except Exception:
+                _log("insert-above: 行已插入、落光标失败（按成功返回）")
             return True
         except Exception:
             return False
@@ -6103,8 +6303,14 @@ class VbeBackend:
         对应 IDEA 的 Duplicate Line（`Ctrl+D`）。
 
         写入只有一次 `InsertLines`：`cm.Lines(sl, n)` 拿回来的原文本身就是
-        CRLF 连接的多行，直接喂回去即可（VBE 会按换行拆成多行），不需要自己
-        拼。光标落在**复制块的第一行、同一列** —— 整行复制意味着那一行的内容
+        CRLF 连接的多行，直接喂回去即可 —— ★v124 真机实测（Excel 2016 /
+        VBE7.1）：`InsertLines` 对 `\r\n` / `\n` / `\r` 三种换行**都按行拆开**，
+        3 行文本插进去就是 3 行（`Lines()` 的 join 不带尾随换行，所以原样喂回
+        不会多出空行；只有取到"最后一个空行"时才会带一个 `\r\n`，那也正是
+        要复制的空行）。`insert_snippet` 已改成同一口径，两处不再互相矛盾。
+
+        一次 COM 调用 = 要么全成、要么全不成，天然没有"复制了一半"的中间态。
+        光标落在**复制块的第一行、同一列** —— 整行复制意味着那一行的内容
         逐字相同，所以"显示列"照抄就是同一个字符位置，没有列语义换算的坑。
         """
         try:
@@ -6340,7 +6546,14 @@ class VbeBackend:
                 out_col = _disp_width(actual, tabw, wide2, upto=caret_off) + 1
             else:
                 out_col = caret_off + 1
-            cp.SetSelection(anchor, out_col, anchor, out_col)
+            # ★代码复查修（2026-10-18）：本函数的 docstring 早就写着"落光标
+            # 单独 try —— 写已经成了却因为落光标失败而返回 False，会让调用方
+            # 再补一次退格、把 `)` 也删掉"，但代码里 SetSelection 仍在**外层**
+            # try 内。补上这一道。
+            try:
+                cp.SetSelection(anchor, out_col, anchor, out_col)
+            except Exception:
+                _log("bspair: 已删一对、落光标失败（按成功返回）")
             return True
         except Exception:
             return False

@@ -57,7 +57,6 @@ VbeComplete 主入口（修复版）
   一律不接管（免得把字符写进代码窗格）。判不出来时退回老判据，绝不"拿不准就拦"。
 """
 
-import os
 import sys
 import time
 import ctypes
@@ -150,6 +149,32 @@ class _INPUT(ctypes.Structure):
     _fields_ = [("type", ctypes.c_ulong), ("u", _INPUT_UNION)]
 
 
+def _send_inputs(seq):
+    """把一串键盘事件一次性 SendInput 出去；全部落成才返回 True。
+
+    seq: [(wVk, wScan, dwFlags), ...]
+
+    ★代码复查重构（2026-10-18）：`send_char` / `send_vk` / `send_quick_info`
+    原先各自把 `_INPUT` 数组的构造抄了一遍（三份一字不差）。合并成一份后，
+    "先按下的修饰键必须后松开"这类细节只有一处需要维护。
+    """
+    try:
+        evts = (_INPUT * len(seq))()
+        for i, (vk, scan, flags) in enumerate(seq):
+            e = evts[i]
+            e.type = INPUT_KEYBOARD
+            e.u.ki.wVk = int(vk)
+            e.u.ki.wScan = int(scan)
+            e.u.ki.dwFlags = int(flags)
+            e.u.ki.time = 0
+            e.u.ki.dwExtraInfo = 0
+        n = ctypes.windll.user32.SendInput(
+            len(seq), ctypes.byref(evts), ctypes.sizeof(_INPUT))
+        return int(n) == len(seq)
+    except Exception:
+        return False
+
+
 def send_char(ch):
     """把一个字符原样"还给"系统（keydown+keyup），等价于人敲了一下。
 
@@ -157,22 +182,8 @@ def send_char(ch):
     【真的输入进去】—— 绝不能"吞掉按键却什么都没发生"。
     用 KEYEVENTF_UNICODE 直接发字符，绕开键盘布局与 Shift 状态。
     """
-    try:
-        evts = (_INPUT * 2)()
-        for i, flags in enumerate((KEYEVENTF_UNICODE,
-                                   KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)):
-            e = evts[i]
-            e.type = INPUT_KEYBOARD
-            e.u.ki.wVk = 0
-            e.u.ki.wScan = ord(ch)
-            e.u.ki.dwFlags = flags
-            e.u.ki.time = 0
-            e.u.ki.dwExtraInfo = 0
-        n = ctypes.windll.user32.SendInput(
-            2, ctypes.byref(evts), ctypes.sizeof(_INPUT))
-        return int(n) == 2
-    except Exception:
-        return False
+    return _send_inputs(((0, ord(ch), KEYEVENTF_UNICODE),
+                         (0, ord(ch), KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)))
 
 
 def send_vk(vk, ctrl=False):
@@ -187,27 +198,12 @@ def send_vk(vk, ctrl=False):
     的兜底重发用）。修饰键必须【反序】释放，否则宿主可能看到"Ctrl 还按着"
     的残留状态。
     """
-    try:
-        k = int(vk)
-        if ctrl:
-            seq = ((VK_CONTROL, 0), (k, 0),
-                   (k, KEYEVENTF_KEYUP), (VK_CONTROL, KEYEVENTF_KEYUP))
-        else:
-            seq = ((k, 0), (k, KEYEVENTF_KEYUP))
-        evts = (_INPUT * len(seq))()
-        for i, (key, flags) in enumerate(seq):
-            e = evts[i]
-            e.type = INPUT_KEYBOARD
-            e.u.ki.wVk = key
-            e.u.ki.wScan = 0
-            e.u.ki.dwFlags = flags
-            e.u.ki.time = 0
-            e.u.ki.dwExtraInfo = 0
-        n = ctypes.windll.user32.SendInput(
-            len(seq), ctypes.byref(evts), ctypes.sizeof(_INPUT))
-        return int(n) == len(seq)
-    except Exception:
-        return False
+    if ctrl:
+        seq = ((VK_CONTROL, 0, 0), (vk, 0, 0),
+               (vk, 0, KEYEVENTF_KEYUP), (VK_CONTROL, 0, KEYEVENTF_KEYUP))
+    else:
+        seq = ((vk, 0, 0), (vk, 0, KEYEVENTF_KEYUP))
+    return _send_inputs(seq)
 
 
 def send_quick_info():
@@ -227,25 +223,12 @@ def send_quick_info():
     返回是否发送成功；调用方（`vbe_bridge.apply_completion`）拿不到就算了，
     **形参信息弹不出来绝不影响补全本身**。
     """
-    try:
-        # (虚拟键, 标志) 顺序很关键：先按下的修饰键必须后松开。
-        seq = ((VK_CONTROL, 0), (VK_SHIFT, 0), (VK_I, 0),
-               (VK_I, KEYEVENTF_KEYUP), (VK_SHIFT, KEYEVENTF_KEYUP),
-               (VK_CONTROL, KEYEVENTF_KEYUP))
-        evts = (_INPUT * len(seq))()
-        for i, (vk, flags) in enumerate(seq):
-            e = evts[i]
-            e.type = INPUT_KEYBOARD
-            e.u.ki.wVk = int(vk)
-            e.u.ki.wScan = 0
-            e.u.ki.dwFlags = flags
-            e.u.ki.time = 0
-            e.u.ki.dwExtraInfo = 0
-        n = ctypes.windll.user32.SendInput(
-            len(seq), ctypes.byref(evts), ctypes.sizeof(_INPUT))
-        return int(n) == len(seq)
-    except Exception:
-        return False
+    # (虚拟键, 扫描码, 标志) 顺序很关键：先按下的修饰键必须后松开。
+    return _send_inputs(((VK_CONTROL, 0, 0), (VK_SHIFT, 0, 0),
+                         (VK_I, 0, 0),
+                         (VK_I, 0, KEYEVENTF_KEYUP),
+                         (VK_SHIFT, 0, KEYEVENTF_KEYUP),
+                         (VK_CONTROL, 0, KEYEVENTF_KEYUP)))
 
 
 def _is_newline_shortcut(vk, shift_down):
@@ -702,6 +685,28 @@ def _shift_down():
         return bool(ctypes.windll.user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
     except Exception:
         return False
+
+
+def _mods_now():
+    """读一次四个修饰键的实时状态 -> `(ctrl, shift, alt, win)`（纯 Win32）。
+
+    ★代码复查重构（2026-10-18）：七个 `_*_key_ok` 原先各自抄了一遍
+    `GetAsyncKeyState` 的四连读（ctrl / shift / alt / win），一字不差。
+    合并成一份之后，修饰键门槛**只有一处**可以改 —— 也避免以后新增快捷键时
+    漏掉 Win 那道闸（Win+↑ 是系统窗口最大化，吞了要出事）。
+
+    出错（非 Windows / API 不可用）一律按"什么都没按"处理：调用方那些
+    `_*_vk_ok` 纯判据于是返回 False，按键原样交给系统，不会误吞。
+    """
+    try:
+        u32 = ctypes.windll.user32
+        return (bool(u32.GetAsyncKeyState(VK_CONTROL) & 0x8000),
+                _shift_down(),
+                bool(u32.GetAsyncKeyState(VK_MENU) & 0x8000),
+                bool(u32.GetAsyncKeyState(VK_LWIN) & 0x8000
+                     or u32.GetAsyncKeyState(VK_RWIN) & 0x8000))
+    except Exception:
+        return (False, False, False, False)
 
 
 # 收起键：左右方向键。
@@ -1949,14 +1954,8 @@ def main():
                 return False
             if vk not in CTRL_NAV_VKS:
                 return False          # 先挡掉绝大多数按键，省三次系统调用
-            u32 = ctypes.windll.user32
             if not _ctrl_nav_vk_ok(
-                    vk,
-                    bool(u32.GetAsyncKeyState(VK_CONTROL) & 0x8000),
-                    _shift_down(),
-                    bool(u32.GetAsyncKeyState(VK_MENU) & 0x8000),
-                    bool(u32.GetAsyncKeyState(VK_LWIN) & 0x8000
-                         or u32.GetAsyncKeyState(VK_RWIN) & 0x8000)):
+                    vk, *_mods_now()):
                 return False
             if int(state.get("pending_keys") or 0) > 0:
                 return False
@@ -1981,14 +1980,8 @@ def main():
                 return False
             if vk != VK_Q:
                 return False          # 先挡掉绝大多数按键，省几次系统调用
-            u32 = ctypes.windll.user32
             if not _snippet_vk_ok(
-                    vk,
-                    bool(u32.GetAsyncKeyState(VK_CONTROL) & 0x8000),
-                    _shift_down(),
-                    bool(u32.GetAsyncKeyState(VK_MENU) & 0x8000),
-                    bool(u32.GetAsyncKeyState(VK_LWIN) & 0x8000
-                         or u32.GetAsyncKeyState(VK_RWIN) & 0x8000)):
+                    vk, *_mods_now()):
                 return False
             return bool(in_vbe_code_area())
         except Exception:
@@ -2009,14 +2002,8 @@ def main():
                 return False
             if vk != VK_OEM_2:
                 return False          # 先挡掉绝大多数按键，省三次系统调用
-            u32 = ctypes.windll.user32
             if not _comment_vk_ok(
-                    vk,
-                    bool(u32.GetAsyncKeyState(VK_CONTROL) & 0x8000),
-                    _shift_down(),
-                    bool(u32.GetAsyncKeyState(VK_MENU) & 0x8000),
-                    bool(u32.GetAsyncKeyState(VK_LWIN) & 0x8000
-                         or u32.GetAsyncKeyState(VK_RWIN) & 0x8000)):
+                    vk, *_mods_now()):
                 return False
             if int(state.get("pending_keys") or 0) > 0:
                 return False
@@ -2042,14 +2029,8 @@ def main():
                 return False
             if vk != VK_O:
                 return False          # 先挡掉绝大多数按键，省几次系统调用
-            u32 = ctypes.windll.user32
             if not _outline_vk_ok(
-                    vk,
-                    bool(u32.GetAsyncKeyState(VK_CONTROL) & 0x8000),
-                    _shift_down(),
-                    bool(u32.GetAsyncKeyState(VK_MENU) & 0x8000),
-                    bool(u32.GetAsyncKeyState(VK_LWIN) & 0x8000
-                         or u32.GetAsyncKeyState(VK_RWIN) & 0x8000)):
+                    vk, *_mods_now()):
                 return False
             if com_backoff_remaining() > 0 or not in_vbe_code_area():
                 return False
@@ -2064,14 +2045,8 @@ def main():
                 return False
             if vk != VK_F:
                 return False
-            u32 = ctypes.windll.user32
             if not _usages_vk_ok(
-                    vk,
-                    bool(u32.GetAsyncKeyState(VK_CONTROL) & 0x8000),
-                    _shift_down(),
-                    bool(u32.GetAsyncKeyState(VK_MENU) & 0x8000),
-                    bool(u32.GetAsyncKeyState(VK_LWIN) & 0x8000
-                         or u32.GetAsyncKeyState(VK_RWIN) & 0x8000)):
+                    vk, *_mods_now()):
                 return False
             if com_backoff_remaining() > 0 or not in_vbe_code_area():
                 return False
@@ -2094,14 +2069,8 @@ def main():
                 return False
             if vk != VK_RETURN:
                 return False          # 先挡掉绝大多数按键，省几次系统调用
-            u32 = ctypes.windll.user32
             if not _insert_above_vk_ok(
-                    vk,
-                    bool(u32.GetAsyncKeyState(VK_CONTROL) & 0x8000),
-                    _shift_down(),
-                    bool(u32.GetAsyncKeyState(VK_MENU) & 0x8000),
-                    bool(u32.GetAsyncKeyState(VK_LWIN) & 0x8000
-                         or u32.GetAsyncKeyState(VK_RWIN) & 0x8000)):
+                    vk, *_mods_now()):
                 return False
             if int(state.get("pending_keys") or 0) > 0:
                 return False
@@ -2123,14 +2092,7 @@ def main():
                 return None
             if vk not in (VK_D, VK_K):
                 return None           # 先挡掉绝大多数按键，省几次系统调用
-            u32 = ctypes.windll.user32
-            kind = _dup_del_vk_ok(
-                vk,
-                bool(u32.GetAsyncKeyState(VK_CONTROL) & 0x8000),
-                _shift_down(),
-                bool(u32.GetAsyncKeyState(VK_MENU) & 0x8000),
-                bool(u32.GetAsyncKeyState(VK_LWIN) & 0x8000
-                     or u32.GetAsyncKeyState(VK_RWIN) & 0x8000))
+            kind = _dup_del_vk_ok(vk, *_mods_now())
             if not kind:
                 return None
             if not LINE_OPS[kind]:

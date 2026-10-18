@@ -282,12 +282,6 @@ def raw(name):
     return c[0][0] if c else ""
 
 
-def source(name):
-    """当前值来自哪一层：`"env"` / `"ini"` / `"default"`。"""
-    c = candidates(name)
-    return c[0][1] if c else "default"
-
-
 def _parse_flag(t):
     t = t.lower()
     if t in _TRUE:
@@ -352,9 +346,22 @@ def effective(name, default, kind="flag"):
     return pick(name, parser, default)
 
 
-def source(name):
-    """当前值来自哪一层：`"env"` / `"ini"` / `"default"`（按开关语义解析）。"""
-    return effective(name, None, "flag")[1]
+def source(name, kind="text"):
+    """当前值来自哪一层：`"env"` / `"ini"` / `"default"`（按开关语义解析）。
+
+    ★代码复查修（2026-10-18）：这个函数原先被定义了**两次** —— 后一个用
+    `effective(name, None, "flag")`，于是 `RECENT_MAX = 32` / `LOG_FILE = …`
+    这类 int / text 键在 ini 里明明写了，`source()` 也会因为"当开关解析不出来"
+    而报 `default`（排错时正好把用户引到错方向）。现在只留一份，并且 `kind`
+    与 `flag()/int_value()/text()` 走**同一个** `pick()` 口径：
+
+      * `kind="text"`（默认）：任何非空值都认 —— 与 `text()` 一致；
+      * `kind="flag"`：认不出的值会被跳过，与 `flag()` 一致。
+
+    `dump()` 直接调 `effective`（那里本来就知道 kind），所以不受影响；
+    本函数只服务于"我刚改的这一项到底生效没有"这类排错与测试。
+    """
+    return effective(name, None, kind)[1]
 
 
 def items(name, default=()):
