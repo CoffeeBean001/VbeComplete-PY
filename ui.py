@@ -45,6 +45,34 @@ COLOR_SCROLL_THUMB = "#B0A98C"
 
 PAD_X = 6                   # 行内左右留白
 
+# ---- ★v119：字号必须是【整数】 ----
+# `tkfont.Font.configure(size=...)` 只认整数（负数 = 像素，正数 = 点）。
+# 旧代码直接传 `pt + FONT_DELTA`（浮点，实测 11.0 / 8.75），Tk 抛
+#     TclError: expected integer but got "9.75"
+# 而 `_apply_font` 里那两个 except 把它吞掉了 —— 于是字号【永远】停在初始化
+# 时的 `Consolas 10`：用户在 VBE 里把编辑器调成 14pt、或换成别的字体，候选窗
+# 纹丝不动。`_apply_font` 每次弹出都调（见 show()），所以修好即"即时跟随"。
+
+
+def _clamp_font_size(pt):
+    """把 VBE 字号（点）换算成 tkinter 能接受的字号 —— **保证返回 int**。
+
+    取整用 `round` 而不是 `int`：`8.75 -> 9` 才贴近用户设定的字号，
+    `int()` 一律向下取（`8.75 -> 8`，偏小一档，而候选窗本来就比编辑器小一号了）。
+
+    任何异常输入（None / NaN / inf / 非数字）一律回落到 MIN_FONT_SIZE ——
+    这个函数只在算字号，绝不该因为注册表里一个怪值就让候选窗弹不出来。
+    """
+    try:
+        n = float(pt) + FONT_DELTA
+        # `n != n` 是 NaN 的判据（不引 math）。别指望 min/max 拦住它：
+        # `min(24, nan)` 返回 nan，一路穿过钳位、最后 round 抛 ValueError。
+        if n != n:
+            return MIN_FONT_SIZE
+        return int(round(max(MIN_FONT_SIZE, min(MAX_FONT_SIZE, n))))
+    except (TypeError, ValueError, OverflowError):
+        return MIN_FONT_SIZE
+
 
 def _vbe_font_info():
     """读取 VBE 编辑器字体设置，返回 (FontFace, FontHeight像素)；失败返回 None。"""
@@ -378,7 +406,7 @@ class Popup:
                 pt = None
             if not pt:
                 pt = px * 72.0 / 96.0
-            size = max(MIN_FONT_SIZE, min(MAX_FONT_SIZE, pt + FONT_DELTA))
+            size = _clamp_font_size(pt)   # ★v119：必须是 int，见上面的说明
             family = face
         else:
             family, size = "Consolas", 10

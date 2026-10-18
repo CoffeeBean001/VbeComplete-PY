@@ -117,6 +117,25 @@
   (`Dim` / `Sub` / `As` / parameter lists — the only lines that can add a name), 2 s elsewhere.
   `VBECOMPLETE_NO_MOD_CACHE=1` restores the v117 behaviour for A/B.
 
+- **v119 — the popup finally matches your editor font, and "recently used" survives a restart.**
+  Two gaps found while measuring v118; both are silent (nothing ever errored, so nobody reported them).
+  *(a)* `ui._apply_font()` computed the font size as a **float** (`pt + FONT_DELTA` → `11.0` / `8.75`),
+  but Tk's `font configure -size` accepts integers only — it raises
+  `TclError: expected integer but got "9.75"`, and two nested `except: pass` swallowed it. The candidate
+  window therefore sat on `Consolas 10` forever: changing the VBE editor font to 14 pt or to another
+  typeface had no effect. Fixed by a pure `_clamp_font_size()` that rounds (`8.75 → 9`; `int()` would
+  give 8, one notch too small) and tolerates `None` / `NaN` / `±inf` / strings. One line of real change,
+  but the failure mode was invisible.
+  *(b)* The recently-used ranking table was a plain in-memory dict, and `stop.bat` kills the process
+  with `Stop-Process -Force`, so **no exit hook ever runs** — every reboot started the ranking from zero.
+  It is now persisted to `recent.json` in the project folder (same policy as `snippets.db`; override with
+  `VBECOMPLETE_RECENT_FILE`), holding only *name → sequence*: a few KB. Three design points matter:
+  the keystroke path only sets a dirty flag and `poll_editor` flushes **at most every 2 s** (a clean
+  check costs one boolean; a write is a few KB and under 1 ms); constructing `Completer()` never reads
+  the disk (the test suite builds thousands of them, and they must not depend on the user's real data);
+  and writes are atomic (`tmp` + `os.replace`) with any corrupt file degrading to `{}`.
+  `VBECOMPLETE_NO_RECENT_PERSIST=1` restores the v118 behaviour for A/B.
+
 **Coexistence**
 
 - After `object.`, VbeComplete steps aside and lets the VBE's own, type-aware member list take over.
@@ -176,6 +195,8 @@ Behaviour is tuned through environment variables (set them before launching):
 | `VBECOMPLETE_NO_SCOPE_RANK` | off | `1` disables scope-aware ranking. |
 | `VBECOMPLETE_NO_RECENT_RANK` | off | `1` disables recently-used ranking. |
 | `VBECOMPLETE_RECENT_MAX` | 64 | How many recently-used names are remembered. |
+| `VBECOMPLETE_NO_RECENT_PERSIST` | off | `1` keeps the recently-used table in memory only (`recent.json` is neither read nor written). |
+| `VBECOMPLETE_RECENT_FILE` | `<project folder>\recent.json` | Where the recently-used table lives (tests and portable installs point it elsewhere). |
 | `VBECOMPLETE_NO_YIELD` | off | `1` disables yielding to the VBE's native member list. |
 | `VBECOMPLETE_NO_AUTOPAIR` | off | `1` disables auto-pairing. |
 | `VBECOMPLETE_NO_IME_PUNCT` | off | `1` always pairs with half-width `()` / `""`, even when the IME is in Chinese-punctuation / full-width mode. |
@@ -199,8 +220,9 @@ Behaviour is tuned through environment variables (set them before launching):
 | `ui.py` | The floating popup (tkinter) and its screen-avoidance logic |
 | `snippet_ui.py` | The snippet window (`Ctrl+Q`): search, add / edit / delete, insert button |
 | `snippets.py` | The snippet store (SQLite, two columns) and fuzzy title matching — no UI, no COM |
+| `recent.py` | The recently-used table (`recent.json`): load, atomic save, corrupt-file tolerance — no UI, no COM (v119) |
 | `log.py` | Optional diagnostic log (off by default, zero overhead) |
-| `tests/` | Regression suite (`test_real_project.py`) and the sample project it runs against. Two one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), and `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread. |
+| `tests/` | Regression suite (`test_real_project.py`, 1062 checks) and the sample project it runs against. Three one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, and `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve). |
 
 ## Credits
 

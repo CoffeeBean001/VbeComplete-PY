@@ -18471,6 +18471,345 @@ def main():
         check("第 100 节异常: %s" % _e100, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
+    # 101. ★v119：候选窗字号真的跟随 VBE + 最近使用表跨会话累计
+    #   用户本轮问的是"弹窗能不能反应快点"（性能，v118 已处理），量性能的路上
+    #   撞见两个"用户能感知、却永远不报错"的缺口：
+    #     ① 候选窗字号**从来没跟随过** VBE：`_apply_font` 算出的 size 是浮点数，
+    #        tkinter 只收整数 → TclError → 被两个 except 吞掉 → 永远 Consolas 10。
+    #     ② "最近使用优先"**活不过一次重启**：`_recent` 是纯内存字典，
+    #        stop.bat 一停就清零，等于每次开机都从零重新"教"一遍。
+    # ------------------------------------------------------------------
+    print("\n=== 101. ★v119：字号跟随 VBE / 最近使用表落盘 ===")
+    import tempfile as _t101
+    import shutil as _sh101
+    import importlib as _il101
+    import subprocess as _sp101
+    import ast as _ast101
+    import ui as UI101
+    import recent as RC101
+
+    # ---- 101.1 纯函数：任何输入都必须返回 int 并钳在 [8,24] ----
+    # 旧实现 `max(MIN, min(MAX, pt + FONT_DELTA))` 返回浮点（11.0 / 8.75），
+    # 这一条直接钉住"返回值类型"——只比数值是不够的，float(9) == 9 会假绿。
+    _cases101 = [
+        (12.0, 11), (9.75, 9), (8.0, 8), (1.0, 8), (100.0, 24), (24.6, 24),
+        (None, 8), ("bad", 8), (float("nan"), 8), (float("inf"), 24),
+        (float("-inf"), 8), (-5, 8),
+    ]
+    _bad101 = [(p, e, UI101._clamp_font_size(p))
+               for p, e in _cases101
+               if type(UI101._clamp_font_size(p)) is not int
+               or UI101._clamp_font_size(p) != e]
+    check("101.1 `ui._clamp_font_size` 对 12 种输入（含 None / NaN / ±inf / "
+          "字符串 / 越界）都返回 **int** 且钳在 [8,24]；取整用 round "
+          "（8.75→9，不是 int() 的 8）",
+          [(_bad101, len(_cases101))],
+          expect_contain=[([], len(_cases101))])
+
+    # ---- 101.2 真 tkinter 实测：旧写法必抛，新写法真的生效 ----
+    # 这条是整节的根：不复制"浮点被拒收"这个事实，将来有人把 `int(round(...))`
+    # 改回 `max/min` 也不会红（数值看起来完全一样）。
+    # ⚠️ 测试网顶部把 tkinter 塞成了**桩**（managed python 未必带 GUI 包），
+    #    直接 import 拿到的是桩 ⇒ 必须照 §99.6 的办法临时换真模块、跑完换回。
+    _g101 = None
+    _root101 = None
+    _saved101 = None
+    try:
+        _tk101 = sys.modules.get("tkinter")
+        if not hasattr(_tk101, "Tk"):
+            _saved101 = {k: sys.modules[k] for k in list(sys.modules)
+                         if k == "tkinter" or k.startswith("tkinter.")}
+            for _k101 in _saved101:
+                del sys.modules[_k101]
+            try:
+                _tk101 = _il101.import_module("tkinter")
+                _tf101 = _il101.import_module("tkinter.font")
+            except Exception:
+                _tk101 = None
+                _tf101 = None
+        else:
+            _tf101 = sys.modules.get("tkinter.font")
+        if (_tk101 is not None and hasattr(_tk101, "Tk")
+                and _tf101 is not None):
+            _root101 = _tk101.Tk()
+            _root101.withdraw()
+            _f101 = _tf101.Font(family="Consolas", size=10)
+            _old_ok101 = True
+            try:
+                # 旧写法逐字复刻：pt(9.75) + FONT_DELTA(-1) = 8.75（浮点）
+                _f101.configure(family="Consolas",
+                                size=max(8, min(24, 9.75 - 1)))
+            except Exception:
+                _old_ok101 = False          # ← 旧写法【必须】在这里失败
+            _new101 = UI101._clamp_font_size(9.75)
+            _f101.configure(family="Consolas", size=_new101)
+            _g101 = (_old_ok101, _new101, _f101.actual("size") == _new101)
+    except Exception:
+        _g101 = None                        # 没有 GUI —— 跳过（不算失败）
+    finally:
+        if _saved101 is not None:
+            for _k101 in [k for k in list(sys.modules)
+                          if k == "tkinter" or k.startswith("tkinter.")]:
+                del sys.modules[_k101]
+            sys.modules.update(_saved101)
+        try:
+            if _root101 is not None:
+                _root101.destroy()
+        except Exception:
+            pass
+    if _g101 is not None:
+        check("101.2 真 tkinter 实测：旧写法（浮点 8.75）**必抛 TclError**、"
+              "新写法（int 9）真的落到 Font 上 —— 这就是「字号从不跟随」的"
+              "根因；只比数值会假绿，所以这里连「抛不抛」一起断言",
+              [_g101], expect_contain=[(False, 9, True)])
+
+    # ---- 101.1b `_apply_font` 真的用了它（AST 查函数体）----
+    # 101.1 / 101.2 只证明"这个函数算得对"，证明不了"调用点用的是它"：
+    # 有人把 `_apply_font` 改回 `max(MIN, min(MAX, pt + FONT_DELTA))` 时，
+    # 上面两条依然全绿，而用户那边字号又不动了。
+    _apply101 = None
+    try:
+        with open(os.path.join(ROOT, "ui.py"), "r", encoding="utf-8") as _fu101:
+            _tree_u101 = _ast101.parse(_fu101.read())
+        for _n101 in _ast101.walk(_tree_u101):
+            if (isinstance(_n101, _ast101.FunctionDef)
+                    and _n101.name == "_apply_font"):
+                _apply101 = _n101
+                break
+    except Exception:
+        _apply101 = None
+    _calls_u101 = sorted({
+        _n.func.id for _n in _ast101.walk(_apply101)
+        if isinstance(_n, _ast101.Call)
+        and isinstance(_n.func, _ast101.Name)
+    }) if _apply101 is not None else []
+    check("101.1b `ui._apply_font` 算字号时**确实调用了** `_clamp_font_size`"
+          "（AST 查函数体，不搜源码字符串）—— 光测函数自己证明不了调用点，"
+          "改回 max/min 时 101.1/101.2 都会假绿",
+          [(_apply101 is not None, "_clamp_font_size" in _calls_u101)],
+          expect_contain=[(True, True)])
+
+    # ---- 101.3 recent 数据层：往返 + 六种坏输入 + 上限 + 原子写 ----
+    _dd101 = _t101.mkdtemp()
+    _old_env101 = os.environ.get("VBECOMPLETE_RECENT_FILE")
+    try:
+        os.environ["VBECOMPLETE_RECENT_FILE"] = os.path.join(_dd101, "r.json")
+
+        _p101 = os.path.join(_dd101, "ok.json")
+        _rt101 = RC101.save({"aaa": 1, "bbb": 5, "ccc": 3}, _p101)
+        _back101 = RC101.load(_p101)
+        _g_rt101 = (_rt101, list(_back101.keys()),
+                    RC101.load(os.path.join(_dd101, "nope.json")))
+
+        def _w101(name, text):
+            _pp = os.path.join(_dd101, name)
+            with open(_pp, "w", encoding="utf-8") as _f:
+                _f.write(text)
+            return _pp
+
+        _g_bad101 = (
+            RC101.load(_w101("a.json", "{not json")),        # 坏 json
+            RC101.load(_w101("b.json", "[1,2,3]")),          # 不是 dict
+            RC101.load(_w101("c.json",
+                             '{"foo":"bar","ok":3}')),       # 值不是数字
+            RC101.load(_w101("d.json",
+                             '{"foo":true,"ok":3}')),        # bool 是 int 子类
+            RC101.load(_w101("e.json",
+                             '{"foo":-1,"ok":3}')),          # 负序号
+            RC101.load(_w101("f.json", '{"  ":1,"ok":3}')),  # 空名字
+        )
+        # 超上限：600 条只留最新 512 条，且序号重排成 1..512
+        _big101 = {"n%03d" % _i: _i for _i in range(600)}
+        _bp101 = os.path.join(_dd101, "big.json")
+        RC101.save(_big101, _bp101)
+        _bl101 = RC101.load(_bp101)
+        _g_cap101 = (len(_bl101), max(_bl101.values()),
+                     "n599" in _bl101, "n000" in _bl101)
+
+        # 深层目录自动建 + 绝不残留 .tmp（stop.bat 是强杀，半截文件必须不存在）
+        _deep101 = os.path.join(_dd101, "x", "y", "z.json")
+        _ds101 = RC101.save({"a": 1}, _deep101)
+        _g_disk101 = (_ds101, os.path.exists(_deep101),
+                      os.path.exists(_deep101 + ".tmp"))
+
+        # 默认路径：项目根（不是 cwd），env 优先
+        _gpath101 = (RC101.path() == os.path.join(_dd101, "r.json"),
+                     RC101.DEFAULT_NAME == "recent.json")
+        _old_cwd101 = os.getcwd()
+        try:
+            os.chdir(_dd101)
+            _same_after_chdir = (RC101.path()
+                                 == os.path.join(_dd101, "r.json"))
+        finally:
+            os.chdir(_old_cwd101)
+
+        check("101.3 `recent` 数据层：save/load 往返保持先后次序（序号重排成 "
+              "1..N）；文件不存在 / 坏 json / 不是 dict 一律返回 {} 而不是抛",
+              [_g_rt101],
+              expect_contain=[(True, ["aaa", "ccc", "bbb"], {})])
+        check("101.3b 六种脏数据全部**跳过**而不是整个丢掉：值不是数字、"
+              "bool（`True` 是 int 子类，不排掉会变成 1）、负序号、空名字 "
+              "——只有合法的那条 `ok` 留下来",
+              [_g_bad101],
+              expect_contain=[({}, {}, {"ok": 1}, {"ok": 1},
+                               {"ok": 1}, {"ok": 1})])
+        check("101.3c 超过上限只留最新的一批（600 条 → 512），序号重排成 "
+              "1..512，最旧的 n000 被丢掉",
+              [_g_cap101], expect_contain=[(512, 512, True, False)])
+        check("101.3d 目标目录不存在时自动建；写完**不留 .tmp**"
+              "（直接覆盖写到一半被强杀会留下半截 json，下次读回来是空）",
+              [_g_disk101], expect_contain=[(True, True, False)])
+        check("101.3e 默认路径在**项目文件夹**（`__file__` 所在目录），"
+              "env 覆盖优先，且 chdir 之后不变（run.bat / pythonw 的 cwd 会漂）",
+              [(_gpath101, _same_after_chdir)],
+              expect_contain=[((True, True), True)])
+
+        # ---- 101.4 引擎集成：构造不读盘 → load → 排序跨实例一致 ----
+        class _U101:
+            def __init__(self):
+                self.shown = False
+
+            def show(self, *a, **k):
+                self.shown = True
+
+            def update_selection(self, *a, **k):
+                pass
+
+            def hide(self, *a, **k):
+                self.shown = False
+
+            def contains_point(self, *a, **k):
+                return False
+
+        class _B101:
+            def get_context(self):
+                return {"line_no": 1, "caret_col": 7, "line_text": "    get",
+                        "in_string": False, "in_comment": False,
+                        "in_type_position": False, "in_decl_position": False,
+                        "proc_name": "P", "module_name": "M"}
+
+            def get_identifiers(self):
+                # 长度相同、前缀相同、作用域相同 ⇒ 只有"最近使用"能分出胜负
+                return [("getAbc", "M", "P", False),
+                        ("getXyz", "M", "P", False)]
+
+            def apply_completion(self, *a, **k):
+                return None
+
+        # 先造一个"上次会话留下的"文件。⚠️ 这里存的名字必须与下面要记的
+        # `_target101` 无关 —— 第一版存的就是 `getxyz`，而 target 恰好也是
+        # `getXyz`，小写后是同一条 ⇒ 条数永远是 1，"跨实例恢复两条"的断言
+        # 反而失败。测试数据也要"互不干扰"，这类巧合最容易骗人。
+        RC101.save({"zzzother": 7}, RC101.path())
+        _c_init101 = E.Completer(_B101(), _U101())
+        _no_read101 = (dict(_c_init101._recent), _c_init101._recent_dirty)
+        _loaded101 = _c_init101.load_recent()
+        _after_load101 = dict(_c_init101._recent)
+
+        # 未加载的实例：当作"没有任何最近使用"的基线
+        _c_base101 = E.Completer(_B101(), _U101())
+        _c_base101.trigger()
+        _base101 = list(_c_base101.matches)
+        _target101 = _base101[-1]           # 原本排在后面的那个
+
+        # 记它一笔 → 本实例排序里它应该升到第一
+        _c_new101 = E.Completer(_B101(), _U101())
+        # 先 load（真实启动路径就是这样：main 构造完立刻 load_recent），
+        # 再记一笔 —— 否则 flush 会用"只含一个新名字"的内存表**覆盖**磁盘，
+        # 那是测试自己造出来的假故障，不是产品行为。
+        _c_new101.load_recent()
+        _c_new101._note_recent(_target101)
+        _dirty101 = _c_new101._recent_dirty
+        _flushed101 = _c_new101.flush_recent()
+        _again101 = _c_new101.flush_recent()      # 干净了就该返回 False
+        _c_new101.trigger()
+        _hot101 = list(_c_new101.matches)
+
+        # 换一个全新实例，只靠磁盘恢复
+        _c_reload101 = E.Completer(_B101(), _U101())
+        _n_reload101 = _c_reload101.load_recent()
+        _c_reload101.trigger()
+        _cold101 = list(_c_reload101.matches)
+
+        check("101.4 构造 `Completer()` **不读盘**（测试网要跑上千次构造，"
+              "绝不能让每条用例悄悄依赖用户机器上的真实数据）；显式 "
+              "`load_recent()` 才恢复，并顺带把序号基线到最大值",
+              [(_no_read101, _loaded101, _after_load101,
+                _c_init101._recent_seq)],
+              expect_contain=[(({}, False), 1, {"zzzother": 1}, 1)])
+        check("101.4b 落盘 + 跨实例：记一笔 → 脏标记亮 → flush 成功 → 再 "
+              "flush 返回 False（幂等）；新实例只靠 load 就能让**同一个名字**"
+              "重新排到第一，且这个顺序与基线不同（否则证明不了什么）",
+              [(_dirty101, _flushed101, _again101, _n_reload101,
+                _hot101 == _cold101, _base101 != _hot101)],
+              expect_contain=[(True, True, False, 2, True, True)])
+        check("101.4c 排序方向真的对：原本排在最后的 `%s` 被记一笔后升到第一，"
+              "且基线里它不是第一（否则这条用例证明不了任何事）"
+              % _target101,
+              [(_hot101[0] == _target101, _cold101[0] == _target101,
+                _base101[0] != _target101)],
+              expect_contain=[(True, True, True)])
+
+        # ---- 101.5 开关：默认开，`NO_RECENT_PERSIST=1` 关掉 ----
+        # 必须开子进程 —— 本进程的 engine 已经导入过了，改环境变量不影响常量。
+        def _flag101(env_val):
+            _code = ("import os,sys\n"
+                     "sys.path.insert(0, %r)\n"
+                     "import engine\n"
+                     "print(int(engine.PERSIST_RECENT))\n"
+                     "print(int(engine.RANK_BY_RECENT))\n" % ROOT)
+            _env = dict(os.environ)
+            _env.pop("VBECOMPLETE_NO_RECENT_PERSIST", None)
+            _env.pop("VBECOMPLETE_NO_RECENT_RANK", None)
+            if env_val is not None:
+                _env["VBECOMPLETE_NO_RECENT_PERSIST"] = env_val
+            try:
+                _r = _sp101.run([sys.executable, "-c", _code],
+                                capture_output=True, text=True, timeout=120,
+                                env=_env)
+                return _r.stdout.split()
+            except Exception:
+                return []
+
+        check("101.5 `PERSIST_RECENT` 默认**开**；`VBECOMPLETE_NO_RECENT_PERSIST=1` "
+              "关掉时行为退回 v118（既不读也不写）。子进程实测，不靠读常量表",
+              [(_flag101(None), _flag101("1"))],
+              expect_contain=[(["1", "1"], ["0", "1"])])
+    finally:
+        if _old_env101 is None:
+            os.environ.pop("VBECOMPLETE_RECENT_FILE", None)
+        else:
+            os.environ["VBECOMPLETE_RECENT_FILE"] = _old_env101
+        _sh101.rmtree(_dd101, ignore_errors=True)
+
+    # ---- 101.6 轮询里确实调了 flush_recent（AST 查函数体）----
+    # 只在 accept 里置脏、却忘了在轮询里写盘 ⇒ 功能完全失效，而上面每一条
+    # 都还是绿的（它们直接调 flush_recent）。只能用 AST 看 poll_editor 里
+    # 有没有这个调用。⚠️ 不搜源码字符串：注释里的 `flush_recent` 会把它喂饱。
+    _poll101 = None
+    try:
+        with open(os.path.join(ROOT, "main.py"), "r", encoding="utf-8") as _f:
+            _tree101 = _ast101.parse(_f.read())
+        for _n101 in _ast101.walk(_tree101):
+            if (isinstance(_n101, _ast101.FunctionDef)
+                    and _n101.name == "poll_editor"):
+                _poll101 = _n101
+                break
+    except Exception:
+        _poll101 = None
+    _calls101 = sorted({
+        _n.func.attr for _n in _ast101.walk(_poll101)
+        if isinstance(_n, _ast101.Call)
+        and isinstance(_n.func, _ast101.Attribute)
+    }) if _poll101 is not None else []
+    check("101.6 `main.poll_editor` 里**确实调用了** `flush_recent`"
+          "（AST 查函数体；只在 accept 置脏、忘了在轮询写盘的话，"
+          "上面所有用例都还是绿的，而功能完全失效）",
+          [(_poll101 is not None, "flush_recent" in _calls101,
+            "load_recent" in _calls101)],
+          expect_contain=[(True, True, False)])
+
+    # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原
     #     这不是在测产品代码，而是在测【测试网自己】：一节忘了还原，后面每一节
     #     都会悄悄跑在别人的假对象上，而**不会有任何一条用例变红**。

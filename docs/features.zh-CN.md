@@ -163,6 +163,10 @@
     排到同分候选的前面（`accept()` 里记一笔）。只记最近 `VBECOMPLETE_RECENT_MAX`（默认 64）个，
       
     超出按最旧 1/4 批量淘汰。想关掉：`set VBECOMPLETE_NO_RECENT_RANK=1`。
+      
+    **★v119 起这张表会落盘**（项目文件夹的 `recent.json`，跨会话累积 —— 重启后
+    "最近用过的"依然排前面，不再每次开机从零开始教）。想让它只活在本次进程里：
+    `set VBECOMPLETE_NO_RECENT_PERSIST=1`。详见 v119 小节。
   - ⚠️ 这两层都只放在**决胜局**（命中质量之后、长度之前）—— 命中质量永远第一优先，
       
     所以"打了 `msgbox` 就选 `MsgBox`"这类强匹配不受影响；只有真正同分时才看出差别。
@@ -1642,6 +1646,80 @@ _min_gap = ID_REFRESH_MIN_SEC if _decl_like else ID_REFRESH_MIN_SEC_PLAIN   # 0.
 全量重解析 vs 命中缓存必须逐字相同）/ 当前模块不进缓存 / 引用清单缓存生效）。A/B 两处
 独立回退各自只红 100.4：漏重放 `declared`、漏重放 `type_names` —— 其余 1048 条全绿。
 
+### v119：候选窗字号真的跟随 VBE / 「最近使用」跨会话累计
+
+这一版没有新功能 —— 是在 v118 量"弹窗反应速度"的路上顺手撞出来的两个缺口，
+都属于**用户能感知、却永远不会报错**那一类（所以从来没人报过）。
+
+#### ① 字号从来没跟随过 VBE（改了 1 行）
+
+`ui._apply_font()` 的设计意图是对的：读注册表里 VBE 的 `FontFace` / `FontHeight`，
+算出点数、比它小一号（`FONT_DELTA = -1`），而且**每次弹出都刷新**（VBE 里改了字号即时生效）。
+但算出来的 `size` 是**浮点数**：
+
+```python
+size = max(MIN_FONT_SIZE, min(MAX_FONT_SIZE, pt + FONT_DELTA))   # 11.0 / 8.75
+```
+
+而 tkinter 的 `font configure -size` **只收整数**（负数 = 像素，正数 = 点）。真机复现：
+
+```
+TclError: expected integer but got "9.75"
+```
+
+更糟的是那里有两个嵌套的 `except: pass` 兜底 —— 异常被吞得干干净净，于是：
+
+> **候选窗永远停在初始化时的 `Consolas 10`。** 你在 VBE 里把编辑器调成 14pt、
+> 或者换成别的等宽字体，弹窗纹丝不动。
+
+修法：抽一个纯函数 `ui._clamp_font_size(pt)`，用 `round` 取整（`8.75 → 9`；
+用 `int()` 会变成 8，偏小一档，而候选窗本来就小一号了），并顺手兜住 `None` /
+`NaN` / `±inf` / 字符串（NaN 特别要单独判 —— `min(24, nan)` 返回 `nan`，
+一路穿过钳位、最后 `round()` 抛 `ValueError`）。
+
+#### ② 「最近使用优先」活不过一次重启
+
+`engine._recent` 是**纯内存**字典：`accept()` 里记一笔，按 `RECENT_MAX`（64）淘汰最旧，
+排序时作为"同分决胜"的一项。问题是 `stop.bat` 用的是 `Stop-Process -Force`（强杀），
+**退出钩子根本跑不到** —— 一停进程，这张表就没了：
+
+> 等于每次开机都要重新"教"它一遍。IDEA 那个「最近用过的排前面」是跨会话累积的
+> （今天调过的函数，明天打开还在前面），我们只在单次进程内有效。
+
+修法：新增 `recent.py`（数据层，**不碰 tkinter / COM**，可单独单测），存成
+**项目文件夹**里的 `recent.json`（与 `snippets.db` 同一策略，`__file__` 定位，
+`VBECOMPLETE_RECENT_FILE` 可覆盖）。只存"名字（小写）+ 递增序号"，几十条、几 KB。
+
+三处关键设计：
+
+1. **写盘绝不在按键路径上**。`_note_recent` 只置 `_recent_dirty`；真正写文件由
+   `main.poll_editor`（100 ms 一轮）**每 2 秒看一眼**——干净时只是一次布尔判断，
+   脏了才写一个几 KB 的 json（<1 ms）。被强杀最坏丢最后 2 秒的那几次确认。
+2. **构造 `Completer()` 不读盘**，由 `main` 启动时显式调 `load_recent()`。
+   测试网里 `Completer` 被构造上千次 —— 构造期读文件既拖慢用例，又会让每条用例
+   悄悄依赖**用户机器上的真实数据**（那是最难查的"我这里过你那里不过"）。
+3. **原子写**（临时文件 + `os.replace`）+ **坏文件一律返回 `{}`**。半截 json 会让
+   下次读回来是空的 = 用户的"最近使用"整个丢掉；而读到坏数据绝不能让工具起不来。
+
+序号在读回时**重排成 1..N**（保持先后次序）：只有"谁比谁更近"有意义，绝对数值没有，
+重排后淘汰逻辑永远从干净的小整数起步。
+
+**开关**：`set VBECOMPLETE_NO_RECENT_PERSIST=1` —— 既不读也不写文件，
+行为与 v118 完全一致（A/B 用）。
+
+#### 回归
+
+新增 §101（12 条）：字号纯函数 12 种输入（含 `NaN`/`±inf`/越界，**断言返回类型是 int**
+—— 只比数值会假绿，`float(9) == 9` 成立）、**真 tkinter 实测**"旧写法必抛、新写法生效"、
+`_apply_font` 确实调用了它（AST 查函数体）、`recent` 往返与六种脏数据、上限截断、
+原子写不留 `.tmp`、默认路径不随 `cwd` 漂、构造不读盘、跨实例排序真的生效、
+开关子进程实测、`poll_editor` 里确实调了 `flush_recent`（AST）。
+
+A/B 四处独立回退：改回浮点字号 → 只红 101.1b（**而 101.1/101.2 依然全绿**，正是补
+那条 AST 护栏的原因）；`load_recent` 恒返回 0 → 只红 101.4/101.4b/101.4c；
+不置脏标记 → 红 101.4b/101.4c；轮询里不写盘 → 只红 101.6（其余 1061 条全绿，
+说明"忘了写盘"这种失效，只靠行为用例根本抓不到）。
+
 ## 与 IntelliJ IDEA 的对照
 
 这个项目的目标就是**把 IDEA 那套"聪明补全"搬进 VBE**。VBE 原生只对 `对象.成员`
@@ -1756,11 +1834,12 @@ IDEA 的这些能力**都建立在一个前提上：IDE 手里有整个工程的
 | `ui.py`                                                         | 候选弹窗（tkinter）与避让逻辑                   |
 | `snippet_ui.py`                                                 | 代码片段窗（`Ctrl+Q`，tkinter）：搜索、增删改、插入按钮 |
 | `snippets.py`                                                   | 代码片段库（SQLite 两列）+ 标题模糊匹配，纯数据层、不碰界面与 COM |
+| `recent.py`                                                     | **最近用过的名字**（`recent.json`）：读 / 原子写 / 坏文件容错、序号重排，纯数据层（v119） |
 | `log.py`                                                        | 诊断日志开关（默认关闭、零开销），见下                  |
 | `requirements.txt`                                              | 依赖（`pywin32` / `pynput`）             |
 | `run.bat` / `stop.bat` / `stop.ps1`                             | 启停                                   |
 | `install_autostart.ps1` / `uninstall_autostart.ps1`（及对应 `.bat`） | 开机自启的安装与卸载                           |
-| `tests/` + `run_tests.bat`                                      | **回归测试**（1049 条），见下；另有三个手工探针：`probe_ime_mode.py`（问输入法转换模式）、`probe_hook_gate.py`（实证钩子门控 / 前台窗口卡死对主线程的影响）、`probe_perf.py`（量弹窗链路的耗时：`get_context` / 全量重解析 / 打分曲线） |
+| `tests/` + `run_tests.bat`                                      | **回归测试**（1062 条），见下；另有三个手工探针：`probe_ime_mode.py`（问输入法转换模式）、`probe_hook_gate.py`（实证钩子门控 / 前台窗口卡死对主线程的影响）、`probe_perf.py`（量弹窗链路的耗时：`get_context` / 全量重解析 / 打分曲线） |
 
 ## 附：跑回归测试与 log.py 说明（原文）
 

@@ -19,6 +19,11 @@ snippets.db-journal
 snippets.db-wal
 snippets.db-shm
 
+# ---- 用户数据：最近使用过的名字（★v119 起默认就在项目文件夹里）----
+# 只是"你常用哪些名字"的序号表，几 KB；同样是本机状态，不进仓库。
+recent.json
+recent.json.tmp
+
 # ---- 调试输出 ----
 _dbg.txt
 _o.txt

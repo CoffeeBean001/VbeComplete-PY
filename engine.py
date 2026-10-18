@@ -28,6 +28,7 @@ import re
 import time
 
 import parser as vba_parser
+import recent as _recent_store
 
 # ★v98：内建数据类型名（小写）的惰性缓存。首次用时才 import vba_builtins。
 # ★v99 补上内建**函数**名的白名单缓存（见 _builtin_function_names）。
@@ -1085,6 +1086,13 @@ RANK_BY_SCOPE = (os.environ.get("VBECOMPLETE_NO_SCOPE_RANK", "0").strip() != "1"
 RANK_BY_RECENT = (os.environ.get("VBECOMPLETE_NO_RECENT_RANK", "0").strip() != "1")
 # 最近使用表最多记多少个名字（超了丢最旧的一批）。只存名字、不存内容。
 RECENT_MAX = _env_int("VBECOMPLETE_RECENT_MAX", 64)
+# ★v119：把这张表**落盘**，跨会话累计（否则 stop.bat 一停就清零）。
+# 关掉：`set VBECOMPLETE_NO_RECENT_PERSIST=1`（此时既不读也不写文件，
+# 行为与 v118 完全一致 —— A/B 用）。
+# ⚠️ 写入**绝不在按键路径上**（accept 里只置脏标记），由 main 的轮询
+# 每 2 秒看一眼 —— 见 Completer.flush_recent 与 main.poll_editor。
+PERSIST_RECENT = (os.environ.get(
+    "VBECOMPLETE_NO_RECENT_PERSIST", "0").strip() != "1")
 
 
 # ★v93：这里原来还有一个 `_name_exists_outside_caret(backend, word, line_no,
@@ -1139,8 +1147,13 @@ class Completer:
         #   （IDEA 的 "recently used" 相关度信号）。只存名字，不存内容；
         #   上限 RECENT_MAX 条，超了丢最旧的一批。
         #   只在【命中质量完全相同】时才起作用，绝不顶掉匹配得更好的候选。
+        #   ★v119：这张表现在**会落盘**（recent.json，见 load_recent /
+        #   flush_recent）—— 原来只在内存里，stop.bat 一停就清零，等于
+        #   每次开机都从零重新"教"它一遍。
         self._recent = {}
         self._recent_seq = 0
+        # 脏标记：_note_recent 只置它，写盘留给主线程轮询（绝不在按键路径写文件）
+        self._recent_dirty = False
         # _scope_rank: 本次触发里各候选的【作用域档位】（4 本过程局部/参数 >
         #   3 本模块模块级 > 2 其它模块 Public）。由 trigger 每次重建 ——
         #   绝不像 v94b 的 `_sem_cache` 那样跨触发沿用（那是把"某一次的结论"
@@ -2846,12 +2859,63 @@ class Completer:
             self._accept_key = None
             self._accept_pinned = False
 
+    # ---- ★v119：最近使用表的落盘（跨会话累计） ----
+    def load_recent(self):
+        """从磁盘恢复"最近使用"表，返回恢复的条数。
+
+        **刻意不在 `__init__` 里做**：Completer 在测试网里被构造上千次，
+        构造期读文件既拖慢用例、又让每条用例悄悄依赖用户机器上的真实数据
+        （那是最难查的一类"我这里过你那里不过"）。由 main 在启动时显式调
+        一次，测试里也直接调 —— 谁要这个状态谁负责加载。
+        """
+        if not (PERSIST_RECENT and RANK_BY_RECENT):
+            return 0
+        try:
+            data = _recent_store.load()
+        except Exception:
+            return 0
+        if not data:
+            return 0
+        # 文件里的条数可能超过用户后来调小的 RECENT_MAX —— 截到最新的那批
+        if len(data) > RECENT_MAX:
+            keep = sorted(data.items(), key=lambda kv: kv[1],
+                          reverse=True)[:RECENT_MAX]
+            data = dict(keep)
+        self._recent = data
+        self._recent_seq = max(data.values())
+        self._recent_dirty = False
+        return len(self._recent)
+
+    def flush_recent(self, force=False):
+        """脏了才写盘；没变化直接返回 False（一次布尔判断，零开销）。
+
+        ⚠️ **绝不在按键路径上调用**：`_note_recent` 只置脏标记，真正写文件
+        在这里，由 main 的轮询每 2 秒看一眼（见 `main.poll_editor`）。
+        写一次是几 KB 的 json（<1ms），但按键路径上连这 1ms 也不该有。
+
+        被 `stop.bat`（`Stop-Process -Force`）强杀时来不及写 ——
+        最坏情况丢最后 2 秒内的那几次确认，可接受，写在文档里。
+        """
+        if not (PERSIST_RECENT and RANK_BY_RECENT):
+            return False
+        if not (self._recent_dirty or force):
+            return False
+        try:
+            ok = _recent_store.save(self._recent)
+        except Exception:
+            ok = False
+        if ok:
+            self._recent_dirty = False
+        return ok
+
     def _note_recent(self, name):
         """记一笔"这个字刚被用过" —— ★v103，IDEA 的 recently used 相关度信号。
 
         只记名字（小写）+ 一个单调递增的序号，不存任何内容，开销可忽略。
         `accept()` 与 `pick()` 都走 `accept()`，所以两处（Tab 与鼠标点选）
         自动都记上。
+
+        ★v119：这里**只置脏标记**，不写盘（见 flush_recent）。
 
         ⚠️ 关掉：`set VBECOMPLETE_NO_RECENT_RANK=1`（此时本函数第一行就返回，
         排序里那个分量恒为常量 ⇒ 与没加这一条完全等价）。
@@ -2870,6 +2934,7 @@ class Completer:
                                key=lambda kv: kv[1])[:max(1, RECENT_MAX // 4)]
                 for _k, _v in _drop:
                     self._recent.pop(_k, None)
+            self._recent_dirty = True
         except Exception:
             pass
 

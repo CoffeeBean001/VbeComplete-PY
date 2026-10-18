@@ -1077,6 +1077,14 @@ def main():
         popup = Popup(root)
         # 滚动窗口行数以 UI 为准（两边必须是同一个数，否则窗口会露出半行）
         completer = engine.Completer(backend, popup, view_rows=MAX_VISIBLE_ROWS)
+        # ★v119：恢复"最近用过"的名字（跨会话累计）。失败一律静默 ——
+        # 一个几 KB 的小 json 读不到，绝不该影响工具启动。
+        try:
+            _n_recent = completer.load_recent()
+            if _n_recent:
+                _log("recent: 从磁盘恢复 %d 条最近使用" % _n_recent)
+        except Exception:
+            pass
         # ★v115：代码片段窗。数据库**惰性打开**（第一次 Ctrl+Q 才建库文件）——
         # 不用这个功能的人不该被塞一个空数据库。
         snippet_win = snippet_ui.SnippetWindow(root, snippets.SnippetStore())
@@ -2143,6 +2151,16 @@ def main():
         VBE 不可用时 snapshot() 返回 None，自然退化为空转。
         """
         try:
+            # ★v119：把"最近使用"表定期写回磁盘（跨会话累计）。
+            # **绝不能放在 accept 的按键路径上**（那里只置脏标记），这里每 2 秒
+            # 看一眼：干净时只是一次布尔判断，脏了才写一个几 KB 的 json（<1ms）——
+            # 100ms 一轮的预算里完全塞得下。被 stop.bat 强杀最多丢最后 2 秒的确认。
+            if time.time() >= state.get("_recent_flush_next", 0.0):
+                state["_recent_flush_next"] = time.time() + 2.0
+                try:
+                    completer.flush_recent()
+                except Exception:
+                    pass
             # v74：提示窗签名【每轮都采样】，不再"只在候选窗可见时采"。
             #
             # v66 起这句是写在 if completer.is_visible() 里面的。于是候选窗

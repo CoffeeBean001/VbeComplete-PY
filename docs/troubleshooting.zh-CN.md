@@ -900,6 +900,18 @@
   ⚠️ v116 之前的老库在 `%APPDATA%\VbeComplete\snippets.db`，新版不再读它 ——
   想把旧片段搬过来，就把那个文件拷到项目文件夹、改名 `snippets.db`。
 
+- **候选窗的字号跟编辑器不一样大 / 改了 VBE 字体它也不动**：设计上就比 VBE **小一号**
+  （`ui.FONT_DELTA = -1`），而且**每次弹出都重新读**注册表里 VBE 的字体设置。
+  ★v119 之前这里有个 bug：算出来的字号是浮点数，tkinter 只收整数（`TclError: expected
+  integer but got "9.75"`），两个 `except: pass` 把它吞掉 ⇒ 候选窗**永远**停在
+  `Consolas 10`。升级后即正常跟随。想让它和编辑器**一样大**：把 `ui.py` 里的
+  `FONT_DELTA` 改成 `0`（改完记得 `stop.bat` → `run.bat`）。
+- **项目文件夹里多了一个 `recent.json`**：那是"最近用过的名字"表（★v119），
+  只存**名字 + 序号**、几十条几 KB，作用是让常用名字跨会话排在前面。
+  删掉它 = "重新开始学"，不影响任何功能；不想让它落盘就
+  `set VBECOMPLETE_NO_RECENT_PERSIST=1`（行为退回 v118，只活在内存里）。
+  它在 `.gitignore` 里 —— 是你机器上的使用习惯，不该进仓库。
+
 ## 更新后如何生效
 
 Python 在**启动时**把 `.py` 读进内存，只替换文件而不重启进程，跑的仍然是旧代码。
