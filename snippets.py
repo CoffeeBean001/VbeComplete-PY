@@ -10,8 +10,9 @@
    重命名走 `UPDATE snippets SET title=? WHERE title=?`（见 `rename`）。
    用户打开库看到的列数与要求一致。
 
-文件位置：`%APPDATA%\\VbeComplete\\snippets.db`
-    `VBECOMPLETE_SNIPPET_DB` 可覆盖（测试用临时库、便携版放 U 盘都靠它）。
+文件位置：★v116（用户口径："能帮我把建的库，默认位置放在项目文件夹里吗？"）
+    ⇒ 默认就在**本模块所在目录**（项目文件夹）的 `snippets.db`，一眼能找到、打包
+    搬走就跟着走。`VBECOMPLETE_SNIPPET_DB` 可覆盖（测试用临时库、想放别处都靠它）。
 
 本模块**不碰 tkinter、不碰 COM**：全是纯数据操作，可单独单测（§99）。
 """
@@ -30,16 +31,18 @@ CREATE TABLE IF NOT EXISTS snippets (
 DEFAULT_DB_NAME = "snippets.db"
 ENV_DB = "VBECOMPLETE_SNIPPET_DB"
 
+# 项目文件夹 = 本文件所在目录。★必须用 `__file__` 而不是 `os.getcwd()`：
+# 本工具常由 `run.bat` / pythonw 拉起，工作目录未必是项目根（双击快捷方式、
+# 从别的目录调用都会变），一旦错位就会在别处又建一个空库。
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def db_path():
-    """库文件路径：环境变量优先，否则 `%APPDATA%\\VbeComplete\\snippets.db`。"""
+    """库文件路径：环境变量优先，否则**项目文件夹**里的 `snippets.db`。"""
     p = (os.environ.get(ENV_DB) or "").strip()
     if p:
         return p
-    base = (os.environ.get("APPDATA") or "").strip()
-    if not base:
-        base = os.path.join(os.path.expanduser("~"), ".config")
-    return os.path.join(base, "VbeComplete", DEFAULT_DB_NAME)
+    return os.path.join(PROJECT_DIR, DEFAULT_DB_NAME)
 
 
 # ---------------------------------------------------------------------------

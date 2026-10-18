@@ -81,7 +81,9 @@
   code box on the right. Clicking a title shows its code; **Insert at caret** writes it into the
   editor, closes the window and gives focus back to the VBE. The store is SQLite with **two
   columns** — `title TEXT PRIMARY KEY, code TEXT NOT NULL` — at
-  `%APPDATA%\VbeComplete\snippets.db` (created on first use; `VBECOMPLETE_SNIPPET_DB` overrides).
+  **in the project folder** as `snippets.db` (created on first use; `VBECOMPLETE_SNIPPET_DB` overrides).
+  ★v116: it used to live in `%APPDATA%\VbeComplete\` — the user asked for it to sit next to the code so
+  it is easy to find and travels with the folder (it is in `.gitignore`, it is your data, not source).
   Titles are **fuzzy searchable**: exact title > prefix > contiguous substring > subsequence
   (`gc` finds `GetCode`), space-separated terms are ANDed. Chinese is matched by **character**
   (`数据` finds `数据处理`), not by pinyin initials — that would need a whole pinyin table.
@@ -157,7 +159,7 @@ Behaviour is tuned through environment variables (set them before launching):
 | `VBECOMPLETE_NO_CTRL_NAV` | off | `1` disables the `Ctrl+↑` / `Ctrl+↓` jumps; the keys stay with the VBE. |
 | `VBECOMPLETE_NO_CTRL_NAV_TAB` | off | `1` keeps the `Ctrl+↓` jump but never adds the procedure-level indent to the landing line. |
 | `VBECOMPLETE_NO_SNIPPETS` | off | `1` disables the `Ctrl+Q` snippet window; the key stays with the VBE. |
-| `VBECOMPLETE_SNIPPET_DB` | `%APPDATA%\VbeComplete\snippets.db` | Where the snippet database lives (portable installs / tests point it elsewhere). |
+| `VBECOMPLETE_SNIPPET_DB` | `<project folder>\snippets.db` | Where the snippet database lives (portable installs / tests point it elsewhere). |
 
 ## Project structure
 

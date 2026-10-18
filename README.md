@@ -59,7 +59,7 @@ is inserted instead of being converted to ASCII. A `(` only auto-closes when not
 is to its right — **except inside a call's argument list or a procedure's parameter list, where it
 always closes** (`foo(bar` + `(` -> `foo(bar())`) — and typing `"` or `(` over a selection wraps it
 (`abc` -> `"abc"` / `(abc)`). **Snippet library (`Ctrl+Q`)**: a SQLite database with **two columns**
-(title / code) at `%APPDATA%\VbeComplete\snippets.db` (created on first use). The window opens at
+(title / code) **in the project folder** (`snippets.db`, created on first use). The window opens at
 your caret; the title list is **fuzzy searchable** — a contiguous substring ranks first, but initials
 work too (`gc` finds `GetCode`), and space-separated terms must all match. Inserting writes the
 snippet **verbatim** at the caret (your own indentation is kept), leaves the caret after it, closes

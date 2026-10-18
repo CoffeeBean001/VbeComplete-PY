@@ -1529,8 +1529,13 @@ CREATE TABLE IF NOT EXISTS snippets (
 
 - 刻意**只有两列**：标题天然唯一、直接当主键，所以没有 id 列。重命名就是
   `UPDATE snippets SET title=? WHERE title=?`。
-- 文件在 `%APPDATA%\VbeComplete\snippets.db`，**第一次按 `Ctrl+Q` 才建**（不用这个
-  功能的人不该被塞一个空库）。`VBECOMPLETE_SNIPPET_DB` 可指到别处（测试 / 便携版）。
+- 文件默认就在**项目文件夹**里的 `snippets.db`（★v116 用户口径：要一眼能找到），
+  **第一次按 `Ctrl+Q` 才建**（不用这个功能的人不该被塞一个空库）。路径由
+  `snippets.PROJECT_DIR`（= `snippets.py` 所在目录）拼出来，**不看启动时的 cwd**
+  —— 从别处双击 / `pythonw` 拉起也不会在别的地方又建一个空库。
+  想放别处（测试 / 便携版）就设 `VBECOMPLETE_SNIPPET_DB`。
+  ⚠️ `snippets.db` 已进 `.gitignore`：那是你的片段数据、不是源码，别跟着提交。
+  v116 之前建的旧库在 `%APPDATA%\VbeComplete\snippets.db`，已经不用了，可自行删。
 - 同标题「新增」不覆盖 —— 返回失败并在状态栏提示改用「保存修改」（不静默丢数据）。
 
 **标题模糊搜索**（纯函数 `snippets.match` / `search`）：四档命中，强度递减 ——

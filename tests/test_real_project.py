@@ -18054,7 +18054,7 @@ def main():
         # ---- 99.2 存储：SQLite 两列（标题 / 代码）----
         _d99 = _tf99.mkdtemp()
         try:
-            # 目录不存在时自己建（%APPDATA%\VbeComplete 首次使用时同理）
+            # 目录不存在时自己建（项目文件夹里的 snippets.db 首次使用时同理）
             _p99 = os.path.join(_d99, "new", "snippets.db")
             _st99 = SN99.SnippetStore(_p99)
             _r99 = (
@@ -18085,6 +18085,37 @@ def main():
                   [_r99], expect_contain=[_w99b])
         finally:
             _sh99.rmtree(_d99, ignore_errors=True)
+
+        # ---- 99.2b 库的默认位置：**项目文件夹里**（★v116 用户口径）----
+        # "能帮我把建的库，默认位置放在项目文件夹里吗？"
+        # 判据要点：① 默认路径就在 `snippets.py` 所在目录；② 文件名是
+        # snippets.db；③ 不依赖 cwd（用 `__file__`）；④ 环境变量仍然一票优先。
+        _proj99 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _bak99 = os.environ.pop(SN99.ENV_DB, None)
+        _envdir99 = _tf99.mkdtemp()
+        try:
+            _pdef99 = SN99.db_path()
+            _cwd99 = os.getcwd()
+            try:
+                os.chdir(_tf99.gettempdir())      # cwd 换掉也不该跟着变
+                _pdef99b = SN99.db_path()
+            finally:
+                os.chdir(_cwd99)
+            os.environ[SN99.ENV_DB] = os.path.join(_envdir99, "mine.db")
+            _penv99 = SN99.db_path()
+        finally:
+            if _bak99 is None:
+                os.environ.pop(SN99.ENV_DB, None)
+            else:
+                os.environ[SN99.ENV_DB] = _bak99
+            _sh99.rmtree(_envdir99, ignore_errors=True)
+        check("99.2b `snippets.db_path`：库默认落在**项目文件夹**（`snippets.py` 所在"
+              "目录），不依赖启动时的工作目录；`VBECOMPLETE_SNIPPET_DB` 仍然优先",
+              [(_pdef99, os.path.dirname(os.path.abspath(SN99.__file__)),
+                _pdef99 == _pdef99b, _penv99)],
+              expect_contain=[(os.path.join(_proj99, "snippets.db"),
+                               _proj99, True,
+                               os.path.join(_envdir99, "mine.db"))])
 
         # ---- 99.3 光标落点判据（纯函数）----
         _g99c = (

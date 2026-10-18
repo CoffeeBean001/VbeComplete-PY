@@ -12,6 +12,13 @@ venv/
 # ---- 本地工具状态（AI 协作记录 / 项目记忆，非源码）----
 .workbuddy/
 
+# ---- 用户数据：代码片段库（★v116 起默认就在项目文件夹里）----
+# 里面是你自己的片段，不该进仓库；想连库一起带走的换个位置备份即可。
+snippets.db
+snippets.db-journal
+snippets.db-wal
+snippets.db-shm
+
 # ---- 调试输出 ----
 _dbg.txt
 _o.txt
