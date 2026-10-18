@@ -179,6 +179,33 @@
   really is a toggle; a selection that *ends* at column 1 is treated as excluding its last line, matching
   IDEA. `VBECOMPLETE_NO_COMMENT=1` turns it off.
 
+- **v121 — module outline (`Ctrl+Shift+O`) and textual find references (`Ctrl+Shift+F`).**
+  Both keys open **one** window (`jump_ui.JumpWindow`): a single fuzzy-searchable column, `Enter` to
+  jump. Nothing is uploaded, nothing is guessed, and **not a single byte of code is written** — these
+  are navigation only. The outline lists the **current module's** `Sub` / `Function` /
+  `Property Get|Let|Set` / `Declare`, with line numbers, a `Private` marker and the procedure header
+  as the subtitle. Find references takes the name under the caret and lists every **whole-word** hit
+  in the **active project** (module + line + that line's text), current module first, declaring
+  occurrences marked. Searching reuses `snippets.search`, so both feel exactly like the snippet window.
+
+  Choices worth knowing: **`Event` is excluded** (event names are not in the completion pool — the
+  same rule as "silent while declaring"); the matcher is `(?<!\w)name(?!\w)` with `re.IGNORECASE`
+  rather than a lower-cased copy of the module, because `"İ".lower()` changes length and every index
+  after it would shift; hits inside **strings and comments do not count** (the same `scan_code_states`
+  pass that `Ctrl+/` uses); the caret always lands at **column 1**, because `SetSelection` takes
+  *display* columns and any self-conversion goes wrong on lines containing full-width characters;
+  and before jumping, the target line is re-checked (must be non-blank, must contain the expected
+  name) — if the line number has drifted, **it does not jump** rather than dropping the caret into
+  unrelated code. A failed jump **keeps the window open** and explains itself in red underneath.
+
+  One hard COM limit: a `VBComponent` has **no `CodePane` property** (verified: `AttributeError:
+  <unknown>.CodePane`), and `vbe.CodePanes` only contains panes that **have already been opened**
+  (24 components, 6 panes on this machine). A module that was never opened therefore cannot be jumped
+  into at all — the list marks it, and double-clicking it in the VBE once is the workaround. Also note
+  these two features differ from `Ctrl+Q` in one place: **they read COM themselves**, so the hook gate
+  keeps the "do not take over while COM is backing off" check (swallowing the key and then failing to
+  open the window feels like nothing happened). `VBECOMPLETE_NO_OUTLINE=1` / `VBECOMPLETE_NO_USAGES=1`.
+
 **Coexistence**
 
 - After `object.`, VbeComplete steps aside and lets the VBE's own, type-aware member list take over.
@@ -212,17 +239,21 @@ semantic infrastructure.
 | Smart indentation and automatic block closers | ✅ |
 | Start a new line (`Shift+Enter`) | ✅ |
 | Toggle line comment (`Ctrl+/`) | ✅ |
+| File structure outline (`Ctrl+Shift+O`) | ✅ |
+| Find usages (`Ctrl+Shift+F`) — textual only, no scope resolution | ⚠️ partial |
 | Trailing space for keywords; `()` after functions | ✅ |
 | No completion while declaring a new name | ✅ |
 | Type-aware member completion | Delegated to the VBE's native member list |
 
 **Deliberately not implemented**
 
-Go-to-definition, Find Usages, rename refactoring, live syntax/error checking, postfix completion
-and live templates all depend on a full, always-current semantic model of the project — type
-inference, symbol tables, a dependency graph. The VBE exposes only the *plain text* of a
-`CodeModule`, so rebuilding a compiler front-end on top of it would be costly and fragile; the
-risk/benefit simply doesn't add up.
+Go-to-definition, rename refactoring and live syntax/error checking all depend on a full,
+always-current semantic model of the project — type inference, symbol tables, a dependency graph.
+The VBE exposes only the *plain text* of a `CodeModule`, so rebuilding a compiler front-end on top of
+it would be costly and fragile; the risk/benefit simply doesn't add up. Two partial answers exist
+instead of the real thing: **find usages is textual** (v121, `Ctrl+Shift+F` — it tells you where the
+characters appear, not which symbol they bind to), and **live templates became a snippet library**
+(v115, `Ctrl+Q` — you pick a snippet, the tool never guesses an abbreviation).
 
 ## Configuration
 
@@ -256,6 +287,8 @@ different ini file (portable installs and tests).
 | `VBECOMPLETE_NO_CTRL_NAV_TAB` | off | `1` keeps the `Ctrl+↓` jump but never adds the procedure-level indent to the landing line. |
 | `VBECOMPLETE_NO_SNIPPETS` | off | `1` disables the `Ctrl+Q` snippet window; the key stays with the VBE. |
 | `VBECOMPLETE_NO_COMMENT` | off | `1` disables `Ctrl+/` comment toggling; the key stays with the VBE. |
+| `VBECOMPLETE_NO_OUTLINE` | off | `1` disables the `Ctrl+Shift+O` module outline. |
+| `VBECOMPLETE_NO_USAGES` | off | `1` disables `Ctrl+Shift+F` find references. |
 | `VBECOMPLETE_SETTINGS` | `<project folder>\settings.ini` | Which ini file to read (portable installs / tests). |
 | `VBECOMPLETE_SNIPPET_DB` | `<project folder>\snippets.db` | Where the snippet database lives (portable installs / tests point it elsewhere). |
 | `VBECOMPLETE_NO_MOD_CACHE` | off | `1` goes back to re-parsing every module on each refresh (v117 behaviour). Only useful for A/B timing; the per-module cache is what keeps a refresh at ~27 ms instead of ~224 ms. |
@@ -271,12 +304,13 @@ different ini file (portable installs and tests).
 | `vba_builtins.py` | VBA built-in vocabulary (functions, types, keywords, enums) |
 | `ui.py` | The floating popup (tkinter) and its screen-avoidance logic |
 | `snippet_ui.py` | The snippet window (`Ctrl+Q`): search, add / edit / delete, insert button |
+| `jump_ui.py` | The outline / find-references window (v121, `Ctrl+Shift+O` and `Ctrl+Shift+F`): one fuzzy-searchable list, `Enter` to jump; a failed jump keeps the window open and says why |
 | `snippets.py` | The snippet store (SQLite, two columns) and fuzzy title matching — no UI, no COM |
 | `recent.py` | The recently-used table (`recent.json`): load, atomic save, corrupt-file tolerance — no UI, no COM (v119) |
 | `settings.py` | The configuration centre (v120): `settings.ini` parsing, the three-layer lookup, the `KNOWN` table and the commented-out template. Imports nothing from the project — `log.py` depends on it, not the other way round. `py -3 settings.py` dumps every value with its source. |
 | `settings.example.ini` | The template that `settings.py` generates, checked in so you can read it without running anything (every line commented out). |
 | `log.py` | Optional diagnostic log (off by default, zero overhead) |
-| `tests/` | Regression suite (`test_real_project.py`, 1081 checks) and the sample project it runs against. Four one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), and `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand). |
+| `tests/` | Regression suite (`test_real_project.py`, 1096 checks) and the sample project it runs against. Five one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand), and `probe_outline.py` verifies v121 on the same setup (list procedures, find references, jump and read `GetSelection()` back, confirm a module without an open code pane is refused — **without writing a single byte**). |
 
 ## Credits
 
