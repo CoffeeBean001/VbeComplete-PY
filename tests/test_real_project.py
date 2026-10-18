@@ -18255,6 +18255,79 @@ def main():
               [(_a99, _b99, _c99, _d99v)],
               expect_contain=[((True, True), True, True,
                                (0x51, True, False, False, False, False, False))])
+
+        # ---- 99.6 版式：三条右边缘对齐（★v117 用户口径）----
+        # "搜索文本框和标题文本框...让他俩的右侧跟代码文本框右侧对齐。按钮位置也
+        #  向左移动一点，让插入到光标处按钮右侧跟代码文本框右侧对齐。"
+        # 判据只认**真实几何**：代码框右边站着竖向滚动条，所以搜索行 / 按钮行的右侧
+        # 留白要各让出一个滚动条宽度；标题框则**不能**跨到滚动条那一列。
+        # 无 GUI 环境（真 tkinter 装不上）自动跳过这一条。
+        _g99e = None
+        _root99 = None
+        _dd99 = _tf99.mkdtemp()
+        _tk99_had = SUI99.tk
+        _tk99_saved = None
+        try:
+            import importlib as _il99
+            _tk99 = sys.modules.get("tkinter")
+            if not hasattr(_tk99, "Tk"):
+                # ⚠️ 本测试网顶部给 tkinter 塞了**桩**（managed python 未必带 GUI
+                # 包）⇒ 直接 `import tkinter` 拿到的是桩、`Tk()` 不存在、这一节会被
+                # 静默跳过（§20.11 其实一直是这样跳过的）。这里要的是**真实几何**，
+                # 所以临时把真模块换进来，跑完连子模块一起原样换回。
+                _tk99_saved = {k: sys.modules[k] for k in list(sys.modules)
+                               if k == "tkinter" or k.startswith("tkinter.")}
+                for _k99 in _tk99_saved:
+                    del sys.modules[_k99]
+                try:
+                    _tk99 = _il99.import_module("tkinter")
+                except Exception:
+                    _tk99 = None
+            if _tk99 is not None and hasattr(_tk99, "Tk"):
+                SUI99.tk = _tk99          # snippet_ui 里 `import tkinter as tk`
+                _root99 = _tk99.Tk()
+                _root99.withdraw()
+                _st99x = SN99.SnippetStore(os.path.join(_dd99, "align.db"))
+                _st99x.add("GetCode", 'MsgBox "hi"')
+                _w99x = SUI99.SnippetWindow(_root99, _st99x,
+                                            on_insert=lambda c: True)
+                _w99x.open_at_caret((300, 300, 316))
+                _root99.update()
+                _R99 = lambda wd: wd.winfo_rootx() + wd.winfo_width()
+                _txtR99 = _R99(_w99x.txt)
+                _g99e = (
+                    8 <= _w99x._sbw <= 48,                      # 滚动条宽度量到了
+                    _R99(_w99x.ent_search) - _txtR99,           # 搜索框右边
+                    _R99(_w99x.ent_title) - _txtR99,            # 标题框右边
+                    _R99(_w99x.btn_insert) - _txtR99,           # 插入按钮右边
+                    int(_w99x.ent_title.grid_info().get("columnspan", 1)),
+                )
+                _w99x.close()
+                _st99x.close()
+        except Exception:
+            _g99e = None            # 没有 GUI —— 跳过（不算失败）
+        finally:
+            SUI99.tk = _tk99_had
+            if _tk99_saved is not None:
+                for _k99 in [k for k in list(sys.modules)
+                             if k == "tkinter" or k.startswith("tkinter.")]:
+                    del sys.modules[_k99]
+                sys.modules.update(_tk99_saved)
+            try:
+                if _root99 is not None:
+                    _root99.destroy()
+            except Exception:
+                pass
+            _sh99.rmtree(_dd99, ignore_errors=True)
+        if _g99e is not None:
+            check("99.6 版式：搜索框 / 标题框 / 「插入到光标处」的**右边缘都与代码"
+                  "文本框右边缘重合**（差 0 像素），标题框不跨到滚动条列；"
+                  "滚动条宽度是现场量出来的（不是写死 17）",
+                  [_g99e], expect_contain=[(True, 0, 0, 0, 1)])
+        check("99.6b `_scrollbar_width`：量不到实际宽度时按 17 兜底"
+              "（桩环境下也照样给得出数，不会抛）",
+              [(SUI99._scrollbar_width(object()), SUI99._SBW_FALLBACK)],
+              expect_contain=[(17, 17)])
     except Exception as _e99:
         import traceback as _tp99
         _tp99.print_exc()

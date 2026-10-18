@@ -84,6 +84,11 @@
   **in the project folder** as `snippets.db` (created on first use; `VBECOMPLETE_SNIPPET_DB` overrides).
   ★v116: it used to live in `%APPDATA%\VbeComplete\` — the user asked for it to sit next to the code so
   it is easy to find and travels with the folder (it is in `.gitignore`, it is your data, not source).
+  ★v117 layout: the right edges of the **search box, the title box and the *Insert at caret* button
+  all line up with the right edge of the code box** (0 px). The code box has a vertical scrollbar to
+  its right, so the title box must not span that column, and the full-width rows leave `8 + scrollbar
+  width` on the right (`_scrollbar_width()` measures it, 17 is the fallback). §99.6 measures real
+  widget geometry in a real Tk window, not the config.
   Titles are **fuzzy searchable**: exact title > prefix > contiguous substring > subsequence
   (`gc` finds `GetCode`), space-separated terms are ANDed. Chinese is matched by **character**
   (`数据` finds `数据处理`), not by pinyin initials — that would need a whole pinyin table.

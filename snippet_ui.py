@@ -46,6 +46,24 @@ MIN_H = 300
 LIST_CHARS = 26          # 列表框宽度（字符）
 LIST_ROWS = 18
 
+_SBW_FALLBACK = 17       # Tk 默认竖向滚动条宽度（量不到时兜底）
+
+
+def _scrollbar_width(widget):
+    """竖向滚动条的宽度（像素）。
+
+    ★v117：搜索框 / 标题框 / 按钮的右边缘要和**代码文本框**的右边缘对齐，而代码框
+    右边还站着一个滚动条 ⇒ 这几行的右侧留白都得多让出"一个滚动条"的宽度。这个宽度
+    随 Tk 主题/DPI 变（17 是默认值，高 DPI 下会更宽），所以现场问控件要，别写死。
+    """
+    try:
+        v = int(widget.winfo_reqwidth())
+        if 8 <= v <= 48:
+            return v
+    except Exception:
+        pass
+    return _SBW_FALLBACK
+
 
 class SnippetWindow(object):
     """片段管理窗。一个实例长期复用，show/hide 之间不重建控件。"""
@@ -57,6 +75,7 @@ class SnippetWindow(object):
         self.on_closed = None               # 收起之后（把焦点还给 VBE）
         self.win = None
         self._w, self._h = DEFAULT_W, DEFAULT_H
+        self._sbw = _SBW_FALLBACK           # 竖向滚动条宽度（_build 里现场量）
         self._rows = []                     # 库里全部 [(title, code)]
         self._view = []                     # 当前过滤结果 [(title, code, hits)]
         self._shown_title = None
@@ -84,6 +103,10 @@ class SnippetWindow(object):
         w.grid_columnconfigure(1, weight=1)
 
         # ---- 第一行：搜索 ----
+        # ★v117（用户口径）：这一行和底下的按钮行，**右边缘都要跟代码文本框的右边
+        # 缘落在同一条竖线上**。代码框右边还有一个竖向滚动条，所以这两行的右侧
+        # 留白必须是 `8 + 滚动条宽度`，否则会各差十几像素（看着就是"没对齐"）。
+        # 滚动条宽度现场量（reqwidth），量不到按 Tk 的默认 17 兜底。
         bar = tk.Frame(w, bg=BG)
         bar.grid(row=0, column=0, columnspan=2, sticky="we", padx=8, pady=(8, 4))
         tk.Label(bar, text="搜索", bg=BG, fg=MUTED, font=UI_FONT).pack(side="left")
@@ -93,7 +116,8 @@ class SnippetWindow(object):
                                    bg=PANEL, fg=FG,
                                    insertbackground=FG,
                                    highlightthickness=0)
-        self.ent_search.pack(side="left", fill="x", expand=True, padx=(6, 6))
+        # 右侧 pad 交给 bar 的 padx 统一控制（这里不再留 6，否则又差 6 像素）
+        self.ent_search.pack(side="left", fill="x", expand=True, padx=(6, 0))
         self.var_search.trace_add("write", lambda *a: self._refilter())
 
         # ---- 第二行左：标题列表 ----
@@ -128,7 +152,9 @@ class SnippetWindow(object):
                                   font=UI_FONT, relief="solid", bd=1,
                                   bg=PANEL, fg=FG, insertbackground=FG,
                                   highlightthickness=0)
-        self.ent_title.grid(row=0, column=1, columnspan=2, sticky="we",
+        # ★v117：**不要 columnspan=2** —— 跨到滚动条那列就会比代码框多出十几像素。
+        # 只占 col1（col2 是竖向滚动条），右边缘正好落在代码框右边缘上。
+        self.ent_title.grid(row=0, column=1, sticky="we",
                             padx=(6, 0), pady=(0, 4))
 
         self.txt = tk.Text(right, font=CODE_FONT, wrap="none", undo=True,
@@ -145,10 +171,16 @@ class SnippetWindow(object):
         self.txt.bind("<Tab>", self._txt_tab)
         self.txt.bind("<Control-Return>", lambda e: (self._insert(), "break")[1])
 
+        # ★v117：量出竖向滚动条的实际宽度，再把搜索行 / 按钮行的右侧留白对齐过去
+        # （搜索行、按钮行都是 `columnspan=2` 铺满整窗，它们的右边比代码框多出一个
+        #   滚动条的宽度 —— 就是这个差让人看着"右边没对齐"）。
+        self._sbw = _scrollbar_width(sbv)
+        bar.grid_configure(padx=(8, 8 + self._sbw))
+
         # ---- 第三行：状态 + 按钮 ----
         foot = tk.Frame(w, bg=BG)
         foot.grid(row=2, column=0, columnspan=2, sticky="we",
-                  padx=8, pady=(6, 8))
+                  padx=(8, 8 + self._sbw), pady=(6, 8))
         self.lbl_status = tk.Label(foot, text="", bg=BG, fg=MUTED,
                                    font=UI_FONT, anchor="w")
         self.lbl_status.pack(side="left", fill="x", expand=True)
