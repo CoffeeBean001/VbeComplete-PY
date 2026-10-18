@@ -12,7 +12,6 @@ VBE 后端：通过 pywin32 与正在运行的 VBA 宿主的 VBE 交互。
 """
 
 import difflib
-import os
 import re
 import threading
 import time
@@ -21,6 +20,7 @@ import unicodedata
 from log import log as _log
 
 import parser as vba_parser
+import settings as _settings
 import vba_builtins
 # ★v103：`_in_rem_comment` 是 `Rem` 判据的【唯一实现】（在 engine 里）。
 # 本文件的 `_classify` 原先漏认 Rem（只认 `'`），导致注释里照弹候选、
@@ -46,32 +46,25 @@ _CACHE_TTL = 2.0  # 标识符缓存刷新间隔（秒）
 #   * 再加 _MOD_CACHE_TTL 兜底：超过这个时间无论如何重扫一次，防"行数不变
 #     但内容改了"（跨模块查找替换那种改法）永远不生效。
 #
-# 开关 VBECOMPLETE_NO_MOD_CACHE=1 退回 v117 的逐模块全量解析（A/B 用）。
+# 开关 `NO_MOD_CACHE = 1`（或环境变量 VBECOMPLETE_NO_MOD_CACHE=1）退回 v117 的
+# 逐模块全量解析（A/B 用）。
 # 模块缓存的最长有效期（秒）。超时强制重扫该模块一次。
 _MOD_CACHE_TTL = 30.0
+MOD_CACHE_ENABLED = not _settings.flag("NO_MOD_CACHE", False)
 
 
 def _env_flag(name, default):
-    """三态环境变量开关：`1/true/yes/on` -> True，`0/false/no/off` -> False，
-    未设置 / 认不出来 -> default。
+    """三态开关（★v120 起转交配置中心）：`1/true/yes/on` -> True，
+    `0/false/no/off` -> False，未设置 / 认不出来 -> default。
 
     用意：下面那些"收不收某类名字"的开关，默认值写死在代码里（跟着用户口径走），
-    但要能不改源码就翻过来 —— 双击 run.bat 之前先 `set XXX=1` 即可。
-    认不出的值一律回落到 default（绝不因为写错一个环境变量就把功能关掉）。
+    但要能不改源码就翻过来 —— 在 `settings.ini` 里写一行、或双击 run.bat 之前
+    先 `set XXX=1` 即可。
+
+    取值链：**环境变量 > settings.ini > 这里的 default**；"认不出的值"
+    （`=ture`）会被跳过而不是让功能失效 —— 细节见 settings 模块顶部。
     """
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    v = raw.strip().lower()
-    if v in ("1", "true", "yes", "on"):
-        return True
-    if v in ("0", "false", "no", "off"):
-        return False
-    return default
-
-
-# ★v118：模块级解析缓存的开关（说明见文件顶部的 _MOD_CACHE_TTL 段）。
-MOD_CACHE_ENABLED = not _env_flag("VBECOMPLETE_NO_MOD_CACHE", False)
+    return _settings.flag(name, default)
 
 
 # 未声明即使用的"隐式变量"（不写 Option Explicit 时的用法）是否纳入提示。
@@ -179,7 +172,7 @@ _HOST_ENUM_FAMILY_PCT = 0.5
 #   例：想只留 Excel 的 xl*，设 VBECOMPLETE_HOST_ENUM_FAMILIES=xl
 _HOST_ENUM_FAMILIES = tuple(
     p.strip().lower() for p in
-    os.environ.get("VBECOMPLETE_HOST_ENUM_FAMILIES", "").split(",") if p.strip())
+    _settings.items("HOST_ENUM_FAMILIES"))
 # 宿主常量挂靠的虚拟模块名（同 _BUILTIN_MODULE 的道理，见那边的说明）。
 _HOST_ENUM_MODULE = "宿主库"
 
@@ -294,10 +287,10 @@ def _co_free():
     我们持有的 Excel/VBE 引用，对"让 Excel 退出"其实没有帮助；反而在 Excel
     正在关闭时反复调用会触发 COM 库的卸载/重载，是"关文件卡几秒、关完又被
     拉起"的嫌疑点之一。因此默认不再自动调用，需要排障时用环境变量
-    VBECOMPLETE_COFREE=1 打开。pythoncom 延迟导入，避免无 pywin32 环境报错。
+    VBECOMPLETE_COFREE=1（或 settings.ini 的 `COFREE = 1`）打开。
+    pythoncom 延迟导入，避免无 pywin32 环境报错。
     """
-    import os
-    if os.environ.get("VBECOMPLETE_COFREE", "0").strip() != "1":
+    if not _settings.flag("COFREE", False):
         return
     try:
         import pythoncom
@@ -1198,10 +1191,11 @@ def branch_align(line_text, lines_above, unit="    "):
 def _indent_unit_for(lines):
     """一级缩进用什么字符串：默认 4 个空格；这个工程里用 Tab 缩进就跟着用 Tab。
 
-    可用 `set VBECOMPLETE_INDENT_UNIT=2`（2 个空格）或 `=tab` 覆盖。
+    可用 `set VBECOMPLETE_INDENT_UNIT=2`（2 个空格）或 `=tab` 覆盖，
+    也可以在 settings.ini 里写 `INDENT_UNIT = tab`。
     """
     try:
-        raw = (os.environ.get("VBECOMPLETE_INDENT_UNIT") or "").strip()
+        raw = _settings.text("INDENT_UNIT", "")
     except Exception:
         raw = ""
     if raw:
@@ -2336,16 +2330,11 @@ def implicit_gate_applies(code):
 
 # 缓存的 VBE/Excel COM 代理最长存活时间（秒）。0 或负数 = 彻底不缓存。
 # 想回到"每次新建、用完即弃"（最保守）就设成 0。
-try:
-    VBE_PROXY_TTL = float(
-        os.environ.get("VBECOMPLETE_PROXY_TTL", "1.0").strip() or "1.0")
-except Exception:
-    VBE_PROXY_TTL = 1.0
+VBE_PROXY_TTL = _settings.float_value("PROXY_TTL", 1.0)
 
-# 宿主窗口探测门。类名对不上的宿主（如 WPS）可能误判，用环境变量关掉：
-#   VBECOMPLETE_NO_WINDOW_GATE=1
-_WINDOW_GATE_DISABLED = (
-    os.environ.get("VBECOMPLETE_NO_WINDOW_GATE", "0").strip() == "1")
+# 宿主窗口探测门。类名对不上的宿主（如 WPS）可能误判，可以关掉：
+#   VBECOMPLETE_NO_WINDOW_GATE=1  或  settings.ini 里 `NO_WINDOW_GATE = 1`
+_WINDOW_GATE_DISABLED = _settings.flag("NO_WINDOW_GATE", False)
 
 _vbe_cache = {"obj": None, "at": 0.0}
 _wnd_state = {"seen": False, "miss": 0}
@@ -2443,10 +2432,7 @@ def _host_window_alive():
 #   set VBECOMPLETE_VBE_POPUP_CLASS=ClassA,ClassB
 VBE_POPUP_CLASSES = ("NameListWndClass", "PopupTipWndClass")
 try:
-    _extra_popup_cls = tuple(
-        c.strip() for c in
-        os.environ.get("VBECOMPLETE_VBE_POPUP_CLASS", "").split(",")
-        if c.strip())
+    _extra_popup_cls = _settings.items("VBE_POPUP_CLASS")
     if _extra_popup_cls:
         VBE_POPUP_CLASSES = tuple(VBE_POPUP_CLASSES) + _extra_popup_cls
 except Exception:
@@ -2458,8 +2444,7 @@ except Exception:
 # 想更省（或排障时想更灵敏）：set VBECOMPLETE_VBE_POPUP_RESCAN=2.0
 _vbe_popup_state = {"hwnds": [], "at": 0.0}
 try:
-    _VBE_POPUP_RESCAN_SEC = float(
-        os.environ.get("VBECOMPLETE_VBE_POPUP_RESCAN", "").strip() or 1.0)
+    _VBE_POPUP_RESCAN_SEC = _settings.float_value("VBE_POPUP_RESCAN", 1.0)
 except Exception:
     _VBE_POPUP_RESCAN_SEC = 1.0
 if not (0.05 < _VBE_POPUP_RESCAN_SEC < 60.0):
@@ -2483,10 +2468,7 @@ if not (0.05 < _VBE_POPUP_RESCAN_SEC < 60.0):
 #   set VBECOMPLETE_VBE_YIELD_CLASS=ClassA,ClassB
 VBE_YIELD_CLASSES = ("NameListWndClass",)
 try:
-    _extra_yield_cls = tuple(
-        c.strip() for c in
-        os.environ.get("VBECOMPLETE_VBE_YIELD_CLASS", "").split(",")
-        if c.strip())
+    _extra_yield_cls = _settings.items("VBE_YIELD_CLASS")
     if _extra_yield_cls:
         VBE_YIELD_CLASSES = tuple(VBE_YIELD_CLASSES) + _extra_yield_cls
 except Exception:
@@ -2738,10 +2720,7 @@ def vbe_popup_rects():
 # 由调用方退回老判据 —— 绝不"拿不准就拦"（v54 就是这么把工具搞成什么都不弹的）。
 VBE_FRAME_CLASSES = ("wndclass_desked_gsk",)
 try:
-    _extra_frame_cls = tuple(
-        c.strip() for c in
-        os.environ.get("VBECOMPLETE_VBE_FRAME_CLASS", "").split(",")
-        if c.strip())
+    _extra_frame_cls = _settings.items("VBE_FRAME_CLASS")
     if _extra_frame_cls:
         VBE_FRAME_CLASSES = tuple(VBE_FRAME_CLASSES) + _extra_frame_cls
 except Exception:
@@ -3686,7 +3665,7 @@ def host_enum_constants():
     """
     if not ENABLE_HOST_ENUMS:
         return []
-    if os.environ.get("VBECOMPLETE_NO_HOST_ENUMS", "0").strip() == "1":
+    if _settings.flag("NO_HOST_ENUMS", False):
         return []
     try:
         refs = _host_enum_refs()
@@ -5004,6 +4983,108 @@ class VbeBackend:
         finally:
             # 与 apply_completion / insert_pair 同理：写过代码（VBAProject
             # 变脏）就立刻放手，别让宿主退出被我们拽住。
+            if wrote:
+                _release_vbe_proxy()
+
+    def toggle_comment(self):
+        """★v120：`Ctrl+/` 批量注释 / 取消注释（IDEA 语义）。返回是否处理了。
+
+        用户口径（原话）："Ctrl+/ 批量注释和Ctrl+/ 批量解除注释，这个帮我弄一下，
+        就像IDEA那样。"
+
+        判据（哪些行要动、加还是取消）全在纯函数 `parser.plan_comment_action`；
+        本方法只负责**读 → 写 → 摆光标**：
+
+          1. `GetSelection()` 取范围。选区跨行且停在**行首**（`EndCol <= 1`）时，
+             最后那一行其实没被选中 —— 那是"连着换行符一起拖下来"的结果，
+             IDEA 也一样排除它；
+          2. 逐行 `Lines(n, 1)` 读原文（**只读这一小段**，不碰整个模块）；
+          3. 纯函数给出 `(action, [(相对行, 新文本)])`；什么都不能动（全空白）
+             → 返回 False，调用方把这一下按键**原样还给系统**；
+          4. **写前锚点复核**：把要动的行再读一遍、与第 2 步逐字相同才动手
+             （项目铁律：改用户工程前先断言锚点）。不同就整笔放弃；
+          5. 逐行 `_write_line`（即 `ReplaceLine`）。**中途失败也继续写完** ——
+             写一半就停会让文档卡在"部分注释"的状态，比写完更糟；返回 True
+             （确实改过了，再还键没有意义），失败明细进日志；
+          6. 原来有选区 → 把同样这几行重新选起来（用户连按两次就能取消，
+             这是 IDEA 的手感）；原来只是光标 → 把光标摆回原行原列。
+
+        ⚠️ **撤销栈**：一次动 N 行就是 N 步撤销。VBE 的 COM 没有"命令组"，
+        做不到一次全退 —— 文档里如实写明了（`docs/troubleshooting.zh-CN.md`）。
+
+        ⚠️ `ReplaceLine` 会 trim **行尾**空格（v103b 实测）。注释动作只改行首，
+        但只要这一行被写过，行尾空白就会丢 —— VBE 存盘本来就 trim，影响趋零。
+        """
+        wrote = False
+        try:
+            vbe = _get_vbe_cached()
+            if vbe is None:
+                return False
+            cp = vbe.ActiveCodePane
+            if cp is None:
+                return False
+            cm = cp.CodeModule
+            sl, sc, el, ec = cp.GetSelection()
+            if sl < 1 or el < sl:
+                return False
+            try:
+                n_lines = int(cm.CountOfLines)
+            except Exception:
+                n_lines = None
+
+            def _line(no):
+                if n_lines is not None and no > n_lines:
+                    return ""          # 模块末尾那个"虚拟空行"
+                return cm.Lines(no, 1) or ""
+
+            # "跨行且停在行首"= 最后那一行没被真正选中
+            if el > sl and ec <= 1:
+                el -= 1
+            if n_lines is not None:
+                el = min(el, n_lines)
+            if el < sl:
+                return False
+
+            old = [_line(n) for n in range(sl, el + 1)]
+            action, plan = vba_parser.plan_comment_action(old)
+            if not action or not plan:
+                return False
+
+            # 写前锚点复核（读与写之间不该有别人动过这几行）
+            for i, _new in plan:
+                if _line(sl + i) != old[i]:
+                    _log("comment: 锚点变了，整笔放弃（行=%d）" % (sl + i))
+                    return False
+
+            had_sel = ((sl, sc) != (el, ec))
+            ok_all = True
+            for i, new in plan:
+                if not self._write_line(cm, sl + i, new):
+                    ok_all = False
+                    _log("comment: 写入失败 行=%d（已写的行不回退）" % (sl + i))
+            wrote = True
+            _log("comment: %s %d 行 -> 行 %d..%d 成功=%s"
+                 % ("取消注释" if action == "remove" else "加注释",
+                    len(plan), sl, el, ok_all))
+
+            # 摆光标：行数没变，所以原来的行范围仍然有效
+            new_last = dict(plan).get(len(old) - 1, old[-1])
+            try:
+                if had_sel:
+                    # 让 VBE 自己把过长的列钳到行尾（铁律：摆光标的列一律现场量
+                    # 或让 VBE 钳，绝不自己算）
+                    cp.SetSelection(sl, 1, el, len(new_last) + 100)
+                else:
+                    cp.SetSelection(sl, max(1, int(sc)), sl, max(1, int(sc)))
+            except Exception:
+                pass
+            return True
+        except Exception:
+            _log("comment: toggle_comment 异常")
+            return False
+        finally:
+            # 与 apply_completion / insert_pair / insert_snippet 同理：写过代码
+            # （VBAProject 变脏）就立刻放手，别让宿主退出被我们拽住。
             if wrote:
                 _release_vbe_proxy()
 

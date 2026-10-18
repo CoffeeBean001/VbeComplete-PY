@@ -32,11 +32,18 @@
 # （`get_proc_names` 拿的是 vbe_bridge 内部那份缓存，不是 mock）。
 # 没有运行时数据就只能猜，猜错就要用户再等一轮 —— 有了它，
 # 下一次一行 `set VBECOMPLETE_LOG=1` 就能把"走到哪一步"直接读出来。
+#
+# ★v120：改为从配置中心（settings.ini 的 `LOG` / `LOG_FILE`）读，
+# 环境变量仍然优先。**默认路径同时修掉一个老 bug**：原来写死成
+# `D:\codes\VbeComplete-V587\VbeComplete.log`——换台机器、或把项目拷到别的
+# 盘，日志就写不进去了（而这条路径正是排障时唯一想看的输出）。
 import os as _os
 
-LOG_ENABLED = (_os.environ.get("VBECOMPLETE_LOG", "0").strip() == "1")
-_LOG_PATH = _os.environ.get("VBECOMPLETE_LOG_FILE", "").strip() or \
-    r"D:\codes\VbeComplete-V587\VbeComplete.log"
+import settings as _settings
+
+LOG_ENABLED = _settings.flag("LOG", False)
+_LOG_PATH = _settings.text("LOG_FILE", "") or \
+    _os.path.join(_settings.PROJECT_DIR, "VbeComplete.log")
 
 
 def log(*args, **kwargs):

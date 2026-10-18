@@ -23,6 +23,8 @@ pythonw 拉起，工作目录未必是项目根（从别的目录调用、双击
 import json
 import os
 
+import settings as _settings
+
 
 DEFAULT_NAME = "recent.json"
 ENV_FILE = "VBECOMPLETE_RECENT_FILE"
@@ -36,8 +38,8 @@ MAX_ENTRIES = 512
 
 
 def path():
-    """文件路径：环境变量优先，否则**项目文件夹**里的 `recent.json`。"""
-    p = (os.environ.get(ENV_FILE) or "").strip()
+    """文件路径：配置中心（`RECENT_FILE`）优先，否则**项目文件夹**里的 `recent.json`。"""
+    p = _settings.text("RECENT_FILE", "")
     if p:
         return p
     return os.path.join(PROJECT_DIR, DEFAULT_NAME)

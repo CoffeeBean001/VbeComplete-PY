@@ -5462,7 +5462,7 @@ def main():
             import inspect as _inspect44
             _src44 = _inspect44.getsource(VB44)
             _okwire44 = all(k in _src44 for k in (
-                "ENABLE_HOST_ENUMS", "VBECOMPLETE_NO_HOST_ENUMS",
+                "ENABLE_HOST_ENUMS", "NO_HOST_ENUMS",
                 "host_enum_constants()", "_HOST_ENUM_MODULE",
                 "_host_enum_names = host_min", "def get_host_enum_names",
                 "def enum_family_prefix", "def host_enum_family",
@@ -15553,13 +15553,13 @@ def main():
         _i84 = _esrc84.find("if (not MEMBER_POPUP) and (not manual)")
         _i84b = _esrc84.find("self.yield_pending = (time.time() + YIELD_GRACE")
         check("84.7 源码护栏：① 开关 `MEMBER_POPUP` 的出厂默认必须是【关】"
-              "（`VBECOMPLETE_MEMBER_POPUP` 取 \"0\"）；② 成员位置的早退必须"
+              "（`settings.flag(\"MEMBER_POPUP\", False)`）；② 成员位置的早退必须"
               "排在让位逻辑【之前】（否则那条「宽限到、VBE 没弹、把候选补回来」"
               "的路径还会把窗补出来）；③ 后端必须收集 `_proc_kinds` 并提供 "
               "`get_proc_kinds`；④ `parser` 必须有 `extract_proc_kinds`；"
               "⑤ 「补括号」与「补空格」两道闸门都必须过 `_in_call_stmt`"
               "（同一语义只有一份实现）",
-              [('os.environ.get("VBECOMPLETE_MEMBER_POPUP", "0")' in _esrc84,
+              [('_settings.flag("MEMBER_POPUP", False)' in _esrc84,
                 _i84 >= 0 and 0 <= _i84 < _i84b,
                 "proc_kinds.update(" in _bsrc84,
                 "def get_proc_kinds(" in _bsrc84,
@@ -17103,13 +17103,18 @@ def main():
         _act_d93 = _ast93.dump(_act93)
         _be93 = _fn93(_vtree93, "ctrl_nav_jump")
         _be_d93 = _ast93.dump(_be93)
-        # 开关：默认开 + 环境变量名出现在【赋值语句】里（不是注释里）
+        # 开关：默认开 + 走配置中心（★v120：不再是 os.environ.get，
+        # 而是 `not settings.flag("NO_CTRL_NAV", False)` —— 断言要跟着实现走，
+        # 否则护栏会变成"只要我改实现它就红"的噪音）
         _env_ok93 = False
         for n in _ast93.walk(_tree93):
             if isinstance(n, _ast93.Assign):
                 for t in n.targets:
                     if isinstance(t, _ast93.Name) and t.id == "CTRL_NAV_JUMP":
-                        if "VBECOMPLETE_NO_CTRL_NAV" in _ast93.dump(n.value):
+                        _d93 = _ast93.dump(n.value)
+                        if ("attr='flag'" in _d93
+                                and "NO_CTRL_NAV" in _d93
+                                and "Constant(value=False)" in _d93):
                             _env_ok93 = True
         check("93.5 结构护栏（AST）：（a）Ctrl+↑/↓ 分支必须排在 `completer."
               "is_visible()` 【之前】—— 候选窗开着时 ↑/↓ 那条分支不分辨修饰键，"
@@ -17117,7 +17122,8 @@ def main():
               "确实吞键并派发 _ctrl_nav_jump_here；（c）动作里作废快照 "
               "state[\"cur_ctx\"]（改过文本+移过光标）且兜底是 send_vk(..., "
               "ctrl=True)；（d）后端 ctrl_nav_jump 调的是纯函数 ctrl_nav_jump_plan"
-              "（同一份实现）；（e）开关默认开、逃生门环境变量接在赋值语句上",
+              "（同一份实现）；（e）开关默认开、且走配置中心"
+              "（`not settings.flag(\"NO_CTRL_NAV\", False)`）",
               [(_ln_ctrl93 < _ln_popup93, _branch_ok93,
                 "value='cur_ctx'" in _act_d93,
                 "arg='ctrl'" in _act_d93,
@@ -18808,6 +18814,496 @@ def main():
           [(_poll101 is not None, "flush_recent" in _calls101,
             "load_recent" in _calls101)],
           expect_contain=[(True, True, False)])
+
+    # ------------------------------------------------------------------
+    # 102. ★v120：配置中心 —— 环境变量 > settings.ini > 代码默认值
+    #   用户口径（原话）："第二档里的配置中心帮我弄一下。"
+    #
+    #   改这一层的动因不是"多个配置文件好看"，而是原来那 40 多个开关：
+    #     ① 没人记得住名字；② 双击 run.bat 的用户根本没有 set 的机会；
+    #     ③ 写错了（`=ture`）会静默回落默认值，用户以为开了其实没开。
+    #
+    #   本节钉三件事：**优先级链**、**认不出的值只跳过不失效**、**模板生成
+    #   不会改变任何默认行为**。最后一条最要紧 —— 一旦生成的 ini 里有一行
+    #   忘了注释掉，用户装完就发现某个功能默认变了，而且永远查不出来。
+    # ------------------------------------------------------------------
+    print("\n=== 102. ★v120：配置中心（settings.ini）===")
+    import tempfile as _t102
+    import shutil as _sh102
+    import subprocess as _sp102
+    import settings as S102
+
+    _dir102 = _t102.mkdtemp(prefix="vbe_cfg_")
+    _ini102 = os.path.join(_dir102, "settings.ini")
+    _old_env102 = os.environ.get("VBECOMPLETE_SETTINGS")
+    _flags102 = ("VBECOMPLETE_AUTO_SPACE", "VBECOMPLETE_NO_AUTOPAIR",
+                 "VBECOMPLETE_RECENT_MAX", "VBECOMPLETE_PROXY_TTL",
+                 "VBECOMPLETE_MEMBER_POPUP", "VBECOMPLETE_NO_RECENT_RANK")
+    _old_vals102 = {k: os.environ.get(k) for k in _flags102}
+
+    def _w102(text):
+        """写一份 ini 并让 settings 重新读盘。"""
+        with io.open(_ini102, "w", encoding="utf-8", newline="\n") as _f:
+            _f.write(text)
+        S102.reset()
+
+    try:
+        os.environ["VBECOMPLETE_SETTINGS"] = _ini102
+        for _k in _flags102:
+            os.environ.pop(_k, None)
+        S102.reset()
+
+        # ---- 102.1 三层优先级 ----
+        _w102("[settings]\nAUTO_SPACE = 0\nRECENT_MAX = 32\n")
+        _g102a = (
+            S102.flag("AUTO_SPACE", True),                    # ini 写 0
+            S102.int_value("RECENT_MAX", 64),                 # ini 写 32
+            S102.flag("NO_AUTOPAIR", False),                  # 都没写 -> default
+            S102.effective("AUTO_SPACE", "1", "flag")[1],      # 来源必须是 ini
+        )
+        os.environ["VBECOMPLETE_AUTO_SPACE"] = "1"             # env 压过 ini
+        _g102b = (S102.flag("AUTO_SPACE", False),
+                  S102.source("AUTO_SPACE"))
+        os.environ.pop("VBECOMPLETE_AUTO_SPACE", None)
+        check("102.1 取值链 `环境变量 > settings.ini > 代码默认值`：ini 能改、"
+              "环境变量能压过 ini；**来源**要如实报告是 ini 还是 env（排错时"
+              "就靠这一列判断\"我改的地方到底生效没有\"）",
+              [_g102a, _g102b],
+              expect_contain=[(False, 32, False, "ini"), (True, "env")])
+
+        # ---- 102.2 认不出的值只跳过这一层，不让功能失效 ----
+        # 老契约是"认不出 -> default"。现在多了一层 ini，所以口径要更准：
+        # **跳过这一层继续往下看**。用户既然在 ini 里明确写了，就该用 ini 的。
+        os.environ["VBECOMPLETE_AUTO_SPACE"] = "maybe"         # 垃圾值
+        os.environ["VBECOMPLETE_RECENT_MAX"] = ""              # 空串 = 没设
+        _g102c = (S102.effective("AUTO_SPACE", "1", "flag"),
+                  S102.effective("RECENT_MAX", "64", "int"))
+        os.environ["VBECOMPLETE_AUTO_SPACE"] = "off"           # 换一种 false 写法
+        _g102d = S102.flag("AUTO_SPACE", True)
+        os.environ.pop("VBECOMPLETE_AUTO_SPACE", None)
+        os.environ.pop("VBECOMPLETE_RECENT_MAX", None)
+        check("102.2 认不出的值 / 空串**只跳过那一层**：env 写了垃圾时退到 ini"
+              "（而不是掉回代码默认值）；`=off` 这种非 0/1 的写法也认",
+              [_g102c, _g102d],
+              expect_contain=[((False, "ini"), (32, "ini")), False])
+
+        # ---- 102.3 键名两种写法（带不带 VBECOMPLETE_ 前缀）----
+        _w102("[settings]\n"
+              "VBECOMPLETE_MEMBER_POPUP = 1\n"
+              "no_recent_rank = 1\n")
+        _g102e = (S102.flag("MEMBER_POPUP", False),
+                  S102.flag("NO_RECENT_RANK", False))
+        check("102.3 `VBECOMPLETE_MEMBER_POPUP` 与 `MEMBER_POPUP` 两种写法都认，"
+              "键名大小写不敏感（用户从文档里抄哪个都行）",
+              [_g102e], expect_contain=[(True, True)])
+
+        # ---- 102.4 坏 ini 一律安静退回默认，绝不抛 ----
+        # 配置文件坏掉导致工具起不来是最不能接受的一种失败。
+        _bad102 = []
+        for _label, _body in (
+            ("没有 [settings] 段", "AUTO_SPACE = 0\n"),
+            ("全是垃圾", "\x00\x01 not an ini\n[[["),
+            ("值里有 % 插值符", "[settings]\nVBE_POPUP_CLASS = A%B\n"),
+            ("段名写错", "[setting]\nAUTO_SPACE = 0\n"),
+        ):
+            try:
+                _w102(_body)
+                _bad102.append((_label, S102.flag("AUTO_SPACE", True),
+                                S102.text("VBE_POPUP_CLASS", "")))
+            except Exception as _e102:
+                _bad102.append((_label, "抛了: %s" % _e102, ""))
+        # 重复键：后写的赢，而不是整份配置作废（strict=False）
+        _w102("[settings]\nAUTO_SPACE = 1\nAUTO_SPACE = 0\n")
+        _dup102 = S102.flag("AUTO_SPACE", True)
+        # UTF-8 BOM（Windows 记事本另存为 UTF-8 时会加）
+        with io.open(_ini102, "wb") as _f:
+            _f.write(b"\xef\xbb\xbf[settings]\r\nAUTO_SPACE = 0\r\n")
+        S102.reset()
+        _bom102 = S102.flag("AUTO_SPACE", True)
+        check("102.4 坏 ini 全部安静退回默认（不抛异常）：没有段 / 全是垃圾 / "
+              "值里带 `%`（默认的 BasicInterpolation 会在这里炸，我们关掉了它）"
+              "/ 段名写错；另加两条宽容项 —— 重复键取后写的、UTF-8 BOM 与 CRLF 都认",
+              [(_bad102, _dup102, _bom102)],
+              expect_contain=[(([("没有 [settings] 段", True, ""),
+                                 ("全是垃圾", True, ""),
+                                 ("值里有 % 插值符", True, "A%B"),
+                                 ("段名写错", True, "")],
+                                False, False))])
+
+        # ---- 102.5 生成的模板 = 全部注释掉 = 全部默认值 ----
+        _tpl102 = S102.template_text()
+        _w102(_tpl102)
+        _rows102 = S102.dump(verbose=False)
+        _not_default102 = [(k, v, s) for k, v, s in _rows102 if s != "default"]
+        _missing102 = [k for k, _d, _s in S102.KNOWN
+                       if ("; %s = " % k) not in _tpl102]
+        check("102.5 模板里**每一项都注释掉**（于是生成 settings.ini 这件事"
+              "不会改变任何行为）；且 `KNOWN` 的每一项都在模板里出现（漏一项"
+              "就等于用户永远不知道有它）",
+              [(_not_default102, _missing102)],
+              expect_contain=[([], [])])
+
+        # ---- 102.6 ensure_file：不存在就建、存在就一字不动 ----
+        _p102 = os.path.join(_dir102, "deep", "dir", "settings.ini")
+        _r102a = S102.ensure_file(_p102)
+        _size102a = os.path.getsize(_p102)
+        _r102b = S102.ensure_file(_p102)
+        check("102.6 `ensure_file` 首次生成（连目录一起建），第二次**不重写**"
+              "（否则用户改过的配置会被程序覆盖掉，这是最不能犯的错）",
+              [(_r102a[1], os.path.isfile(_p102), _r102b[1],
+                os.path.getsize(_p102) == _size102a)],
+              expect_contain=[(True, True, False, True)])
+
+        # ---- 102.7 默认路径在项目文件夹（不随 cwd 漂）----
+        _oldcwd102 = os.getcwd()
+        os.environ.pop("VBECOMPLETE_SETTINGS", None)
+        S102.reset()
+        _path102a = S102.path()
+        try:
+            os.chdir(_dir102)
+            S102.reset()
+            _path102b = S102.path()
+        finally:
+            os.chdir(_oldcwd102)
+            os.environ["VBECOMPLETE_SETTINGS"] = _ini102
+            S102.reset()
+        check("102.7 默认路径 = `settings.py` 所在目录（项目文件夹），"
+              "**不是 cwd** —— run.bat / pythonw 拉起时 cwd 会漂（v116 在 "
+              "snippets.db 上踩过同一个坑）",
+              [(_path102a == os.path.join(ROOT, "settings.ini"),
+                _path102b == _path102a,
+                os.path.dirname(os.path.abspath(S102.__file__)) == ROOT)],
+              expect_contain=[(True, True, True)])
+
+        # ---- 102.8 护栏：源码里不许再直接读 VBECOMPLETE_ 环境变量 ----
+        # 这是"配置中心"的核心约束。漏一个，那个开关就永远只能靠 set，
+        # 用户在 settings.ini 里写了也不生效、还查不出来。
+        _offenders102 = []
+        for _f102 in ("main.py", "engine.py", "vbe_bridge.py", "log.py",
+                      "parser.py", "ui.py", "recent.py", "snippets.py",
+                      "snippet_ui.py"):
+            _src102 = io.open(os.path.join(ROOT, _f102),
+                              encoding="utf-8").read()
+            if 'os.environ.get("VBECOMPLETE_' in _src102:
+                _offenders102.append(_f102)
+        check("102.8 除 `settings.py` 之外，**没有任何模块再直接读 VBECOMPLETE_ "
+              "环境变量** —— 漏一个就等于那个开关在 settings.ini 里失灵",
+              [_offenders102], expect_contain=[[]])
+
+        # ---- 102.9 模板里的每个键都真的有人消费 ----
+        # 反过来的一条：模板里写了、代码里没人读 = 用户改了没反应（比漏写更气人）。
+        _allsrc102 = "".join(
+            io.open(os.path.join(ROOT, _f102), encoding="utf-8").read()
+            for _f102 in ("main.py", "engine.py", "vbe_bridge.py", "log.py",
+                          "recent.py", "snippets.py"))
+        _unused102 = [k for k, _d, _s in S102.KNOWN
+                      if ('"%s"' % k) not in _allsrc102
+                      and ('"VBECOMPLETE_%s"' % k) not in _allsrc102]
+        check("102.9 `KNOWN` 里每个开关键都真的被某个模块读（模板写了却没人读 "
+              "= 用户改了没反应）",
+              [_unused102], expect_contain=[[]])
+
+        # ---- 102.10 端到端：子进程里 ini 真的改变了运行时行为 ----
+        # 前面 9 条都只证明"settings 自己算得对"。真正要证明的是
+        # "新开一个进程、只靠 settings.ini，模块级常量就变了"。
+        _w102("[settings]\nMEMBER_POPUP = 1\nNO_RECENT_RANK = 1\n")
+        _code102 = ("import sys; sys.path.insert(0, %r); import engine; "
+                    "print(int(engine.MEMBER_POPUP), int(engine.RANK_BY_RECENT))"
+                    % ROOT)
+        _env102 = dict(os.environ)
+        _env102["VBECOMPLETE_SETTINGS"] = _ini102
+        for _k in _flags102:
+            _env102.pop(_k, None)
+        try:
+            _cp102 = _sp102.run([sys.executable, "-c", _code102], env=_env102,
+                                capture_output=True, text=True, timeout=180)
+            _out102 = [ln.strip() for ln in
+                       (_cp102.stdout or "").splitlines() if ln.strip()]
+            _got102 = _out102[-1] if _out102 else ("ERR:" + str(_cp102.stderr)[:80])
+        except Exception as _e102b:
+            _got102 = "异常: %s" % _e102b
+        check("102.10 端到端（子进程）：只靠 `settings.ini` 两个开关就被真的改掉"
+              "（`MEMBER_POPUP=1` / `NO_RECENT_RANK=1` -> engine 里 "
+              "True / False），不靠环境变量、不靠改源码",
+              [_got102], expect_contain=["1 0"])
+
+    except Exception as _e102x:
+        import traceback as _tp102
+        _tp102.print_exc()
+        check("第 102 节异常: %s" % _e102x, [True], expect_contain=[False])
+    finally:
+        # 铁律：改测试网的猴补丁（这里是 os.environ 与 settings 的读盘缓存）
+        # 必须在节尾还原，否则后面每一节都跑在"别人的配置"上。
+        if _old_env102 is None:
+            os.environ.pop("VBECOMPLETE_SETTINGS", None)
+        else:
+            os.environ["VBECOMPLETE_SETTINGS"] = _old_env102
+        for _k, _v in _old_vals102.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
+        S102.reset()
+        _sh102.rmtree(_dir102, ignore_errors=True)
+
+    # ------------------------------------------------------------------
+    # 103. ★v120：Ctrl+/ 批量注释 / 取消注释（IDEA 语义）
+    #   用户口径（原话）："Ctrl+/ 批量注释和Ctrl+/ 批量解除注释，这个帮我弄一下，
+    #   就像IDEA那样。"
+    #
+    #   最要紧的一条不是"能不能加"，而是**能不能原样回来**：注释掉一段代码
+    #   再取消，缩进 / 行号标签 / `#If` 预处理行必须逐字复原 —— 这个工具改的是
+    #   用户的真实代码，一次不可逆的改动就足以让人不敢再用。
+    # ------------------------------------------------------------------
+    print("\n=== 103. ★v120：Ctrl+/ 批量注释 ===")
+    import ast as _ast103
+    import vbe_bridge as VB103
+    import main as MN103
+
+    # ---- 103.1 加注释：`'` 必须落在**缩进之后** ----
+    _add103 = [
+        ("    x = 1", "    ' x = 1"),          # 普通缩进行
+        ("\tx = 1", "\t' x = 1"),              # Tab 缩进
+        ("x = 1", "' x = 1"),                  # 顶格
+        ("    End If", "    ' End If"),
+        ("1: x = 1", "' 1: x = 1"),            # 行号标签必须仍顶格
+        ("#If DEBUG Then", "' #If DEBUG Then"),  # 条件编译指令
+        ("    #If DEBUG Then", "    ' #If DEBUG Then"),
+        ("x = 1  ' 行尾注释", "' x = 1  ' 行尾注释"),   # 有行尾注释的仍是代码行
+        ("Rem 说明", "' Rem 说明"),
+        ("(", "' ("),
+        ("    ' x = 1", "    ' ' x = 1"),       # 已注释的再加一层（IDEA 同款）
+    ]
+    _bad_add103 = [(s, P.add_comment_to_line(s), e) for s, e in _add103
+                   if P.add_comment_to_line(s) != e]
+    _cmt103 = [(s, P.is_comment_line(s)) for s in
+               ("    ' x = 1", "' x", "    x = 1", "x = 1  ' 尾巴",
+                "   ", "", "\t'")]
+    check("103.1 加注释：`'` 落在**缩进之后**（插行首会把缩进一起注释掉，"
+              "取消后就再也还原不出原来的缩进）；行号标签与 `#If` 顶格行照旧"
+              "可逆；`x = 1  ' 尾巴` 这种**行尾注释**不算\"整行注释\"（它是"
+              "一行代码，该被注释掉）",
+              [(_bad_add103, _cmt103)],
+              expect_contain=[([], [("    ' x = 1", True), ("' x", True),
+                                    ("    x = 1", False),
+                                    ("x = 1  ' 尾巴", False),
+                                    ("   ", False), ("", False),
+                                    ("\t'", True)])])
+
+    # ---- 103.2 取消注释：先删 `' `，再退一个 `'` ----
+    _del103 = [
+        ("    ' x = 1", "    x = 1"),          # 我们自己加的（带空格）
+        ("    'x = 1", "    x = 1"),           # 手工写的（不带空格）
+        ("' x = 1", "x = 1"),
+        ("    ' ' x", "    ' x"),              # 两层注释只剥一层
+        ("    '", "    "),                     # 空注释 -> 空行（不是崩）
+        ("    x = 1", "    x = 1"),            # 不是注释 -> 原样
+        ("", ""),
+    ]
+    _bad_del103 = [(s, P.remove_comment_from_line(s), e) for s, e in _del103
+                   if P.remove_comment_from_line(s) != e]
+    check("103.2 取消注释：先删 `' ` 两个字符、不行再退一个 `'` —— 于是我们"
+              "加的能精确还原，用户手写的 `'xxx` 也能正确取消；不是注释的行"
+              "**原样返回**（在混合选区里当逐行算子时不会误伤）",
+              [_bad_del103], expect_contain=[[]])
+
+    # ---- 103.3 可逆性：remove(add(x)) == x 对任何非空行成立 ----
+    # 这是整节的地基。**加注释绝不能丢信息** —— 用户按了 Ctrl+/ 再按回来，
+    # 代码必须逐字一样，否则这个功能就是在破坏他的代码。
+    _samples103 = (
+        "x = 1", "    x = 1", "\tx = 1", "        y = f(a, b)",
+        "    End If", "1: x = 1", "#If DEBUG Then", "    #If DEBUG Then",
+        "x = 1  ' 尾巴", "Rem 说明", "' x = 1", "    ' x = 1", "'x", "'''",
+        "    '", "'", "' '", "x", "  ", "\t",
+    )
+    _rev103 = [s for s in _samples103
+               if s.strip() and P.remove_comment_from_line(
+                   P.add_comment_to_line(s)) != s]
+    _idem103 = [s for s in _samples103
+                if s.strip()
+                and P.add_comment_to_line(P.remove_comment_from_line(
+                    P.add_comment_to_line(s))) != P.add_comment_to_line(s)]
+    _blank103 = [s for s in ("", "   ", "\t", "  \t ")
+                 if P.add_comment_to_line(s) != s]
+    check("103.3 **可逆性穷举**：`remove(add(x)) == x` 对 20 个样本（含缩进 / "
+              "Tab / 标签行 / `#If` / 行尾注释 / 已注释行）逐字成立；"
+              "`add(remove(add(x))) == add(x)`（往返两次稳定）；空白行**不加**"
+              "注释（不留一串光秃秃的 `'`）",
+              [(_rev103, _idem103, _blank103)],
+              expect_contain=[([], [], [])])
+
+    # ---- 103.4 plan：IDEA 的 toggle 语义 ----
+    _plan103 = (
+        # 全未注释 -> 全部加
+        (["    a = 1", "", "    b = 2"], "add",
+         [(0, "    ' a = 1"), (2, "    ' b = 2")]),
+        # 全已注释 -> 全部取消（空行不参与，但下标要跳过它）
+        (["    ' a = 1", "  ", "    ' b = 2"], "remove",
+         [(0, "    a = 1"), (2, "    b = 2")]),
+        # 混合 -> 全部加（**这是 IDEA 的口径**：只要不是"全都注释了"就加）
+        (["    ' a = 1", "    b = 2"], "add",
+         [(0, "    ' ' a = 1"), (1, "    ' b = 2")]),
+        # 全空白 -> 什么都不做（调用方必须把按键还回去）
+        (["", "   ", "\t"], None, []),
+        ([], None, []),
+        (["x = 1"], "add", [(0, "' x = 1")]),
+        (["' x = 1"], "remove", [(0, "x = 1")]),
+    )
+    _bad_plan103 = [(ls, P.plan_comment_action(ls), (ea, ep))
+                    for ls, ea, ep in _plan103
+                    if P.plan_comment_action(ls) != (ea, ep)]
+    check("103.4 `plan_comment_action` 照 IDEA 的 toggle：**所有非空行都已注释**"
+              "才取消，否则全部加注释；空行一律跳过（下标仍指向原来的行）；"
+              "全空白返回 `(None, [])` —— 调用方据此把按键还回去",
+              [_bad_plan103], expect_contain=[[]])
+
+    # ---- 103.5 集成（假 VBE）：真的写进"编辑器"、选区真的恢复 ----
+    class _Mod103(object):
+        def __init__(self, lines):
+            self.lines = list(lines)
+
+        def Lines(self, n, _c):
+            if 1 <= n <= len(self.lines):
+                return self.lines[n - 1]
+            return ""
+
+        @property
+        def CountOfLines(self):
+            return len(self.lines)
+
+        def ReplaceLine(self, n, t):
+            self.lines[n - 1] = t
+
+        def InsertLines(self, n, t):
+            self.lines.insert(n - 1, t)
+
+        def DeleteLines(self, n, c):
+            del self.lines[n - 1:n - 1 + c]
+
+    class _Pane103(object):
+        def __init__(self, mod, sl, sc, el, ec):
+            self.CodeModule = mod
+            self.sel = [sl, sc, el, ec]
+            self.sets = []
+
+        def GetSelection(self):
+            return tuple(self.sel)
+
+        def SetSelection(self, sl, sc, el, ec):
+            self.sel = [sl, sc, el, ec]
+            self.sets.append(tuple(self.sel))
+
+    class _Vbe103(object):
+        def __init__(self, pane):
+            self.ActiveCodePane = pane
+
+    def _run103(lines, sl, sc, el, ec):
+        """跑一次 toggle_comment，返回 (ok, 写完的行, 最后一次 SetSelection)。"""
+        mod = _Mod103(lines)
+        pane = _Pane103(mod, sl, sc, el, ec)
+        _o103 = VB103._get_vbe_cached
+        VB103._get_vbe_cached = lambda: _Vbe103(pane)
+        try:
+            ok = VB103.VbeBackend().toggle_comment()
+        finally:
+            VB103._get_vbe_cached = _o103      # 铁律：猴补丁必须还原
+        return (bool(ok), list(mod.lines),
+                pane.sets[-1] if pane.sets else None)
+
+    _r103a = _run103(["    x = 1"], 1, 1, 1, 1)                 # 单行、无选区
+    _r103b = _run103(["    a = 1", "", "    b = 2"], 1, 1, 3, 9)  # 多行全选
+    _r103c = _run103(["    ' a = 1", "    ' b = 2"], 1, 1, 2, 9)  # 全注释 -> 取消
+    _r103d = _run103(["", "   "], 1, 1, 2, 4)                   # 全空白 -> 不做
+    _r103e = _run103(["    a = 1", "    b = 2"], 1, 1, 2, 1)    # 停在行首 -> 排除
+    check("103.5 集成（假 VBE）：单行/无选区也能加；多行选区逐行加、**空行跳过**；"
+              "全注释时整段取消；全空白时返回 False（让调用方把按键还回去，"
+              "绝不吞键没反应）；**选区停在行首时最后一行不算被选中**（那是"
+              "连着换行符拖下来的结果，IDEA 也这么处理）",
+              [(_r103a[0], _r103a[1], _r103b[0], _r103b[1],
+                _r103c[0], _r103c[1], _r103d[0], _r103e[0], _r103e[1])],
+              expect_contain=[(True, ["    ' x = 1"],
+                               True, ["    ' a = 1", "", "    ' b = 2"],
+                               True, ["    a = 1", "    b = 2"],
+                               False,
+                               True, ["    ' a = 1", "    b = 2"])])
+
+    # ---- 103.6 写完之后选区要恢复成"同样这几行" ----
+    # 不恢复的话，用户按一下 Ctrl+/ 选区就没了、再按一下只作用于光标那一行，
+    # "连按两次 = 取消"这个手感直接废掉。
+    _sel103 = _run103(["    a = 1", "    b = 2", "    c = 3"], 1, 1, 3, 10)[2]
+    check("103.6 写完把**同样这几行**重新选起来（`SetSelection(sl, 1, el, 超长列)`，"
+          "让 VBE 自己把列钳到行尾）：不恢复的话\"连按两次 = 取消\"就不成立了",
+          [(_sel103 is not None, bool(_sel103) and _sel103[0] == 1,
+            bool(_sel103) and _sel103[2] == 3,
+            bool(_sel103) and _sel103[3] > 10)],
+          expect_contain=[(True, True, True, True)])
+
+    # ---- 103.7 钩子侧接线护栏（AST）----
+    with open(os.path.join(ROOT, "main.py"), encoding="utf-8") as _f:
+        _tree103 = _ast103.parse(_f.read())
+
+    def _fn103(tree, name):
+        for _n in _ast103.walk(tree):
+            if isinstance(_n, _ast103.FunctionDef) and _n.name == name:
+                return _n
+        return None
+
+    _wf103 = _fn103(_tree103, "win32_filter")
+    _ln_cmt103 = _ln_vis103 = 10 ** 9
+    _br103 = False
+    for _n in _ast103.walk(_wf103):
+        if isinstance(_n, _ast103.If):
+            _d103 = _ast103.dump(_n.test)
+            if "id='_comment_key_ok'" in _d103:
+                _ln_cmt103 = min(_ln_cmt103, _n.lineno)
+                _br103 = ("id='_toggle_comment_here'" in _ast103.dump(_n)
+                          and "Constant(value=True)" in _ast103.dump(_n))
+            if "id='completer'" in _d103 and "attr='is_visible'" in _d103:
+                _ln_vis103 = min(_ln_vis103, _n.lineno)
+    _act103 = _ast103.dump(_fn103(_tree103, "_toggle_comment_here"))
+    _gate103 = _ast103.dump(_fn103(_tree103, "_comment_key_ok"))
+    check("103.7 钩子接线（AST）：（a）Ctrl+/ 分支排在 `completer.is_visible()` "
+          "**之前**（它要改文本，窗里那些候选马上就不作数了）；"
+          "（b）该分支吞键（`suppress = True`）并派发 `_toggle_comment_here`；"
+          "（c）动作里收候选窗、作废快照 `state[\"cur_ctx\"]`、失败兜底 "
+          "`send_vk(VK_OEM_2, ctrl=True)`；（d）**判据函数里没有任何 COM 调用**"
+          "（钩子线程没有 COM 单元 —— 这条用 AST 查，不受注释影响）",
+          [(_ln_cmt103 < _ln_vis103, _br103,
+            "attr='hide'" in _act103, "value='cur_ctx'" in _act103,
+            "arg='ctrl'" in _act103 and "VK_OEM_2" in _act103,
+            all(w not in _gate103 for w in
+                ("_get_vbe_cached", "attr='backend'", "VbeBackend")))],
+          expect_contain=[(True, True, True, True, True, True)])
+
+    # ---- 103.8 后端用的必须是同一份判据（AST）----
+    # 判据写在 parser、动作写在别处，两份实现迟早会分叉 —— 那时"钩子说该管、
+    # 后端说不用管"就会表现为"按了没反应"。这条钉死"只有一份"。
+    _be103 = _ast103.dump(_fn103(
+        _ast103.parse(io.open(os.path.join(ROOT, "vbe_bridge.py"),
+                              encoding="utf-8").read()),
+        "toggle_comment"))
+    check("103.8 `vbe_bridge.toggle_comment` 调的就是 `parser.plan_comment_action`"
+          "（同一份判据；两份实现迟早分叉，届时表现为\"按了没反应\"）",
+          [("plan_comment_action" in _be103,
+            "add_comment_to_line" not in _be103,
+            "remove_comment_from_line" not in _be103)],
+          expect_contain=[(True, True, True)])
+
+    # ---- 103.9 开关默认开；纯判据钉住修饰键门槛 ----
+    _vk103 = tuple(
+        MN103._comment_vk_ok(vk, c, s, a, w) for vk, c, s, a, w in (
+            (0xBF, True, False, False, False),   # 正是我们
+            (0xBF, False, False, False, False),  # 没按 Ctrl
+            (0xBF, True, True, False, False),    # Ctrl+Shift+/ = `?`
+            (0xBF, True, False, True, False),    # Ctrl+Alt+/
+            (0xBF, True, False, False, True),    # Ctrl+Win+/
+            (0x51, True, False, False, False),   # Ctrl+Q 不归这里
+        ))
+    check("103.9 开关默认**开**（`COMMENT_TOGGLE is True`），纯判据只认"
+          "**单独** Ctrl+`/`：Shift / Alt / Win 任一在按都不算（Ctrl+Shift+/ "
+          "在多数布局上是 `?`，Win 组合是系统键）",
+          [(_vk103, MN103.COMMENT_TOGGLE)],
+          expect_contain=[((True, False, False, False, False, False), True)])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原

@@ -1123,9 +1123,100 @@ def enclosing_call_paren(line_text, col0):
     return None
 
 
+# ---------------------------------------------------------------------------
+# ★v120：Ctrl+/ 批量注释 / 取消注释（纯文本层）
+#
+# 用户口径（原话）："Ctrl+/ 批量注释和Ctrl+/ 批量解除注释，这个帮我弄一下，
+# 就像IDEA那样。"
+#
+# IDEA 的 Ctrl+/ 是【toggle】，本节照抄这个语义：
+#   * 选区内（无选区就是光标那一行）**所有非空行**都已注释 -> 全部取消；
+#   * 否则 -> 全部加注释；
+#   * 空行一律跳过（不留一串光秃秃的 `'`）。
+#
+# VBA 的注释符只有 `'`。`Rem` 也算注释，但它必须独立成句、不能跟在代码后面，
+# 而我们的插入位置在语句最前面 —— 所以统一插 `'`；取消时也**只认 `'`**，
+# 不去猜用户是不是写的 `Rem`（猜错就会把 `Rem` 当代码删掉一个字符）。
+#
+# ⚠️ 三条硬约束，每一条都对应一个真踩过的坑：
+#   1. `'` 必须插在**缩进之后**。插在行首 = 把缩进也注释掉了，取消后还原不出
+#      原来的缩进（VBE 会按上下文重排）。
+#   2. 加注释时补一个空格（`"' "`）；取消时**先试删两个字符、再退一个** ——
+#      于是我们自己加的 `' xxx` 能精确还原，用户手写的 `'xxx` 也能正确取消。
+#   3. **加注释永远不丢信息**：`remove(add(x)) == x` 对任何非空行成立。
+#      反方向不成立、也不该成立 —— 手工写的 `'x = 1`（不带空格）取消后再加
+#      会规范化成 `' x = 1`，这是刻意的（IDEA 的 `//` 同样会补空格），§103
+#      钉的是"往返两次之后稳定"而不是"逐字相同"。
+# ---------------------------------------------------------------------------
+
+COMMENT_CHAR = "'"
+
+
+def _split_lead(line):
+    """返回 `(行首空白, 其余)`。空白 = 空格与 Tab（VBA 的缩进只有这两种）。"""
+    i, n = 0, len(line)
+    while i < n and line[i] in " \t":
+        i += 1
+    return line[:i], line[i:]
+
+
+def is_comment_line(line):
+    """这一行是不是整行注释：**缩进之后**第一个字符是 `'`。
+
+    ⚠️ 判据只认"整行注释"。`x = 1  ' 说明` 这种行尾注释**不算** ——
+    它是一行代码，Ctrl+/ 该给它加 `'`（加了就真的把代码注释掉了）。
+    """
+    return _split_lead(line)[1].startswith(COMMENT_CHAR)
+
+
+def add_comment_to_line(line):
+    """给一行加注释：`缩进 + "' " + 余下`。空白行原样返回。"""
+    if not line.strip():
+        return line
+    lead, rest = _split_lead(line)
+    return lead + COMMENT_CHAR + " " + rest
+
+
+def remove_comment_from_line(line):
+    """取消一行的注释：去掉缩进后的第一个 `'` 与紧随其后的**一个**空格。
+
+    不是注释行（或空白行）原样返回 —— 这样它在混合选区里也是安全的逐行算子
+    （调用方只对 `is_comment_line` 为真的行调用，这里是第二道保险）。
+    """
+    lead, rest = _split_lead(line)
+    if not rest.startswith(COMMENT_CHAR):
+        return line
+    rest = rest[1:]
+    if rest.startswith(" "):
+        rest = rest[1:]
+    return lead + rest
+
+
+def plan_comment_action(lines):
+    """算出 Ctrl+/ 这一下该做什么。
+
+    `lines` 是选区内（或光标所在行）的**逐行文本**，按行序。
+
+    返回 `(action, [(下标, 新文本), ...])`：
+
+        "add"    -> 全部加注释
+        "remove" -> 全部取消注释
+        None     -> **没有可动的行**（全是空白），此时调用方必须把按键
+                    原样还给系统 —— 绝不做"吞了键却什么都没发生"。
+
+    下标是 `lines` 里的位置，调用方负责换算成模块里的绝对行号。
+    """
+    idxs = [i for i, ln in enumerate(lines or ()) if ln.strip()]
+    if not idxs:
+        return (None, [])
+    if all(is_comment_line(lines[i]) for i in idxs):
+        return ("remove",
+                [(i, remove_comment_from_line(lines[i])) for i in idxs])
+    return ("add", [(i, add_comment_to_line(lines[i])) for i in idxs])
+
+
 def decl_position_keywords(code, caret):
     """光标在【声明位置】上时该提示的语言关键字（小写 frozenset）；None = 照旧静默。
-
     ★v111。只覆盖两处，其余声明位置（变量名 / 过程名 / Type 成员行）返回 None，
     由调用方按 v105 静默；`As` 之后的类型名位置另有 is_caret_in_type_position 一路。
 

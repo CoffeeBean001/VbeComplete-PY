@@ -97,6 +97,19 @@
   **verbatim** — your indentation is kept — and the caret lands right after it. Turn it off with
   `VBECOMPLETE_NO_SNIPPETS=1`.
 
+- **v120 — toggle line comment (`Ctrl+/`).** Pressed over a selection it comments out every selected
+  line; pressed again it brings them back verbatim. With no selection it works on the caret's line.
+  Same rule as IDEA: it **removes** only when **every non-blank line is already commented**, otherwise
+  it adds. Blank lines are skipped entirely (no stray `'`), the comment character lands **after the
+  indentation** (`    x = 1` -> `    ' x = 1`) — at column 1 it would comment out the indentation too,
+  and the VBE re-indents on the way back — and removal strips one `' ` (quote + space) first and falls
+  back to a bare `'`, so a hand-written `'notes` uncomments correctly. Only `'` is recognized, never
+  `Rem`. Two VBA facts to know: one edit per line means **the undo stack is N steps** for N lines (COM
+  has no command groups), and `ReplaceLine` **trims trailing spaces**. The selection is restored
+  afterwards so the key really is a toggle; a selection that *ends* at column 1 is read as excluding
+  its last line (that is what dragging down past the newline produces), matching IDEA. Turn it off with
+  `VBECOMPLETE_NO_COMMENT=1`.
+
 - **v118 — the popup keeps up with your typing.** Measured with `tests/probe_perf.py` on a
   24-module / 628-line project: one full `get_identifiers()` refresh cost **224 ms**, and
   `poll_editor` threw the pool away **every 0.4 s** while you typed (any text change with
@@ -136,6 +149,36 @@
   and writes are atomic (`tmp` + `os.replace`) with any corrupt file degrading to `{}`.
   `VBECOMPLETE_NO_RECENT_PERSIST=1` restores the v118 behaviour for A/B.
 
+- **v120 — one place for the 40+ switches, and an IDEA-style `Ctrl+/`.**
+  *(a) `settings.ini`.* Until v119 every switch was an environment variable, and nobody remembers
+  forty names or wants to edit system environment variables to turn one feature off. On first start
+  the tool now writes `settings.ini` into the **project folder** with **every switch listed and every
+  line commented out** — so creating the file changes nothing by itself (a test pins this down). Delete
+  the leading `;`, edit, save, restart. Precedence is **environment > `settings.ini` > code default**,
+  and the `VBECOMPLETE_` prefix is optional inside the file (`NO_SNIPPETS` and
+  `VBECOMPLETE_NO_SNIPPETS` both work, case-insensitive). `py -3 settings.py` prints every value *and
+  where it came from*; `--write` regenerates the file. Four points were easy to get wrong: the ini is
+  read **once at import** (these are module-level constants and the keystroke path must never touch the
+  disk); the rule is "the first layer that *parses* wins", so a garbage env value like `=maybe` is
+  skipped and the ini is still consulted instead of falling straight back to the code default; an empty
+  string counts as unset (`set X=` leaves an empty value on Windows); and `configparser` needs
+  `interpolation=None` (else `VBE_POPUP_CLASS=A%B` blows up the whole file) plus `strict=False` **as a
+  constructor argument** (`cp.strict = False` is a no-op) and `utf-8-sig` (Notepad's BOM otherwise turns
+  the first key into `\ufeffAUTO_SPACE`). `settings.py` sits at the bottom of the dependency graph and
+  imports nothing from the project. An old bug fell out of this: the log path was hard-coded to
+  `D:\codes\VbeComplete-V587\VbeComplete.log`, so it silently stopped working on any other machine.
+  *(b) `Ctrl+/` toggles line comments* over the selection, or over the caret's line when there is none,
+  with IDEA's rule: it **removes** only when **every non-blank line is already commented**, otherwise it
+  adds. Blank lines are skipped, the `'` lands **after the indentation** (putting it at column 1 comments
+  out the indentation itself, and the VBE re-indents on the way back), and removal strips one `' ` and
+  falls back to a bare `'` so hand-written `'notes` uncomments correctly. Only `'` is recognized — never
+  `Rem`, where a wrong guess would eat a character of real code. Two VBA-specific hazards: `ReplaceLine`
+  **trims trailing spaces**, and one edit per line means the undo stack is **N steps** (COM has no
+  command groups) — both are documented rather than papered over. The selection is restored afterwards
+  (`SetSelection(sl, 1, el, very large column)`, letting the VBE clamp it) so that pressing the key twice
+  really is a toggle; a selection that *ends* at column 1 is treated as excluding its last line, matching
+  IDEA. `VBECOMPLETE_NO_COMMENT=1` turns it off.
+
 **Coexistence**
 
 - After `object.`, VbeComplete steps aside and lets the VBE's own, type-aware member list take over.
@@ -168,6 +211,7 @@ semantic infrastructure.
 | Paired deletion on `Backspace` | ✅ |
 | Smart indentation and automatic block closers | ✅ |
 | Start a new line (`Shift+Enter`) | ✅ |
+| Toggle line comment (`Ctrl+/`) | ✅ |
 | Trailing space for keywords; `()` after functions | ✅ |
 | No completion while declaring a new name | ✅ |
 | Type-aware member completion | Delegated to the VBE's native member list |
@@ -182,7 +226,13 @@ risk/benefit simply doesn't add up.
 
 ## Configuration
 
-Behaviour is tuned through environment variables (set them before launching):
+Every switch below is looked up in three places, first hit wins: **environment variable →
+`settings.ini` in the project folder → the code default**. The environment variable still beats the
+file, so a one-off experiment stays a one-liner. Inside `settings.ini` the `VBECOMPLETE_` prefix is
+optional and keys are case-insensitive. Run `py -3 settings.py` in the project folder to print each
+effective value *and its source* (`env` / `ini` / `default`) — that is how you find out whether the
+line you edited is actually the one in effect. `VBECOMPLETE_SETTINGS=<path>` points the tool at a
+different ini file (portable installs and tests).
 
 | Variable | Default | Effect |
 | --- | --- | --- |
@@ -205,6 +255,8 @@ Behaviour is tuned through environment variables (set them before launching):
 | `VBECOMPLETE_NO_CTRL_NAV` | off | `1` disables the `Ctrl+↑` / `Ctrl+↓` jumps; the keys stay with the VBE. |
 | `VBECOMPLETE_NO_CTRL_NAV_TAB` | off | `1` keeps the `Ctrl+↓` jump but never adds the procedure-level indent to the landing line. |
 | `VBECOMPLETE_NO_SNIPPETS` | off | `1` disables the `Ctrl+Q` snippet window; the key stays with the VBE. |
+| `VBECOMPLETE_NO_COMMENT` | off | `1` disables `Ctrl+/` comment toggling; the key stays with the VBE. |
+| `VBECOMPLETE_SETTINGS` | `<project folder>\settings.ini` | Which ini file to read (portable installs / tests). |
 | `VBECOMPLETE_SNIPPET_DB` | `<project folder>\snippets.db` | Where the snippet database lives (portable installs / tests point it elsewhere). |
 | `VBECOMPLETE_NO_MOD_CACHE` | off | `1` goes back to re-parsing every module on each refresh (v117 behaviour). Only useful for A/B timing; the per-module cache is what keeps a refresh at ~27 ms instead of ~224 ms. |
 
@@ -221,8 +273,10 @@ Behaviour is tuned through environment variables (set them before launching):
 | `snippet_ui.py` | The snippet window (`Ctrl+Q`): search, add / edit / delete, insert button |
 | `snippets.py` | The snippet store (SQLite, two columns) and fuzzy title matching — no UI, no COM |
 | `recent.py` | The recently-used table (`recent.json`): load, atomic save, corrupt-file tolerance — no UI, no COM (v119) |
+| `settings.py` | The configuration centre (v120): `settings.ini` parsing, the three-layer lookup, the `KNOWN` table and the commented-out template. Imports nothing from the project — `log.py` depends on it, not the other way round. `py -3 settings.py` dumps every value with its source. |
+| `settings.example.ini` | The template that `settings.py` generates, checked in so you can read it without running anything (every line commented out). |
 | `log.py` | Optional diagnostic log (off by default, zero overhead) |
-| `tests/` | Regression suite (`test_real_project.py`, 1062 checks) and the sample project it runs against. Three one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, and `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve). |
+| `tests/` | Regression suite (`test_real_project.py`, 1081 checks) and the sample project it runs against. Four one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), and `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand). |
 
 ## Credits
 

@@ -50,6 +50,7 @@ autostart on login · `run_tests.bat` runs the offline regression suite.
 | `Ctrl+↑` | Put the caret at the **end of the last `Dim` line** of the procedure (no line is inserted) |
 | `Ctrl+↓` | Jump to the blank line above `End Sub` / `End Function` (inserting one if needed) and write it at the procedure's indent level |
 | `Ctrl+Q` | Open the **snippet window** at the caret: title list on the left (fuzzy search box), code on the right; add / edit / delete, and insert the snippet at the caret |
+| `Ctrl+/` | **Toggle line comment** (IDEA-style): on every line of the selection, or the caret's line when there is none — removes the comment when all of them already have one, otherwise adds it |
 
 On accept a `Sub` gets a trailing space, a `Function` gets `()` with the caret inside **and the
 VBE's own parameter info pops up** (so you can see the signature while filling in the arguments),
@@ -63,11 +64,22 @@ always closes** (`foo(bar` + `(` -> `foo(bar())`) — and typing `"` or `(` over
 your caret; the title list is **fuzzy searchable** — a contiguous substring ranks first, but initials
 work too (`gc` finds `GetCode`), and space-separated terms must all match. Inserting writes the
 snippet **verbatim** at the caret (your own indentation is kept), leaves the caret after it, closes
-the window and gives focus back to the VBE. Turn it off with `set VBECOMPLETE_NO_SNIPPETS=1`.
-Suggested: your variables, constants and
-procedures, plus modules, forms
-and control names, keywords and built-in functions / types (≈260) — enums (`vb*` / `xl*` / `mso*`)
-are excluded. While you *declare* a new name (`Dim …`, `Sub …`) no existing symbol is offered,
+the window and gives focus back to the VBE.
+
+**Toggle comment (`Ctrl+/`)**: press it over a selection to comment those lines out, press it again
+to bring them back verbatim; blank lines are skipped and the indentation is never swallowed. Same
+rule as IDEA: it *removes* only when **every non-blank line is already commented**, otherwise it
+adds. Removal strips one `' ` (quote + space) and falls back to a bare `'`, so hand-written
+`'notes` uncomment correctly too.
+
+**Turning features off: `settings.ini`** — created in the **project folder** on first start, with
+**every line commented out** (so it changes nothing by itself). Delete the `;` in front of a line,
+edit the value, save, restart. **Environment variables still win** over the file. To see what is
+actually in effect and where each value came from, run `py -3 settings.py` in the project folder.
+
+**What is suggested**: your variables, constants and procedures, plus modules, forms and control
+names, keywords and built-in functions / types (≈260) — enums (`vb*` / `xl*` / `mso*`) are excluded.
+While you *declare* a new name (`Dim …`, `Sub …`) no existing symbol is offered,
 exactly like IDEA — but the keywords that belong at the caret are: after `Private` / `Public` you get
 `Sub` / `Function` / …, inside a parameter list `ByVal` / `ByRef` / `Optional` / `ParamArray` / `As`;
 after `As` / `New` it still offers types.

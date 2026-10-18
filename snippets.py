@@ -20,6 +20,8 @@
 import os
 import sqlite3
 
+import settings as _settings
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS snippets (
@@ -38,8 +40,8 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def db_path():
-    """库文件路径：环境变量优先，否则**项目文件夹**里的 `snippets.db`。"""
-    p = (os.environ.get(ENV_DB) or "").strip()
+    """库文件路径：配置中心（`SNIPPET_DB`）优先，否则**项目文件夹**里的 `snippets.db`。"""
+    p = _settings.text("SNIPPET_DB", "")
     if p:
         return p
     return os.path.join(PROJECT_DIR, DEFAULT_DB_NAME)

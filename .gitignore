@@ -24,6 +24,12 @@ snippets.db-shm
 recent.json
 recent.json.tmp
 
+# ---- 用户数据：开关配置（★v120）----
+# settings.ini 是你本机的开关配置（首次启动时照 settings.example.ini 生成，
+# 里面每一项默认都是注释掉的）。它不进仓库；模板 settings.example.ini 入库，
+# 跟着代码走 —— 换机器时它会被自动复制成新的 settings.ini。
+settings.ini
+
 # ---- 调试输出 ----
 _dbg.txt
 _o.txt

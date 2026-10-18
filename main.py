@@ -78,6 +78,7 @@ except ImportError:
 
 import engine
 import parser
+import settings
 import vbe_bridge
 import snippets
 import snippet_ui
@@ -108,6 +109,7 @@ VK_CONTROL = 0x11
 VK_MENU = 0x12         # Alt
 VK_I = 0x49            # v107c：Ctrl+Shift+I = VBE 的「参数信息 / 快速信息」
 VK_Q = 0x51            # v115：Ctrl+Q = 代码片段窗
+VK_OEM_2 = 0xBF        # v120：Ctrl+/ = 批量注释 / 取消注释（US 布局的 `/` 键）
 VK_LWIN = 0x5B         # v110：左 Win 键。Win+↑ 是系统快捷键（窗口最大化），
 VK_RWIN = 0x5C         #       绝不接管 —— 见 _ctrl_nav_key_ok 的修饰键门槛
 
@@ -302,11 +304,7 @@ def _ctrl_nav_vk_ok(vk, ctrl_down, shift_down, alt_down, win_down):
 #     在窗里明说**，绝不静默。
 #
 # 想关掉：`set VBECOMPLETE_NO_SNIPPETS=1`（Ctrl+Q 原样交给 VBE）。
-try:
-    SNIPPET_POPUP = (os.environ.get("VBECOMPLETE_NO_SNIPPETS",
-                                    "0").strip() != "1")
-except Exception:
-    SNIPPET_POPUP = True
+SNIPPET_POPUP = not settings.flag("NO_SNIPPETS", False)
 
 
 def _snippet_vk_ok(vk, ctrl_down, shift_down, alt_down, win_down):
@@ -316,6 +314,40 @@ def _snippet_vk_ok(vk, ctrl_down, shift_down, alt_down, win_down):
     —— Ctrl+Shift+Q / Ctrl+Alt+Q 是别的东西，绝不抢。
     """
     if vk != VK_Q:
+        return False
+    if not ctrl_down:
+        return False
+    if shift_down or alt_down or win_down:
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# ★v120：Ctrl+/ = 批量注释 / 取消注释（IDEA 语义）
+#
+# 用户口径（原话）："Ctrl+/ 批量注释和Ctrl+/ 批量解除注释，这个帮我弄一下，
+# 就像IDEA那样。"
+#
+# 分工与其他"接管一次按键"的功能完全一致：
+#   * 钩子线程只判"这一下该不该由我们接管"（纯函数 `_comment_vk_ok` + 三道读
+#     运行期状态的闸），绝不碰 COM —— "选区里有没有东西、是加还是取消" 都要
+#     读模块文本，那只能发生在主线程；
+#   * 真正的读写在前端 `VbeBackend.toggle_comment`，判据是纯函数
+#     `parser.plan_comment_action`（同一份实现）；
+#   * 什么都不用做（光标在空行上、选区全是空白）时，把按键**原样还给系统** ——
+#     VBE 原生 Ctrl+/ 本来什么也不做，所以还回去不会丢功能。
+#
+# 想关掉：`set VBECOMPLETE_NO_COMMENT=1`（或 settings.ini 里 `NO_COMMENT = 1`）。
+COMMENT_TOGGLE = not settings.flag("NO_COMMENT", False)
+
+
+def _comment_vk_ok(vk, ctrl_down, shift_down, alt_down, win_down):
+    """这一下是不是"【单独】按着 Ctrl 的 `/`"（★v120，纯函数，无系统调用）。
+
+    修饰键门槛与前几条同一取向：Shift / Alt / Win 任一在按都不算 ——
+    `Ctrl+Shift+/` 在很多键盘布局上是 `?`，`Ctrl+Alt+/` 是别的东西，绝不抢。
+    """
+    if vk != VK_OEM_2:
         return False
     if not ctrl_down:
         return False
@@ -366,11 +398,7 @@ _CN_PAIR = {"(": "（", ")": "）", '"': "“"}
 
 # 想强制按半角处理（万一某个输入法报的状态不对）：
 #   set VBECOMPLETE_NO_IME_PUNCT=1
-try:
-    IME_PUNCT_AWARE = (
-        os.environ.get("VBECOMPLETE_NO_IME_PUNCT", "0").strip() != "1")
-except Exception:
-    IME_PUNCT_AWARE = True
+IME_PUNCT_AWARE = not settings.flag("NO_IME_PUNCT", False)
 
 _IME_PROTO = {"ready": False}
 
@@ -593,11 +621,7 @@ CONFIRM_VKS = (VK_TAB,)
 # 这里由我们吞键 + 用 COM 落光标，见 VbeBackend.move_caret_line。
 # 想关掉（Shift+↑/↓ 原样交给 VBE，即原生"扩展选区"）：
 #   set VBECOMPLETE_NO_SHIFT_NAV=1
-try:
-    SHIFT_NAV_JUMP = (os.environ.get("VBECOMPLETE_NO_SHIFT_NAV",
-                                     "0").strip() != "1")
-except Exception:
-    SHIFT_NAV_JUMP = True
+SHIFT_NAV_JUMP = not settings.flag("NO_SHIFT_NAV", False)
 
 # ★v110：Ctrl+↑ / Ctrl+↓ = 在【当前过程】内跳转（用户 2026-10-15 提的两条）。
 #   Ctrl+↑：跳到本过程最后一个 Dim 语句下面的空白行（没有就照 Dim 行的缩进
@@ -614,11 +638,7 @@ except Exception:
 # 状态、不碰 COM —— 与 _bs_delete_pair_key_ok 同一副骨架）。
 # 想关掉：`set VBECOMPLETE_NO_CTRL_NAV=1`（Ctrl+↑/↓ 原样交给 VBE，而 VBE
 # 原生这两个组合什么都不做）。
-try:
-    CTRL_NAV_JUMP = (os.environ.get("VBECOMPLETE_NO_CTRL_NAV",
-                                    "0").strip() != "1")
-except Exception:
-    CTRL_NAV_JUMP = True
+CTRL_NAV_JUMP = not settings.flag("NO_CTRL_NAV", False)
 
 # 回车自动缩进（v79）。
 #
@@ -631,11 +651,7 @@ except Exception:
 # 空行、光标不在行尾、行内有 Tab —— 一律不接管，原样交给 VBE，风险为零。
 # 万一 COM 没写成，_enter_indent_here 会把这一下回车原样还给系统。
 # 想关掉（回车完全回到 VBE 原生）：set VBECOMPLETE_NO_ENTER_INDENT=1
-try:
-    ENTER_INDENT = (os.environ.get("VBECOMPLETE_NO_ENTER_INDENT",
-                                   "0").strip() != "1")
-except Exception:
-    ENTER_INDENT = True
+ENTER_INDENT = not settings.flag("NO_ENTER_INDENT", False)
 
 # ---- v94：退格删整行（IDEA 风格）----
 #
@@ -650,11 +666,7 @@ except Exception:
 # 轮询留下的快照，绝不碰 COM）；真正的删除在主线程，删不成就把这一下退格
 # 【原样还给系统】—— 绝不会"吞了按键却什么都没发生"。
 # 想关掉（退格完全回到 VBE 原生）：set VBECOMPLETE_NO_BS_DELLINE=1
-try:
-    BS_DELETE_BLANK_LINE = (os.environ.get("VBECOMPLETE_NO_BS_DELLINE",
-                                           "0").strip() != "1")
-except Exception:
-    BS_DELETE_BLANK_LINE = True
+BS_DELETE_BLANK_LINE = not settings.flag("NO_BS_DELLINE", False)
 
 # ---- v99：退格成对删除（空括号 / 空引号）----
 #
@@ -672,11 +684,7 @@ except Exception:
 # 两者的输入互斥（空白行里不会有 `()`），所以先后顺序无所谓；排在 v94 之后
 # 是因为它更常用。
 # 想关掉（这一下退格完全回到 VBE 原生）：set VBECOMPLETE_NO_BS_DELPAIR=1
-try:
-    BS_DELETE_PAIR = (os.environ.get("VBECOMPLETE_NO_BS_DELPAIR",
-                                     "0").strip() != "1")
-except Exception:
-    BS_DELETE_PAIR = True
+BS_DELETE_PAIR = not settings.flag("NO_BS_DELPAIR", False)
 
 # 钩子里判"要不要接管回车"时，轮询快照最多允许多旧（秒）。
 # 快照是每轮轮询刷新的（100ms 一次），但空闲时会降频到 2s。超过这个年纪就
@@ -695,11 +703,7 @@ ENTER_CTX_MAX_AGE = 0.8
 # 那条不看光标列（它本来就不拆行），于是"光标停在代码中间"时也能补出收尾来。
 # 关掉它，两边一起回到"只换行不补收尾"。
 # 想关掉（只留缩进、不补收尾）：set VBECOMPLETE_NO_AUTOCLOSE=1
-try:
-    AUTO_CLOSE_BLOCK = (os.environ.get("VBECOMPLETE_NO_AUTOCLOSE",
-                                       "0").strip() != "1")
-except Exception:
-    AUTO_CLOSE_BLOCK = True
+AUTO_CLOSE_BLOCK = not settings.flag("NO_AUTOCLOSE", False)
 
 # ---- v81：块【内】分支行（Else / ElseIf…Then / Case…）按回车自动对齐 ----
 # 用户的追加要求：「我在写了一行 if 之后，回车会自动缩进和补充 end if，然后我再写
@@ -715,11 +719,7 @@ except Exception:
 # 而 Case 比 Select Case【深一级】（`Select Case x` / `    Case 1` / `        y = 1`）
 # —— v81 把 Case 也拉平了，用户报的"case 应该是相对于 select 缩进的"就是这一处。
 # 想关掉：set VBECOMPLETE_NO_BRANCH_ALIGN=1
-try:
-    BRANCH_ALIGN = (os.environ.get("VBECOMPLETE_NO_BRANCH_ALIGN",
-                                   "0").strip() != "1")
-except Exception:
-    BRANCH_ALIGN = True
+BRANCH_ALIGN = not settings.flag("NO_BRANCH_ALIGN", False)
 
 # 弹窗可见时这些键由 win32_filter 接管（↑/↓ 导航、Tab 确认、Esc 取消），
 # 且会被 suppress_event() 吞掉。on_press 里绝不能抢先收起弹窗，否则"按方向键
@@ -791,11 +791,7 @@ HOOK_SUPPRESS_SEC = 2.5
 # 或这道闸门在你机器上误判（该弹的时候不弹），用这个开关退回旧行为
 # （前台窗口标题里有 "Microsoft Visual Basic" 就算数）：
 #   set VBECOMPLETE_NO_CODE_AREA_GATE=1
-try:
-    CODE_AREA_GATE = (
-        os.environ.get("VBECOMPLETE_NO_CODE_AREA_GATE", "0").strip() != "1")
-except Exception:
-    CODE_AREA_GATE = True
+CODE_AREA_GATE = not settings.flag("NO_CODE_AREA_GATE", False)
 
 # 自动配对：敲 `(` 补 `)`、敲 `"` 补另一个 `"`，光标落在中间。
 #
@@ -803,10 +799,7 @@ except Exception:
 # 往外加），所以由我们补上不会出现"两边都补"的双份；VBE 只在【行尾按回车时】
 # 才补缺失的右引号，与逐字符输入不冲突。
 # 想关掉：set VBECOMPLETE_NO_AUTOPAIR=1
-try:
-    AUTO_PAIR = os.environ.get("VBECOMPLETE_NO_AUTOPAIR", "0").strip() != "1"
-except Exception:
-    AUTO_PAIR = True
+AUTO_PAIR = not settings.flag("NO_AUTOPAIR", False)
 
 # 文本变化后，标识符缓存最快多久允许重解析一次（秒）。
 # 太小会每敲一个键都全量解析所有模块（大工程会卡），太大则新声明的变量
@@ -1065,6 +1058,21 @@ def _poll_action(typed_sep):
 def main():
 
     _log_boot()
+
+    # ★v120：第一次运行时在项目文件夹生成 `settings.ini` —— 照
+    # `settings.example.ini` 复制，里面**每一项都是注释掉的**，所以"生成一份"
+    # 本身不会改变任何行为（全部仍是默认值）。用户打开它、把想改的那一行
+    # 前面的 `;` 删掉即可，不用再开命令行 set 环境变量。
+    #
+    # 失败一律静默（只读安装目录、权限受限都可能写不出来）：配置文件是便利
+    # 设施，绝不能因为它让补全器起不来。想彻底不生成：设 VBECOMPLETE_SETTINGS
+    # 指向别处，或直接把 settings.ini 删掉也照样能跑。
+    try:
+        _ini_path, _ini_made = settings.ensure_file()
+        if _ini_made:
+            _log("settings: 已生成配置文件 %s" % _ini_path)
+    except Exception:
+        pass
 
     if not acquire_single_instance():
         return
@@ -1424,6 +1432,36 @@ def main():
             _log("autopair: insert_pair 异常 -> 原样还给系统")
         send_char(ch)
 
+    def _toggle_comment_here():
+        """Ctrl+/：对选区内（无选区=光标所在行）批量加注释 / 取消注释（★v120）。
+
+        【只在主线程执行】—— 要读模块文本，COM 只能在主线程碰。按键这时已经
+        被钩子吞掉了，所以必须收尾：写成了最好；什么都不用做（光标停在空行、
+        选区全是空白、或 COM 恰好抽风）就把这一下按键**原样还给系统** ——
+        绝不"吞了键却什么都没发生"。VBE 原生 Ctrl+/ 本来什么也不做，还回去
+        不会丢功能。
+
+        先收候选窗：这一行的文本马上要变，窗里那些候选的位置与前缀都不作数了。
+
+        ★改过代码文本必须当场作废快照（state["cur_ctx"] = None）：快照是轮询
+        刷的，不作废的话随后一次轮询会拿旧行文本去比对，平白多弹一次候选窗
+        （与 _delete_blank_line_here / _ctrl_nav_jump_here 同一条规矩）。
+        """
+        try:
+            completer.hide()
+        except Exception:
+            pass
+        _ok = False
+        try:
+            _ok = backend.toggle_comment()
+        except Exception:
+            _ok = False
+        if _ok:
+            state["cur_ctx"] = None
+        else:
+            _log("comment: 未接管 -> 按键原样还给系统")
+            send_vk(VK_OEM_2, ctrl=True)
+
     def drain_actions():
         """主线程循环消费动作队列。"""
         try:
@@ -1614,6 +1652,38 @@ def main():
         except Exception:
             return False
 
+    def _comment_key_ok(vk):
+        """这一下 Ctrl+/ 要不要由我们接管（★v120，跑在键盘钩子线程）。
+
+        与 `_ctrl_nav_key_ok` 同一副骨架：钩子线程只读本地状态 / 纯 Win32，
+        绝不碰 COM —— "选区内有哪些行、该加还是该取消"必须读模块文本，那只能
+        在主线程做（后端那侧 `toggle_comment`）；算不成立就把按键还回去。
+
+        三道闸：`pending_keys > 0`（输入法正在组字 / 刚敲的字还没落进文档，
+        与 v79 回车同一道闸）、COM 退避中、焦点不在 VBE 代码窗格。
+        """
+        try:
+            if not COMMENT_TOGGLE:
+                return False
+            if vk != VK_OEM_2:
+                return False          # 先挡掉绝大多数按键，省三次系统调用
+            u32 = ctypes.windll.user32
+            if not _comment_vk_ok(
+                    vk,
+                    bool(u32.GetAsyncKeyState(VK_CONTROL) & 0x8000),
+                    _shift_down(),
+                    bool(u32.GetAsyncKeyState(VK_MENU) & 0x8000),
+                    bool(u32.GetAsyncKeyState(VK_LWIN) & 0x8000
+                         or u32.GetAsyncKeyState(VK_RWIN) & 0x8000)):
+                return False
+            if int(state.get("pending_keys") or 0) > 0:
+                return False
+            if com_backoff_remaining() > 0 or not in_vbe_code_area():
+                return False
+            return True
+        except Exception:
+            return False
+
     def win32_filter(msg, data):
         """
         Windows 低层键盘钩子的事件过滤器（运行在钩子线程）。
@@ -1660,6 +1730,12 @@ def main():
                     # 与候选窗是否可见无关（开着候选也照样能叫出来）。
                     # Ctrl+Q 在 VBE 里本来什么也不做，吞掉它不会让用户失去功能。
                     action = (_open_snippets, ())
+                    suppress = True
+                elif _comment_key_ok(vk):
+                    # ★v120：Ctrl+/ = 批量注释 / 取消注释（判据见 _comment_key_ok，
+                    # 读写见 _toggle_comment_here）。排在候选窗分支【之前】：
+                    # 它要改文本，窗里那些候选的位置与前缀马上就不作数了。
+                    action = (_toggle_comment_here, ())
                     suppress = True
                 elif (_is_newline_shortcut(vk, _shift_down())
                         and com_backoff_remaining() <= 0

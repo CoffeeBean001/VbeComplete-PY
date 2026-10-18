@@ -23,12 +23,12 @@ backend 需实现：
       那个残留标识符，后者要盖住同一个名字的后半截。取词见 extract_word_at。
 """
 
-import os
 import re
 import time
 
 import parser as vba_parser
 import recent as _recent_store
+import settings as _settings
 
 # ★v98：内建数据类型名（小写）的惰性缓存。首次用时才 import vba_builtins。
 # ★v99 补上内建**函数**名的白名单缓存（见 _builtin_function_names）。
@@ -93,12 +93,9 @@ def _is_own_proc_name(name, enclosing_proc):
 #
 # 光标停在 VBE 自己会弹「自动列出成员」的位置时我们让位（详见
 # vbe_list_expected）。若某台机器上 VBE 的自动列出成员是关掉的、或你想
-# 永远用我们的列表，设 VBECOMPLETE_NO_YIELD=1 关掉这套让位。
-try:
-    YIELD_TO_VBE_LIST = (
-        os.environ.get("VBECOMPLETE_NO_YIELD", "0").strip() != "1")
-except Exception:
-    YIELD_TO_VBE_LIST = True
+# 永远用我们的列表，设 VBECOMPLETE_NO_YIELD=1（或 settings.ini 里
+# `NO_YIELD = 1`）关掉这套让位。
+YIELD_TO_VBE_LIST = not _settings.flag("NO_YIELD", False)
 
 # ★v103c：成员位置（`标识符.` 之后 / With 块里的 `.成员`）要不要出**我们自己的**候选窗。
 #
@@ -119,7 +116,7 @@ except Exception:
 #    "什么都不弹"，也好过"弹一堆不相干的名字"。
 #
 # 想恢复旧行为（出候选、并按声明类型收窄）：`set VBECOMPLETE_MEMBER_POPUP=1`。
-MEMBER_POPUP = (os.environ.get("VBECOMPLETE_MEMBER_POPUP", "0").strip() == "1")
+MEMBER_POPUP = _settings.flag("MEMBER_POPUP", False)
 
 # ★v105：**声明位置**（正在"造一个新名字"）要不要弹候选。
 #
@@ -141,7 +138,7 @@ MEMBER_POPUP = (os.environ.get("VBECOMPLETE_MEMBER_POPUP", "0").strip() == "1")
 #
 # 想恢复旧行为（声明行照常出候选、只过滤掉正在输入的那个词本身）：`set
 # VBECOMPLETE_DECL_POPUP=1`。
-DECL_POPUP = (os.environ.get("VBECOMPLETE_DECL_POPUP", "0").strip() == "1")
+DECL_POPUP = _settings.flag("DECL_POPUP", False)
 
 # v73：让位的【宽限期】（秒）—— 见 Completer.trigger 里让位那段。
 #
@@ -157,10 +154,7 @@ DECL_POPUP = (os.environ.get("VBECOMPLETE_DECL_POPUP", "0").strip() == "1")
 #
 # 调大 = 更愿意等 VBE（VBE 慢的机器上有用）；调小 = 更快补上自己的候选。
 #   set VBECOMPLETE_YIELD_GRACE=0.6
-try:
-    YIELD_GRACE = float(os.environ.get("VBECOMPLETE_YIELD_GRACE", "").strip())
-except Exception:
-    YIELD_GRACE = 0.25
+YIELD_GRACE = _settings.float_value("YIELD_GRACE", 0.25)
 if not (0.0 < YIELD_GRACE < 5.0):
     YIELD_GRACE = 0.25
 
@@ -181,11 +175,7 @@ if not (0.0 < YIELD_GRACE < 5.0):
 #     list_slot_anchor。
 #   set VBECOMPLETE_YIELD_TTL=0.5  调小（更积极让位）
 #   set VBECOMPLETE_YIELD_TTL=0    干脆不记这个标记（每次触发都让位）
-try:
-    YIELD_GIVEN_UP_TTL = float(
-        os.environ.get("VBECOMPLETE_YIELD_TTL", "").strip() or 1.5)
-except Exception:
-    YIELD_GIVEN_UP_TTL = 1.5
+YIELD_GIVEN_UP_TTL = _settings.float_value("YIELD_TTL", 1.5)
 if not (0.0 <= YIELD_GIVEN_UP_TTL <= 30.0):
     YIELD_GIVEN_UP_TTL = 1.5
 
@@ -1042,11 +1032,8 @@ def _longest_run(positions):
 
 
 def _env_int(name, default):
-    """环境变量给整数阈值（未设置 / 认不出 -> default）。"""
-    try:
-        return int(str(os.environ.get(name, "")).strip())
-    except Exception:
-        return default
+    """整数阈值（★v120 起转交配置中心：环境变量 > settings.ini > default）。"""
+    return _settings.int_value(name, default)
 
 
 # v71：内建"公共词汇"（内建函数 / 数据类型 / 语言关键字）在 **2~3 字符短输入**下，
@@ -1082,8 +1069,8 @@ BUILTIN_SCATTER_MIN = _env_int("VBECOMPLETE_BUILTIN_SCATTER_MIN", 2)
 #
 # ⚠️ 两条都只插在排序键的【中段】：命中质量（kind / 首个命中位置 / 跨度）
 #    永远优先 —— 这是 v96 定下的铁律（标志塞末尾 = 死规则）。
-RANK_BY_SCOPE = (os.environ.get("VBECOMPLETE_NO_SCOPE_RANK", "0").strip() != "1")
-RANK_BY_RECENT = (os.environ.get("VBECOMPLETE_NO_RECENT_RANK", "0").strip() != "1")
+RANK_BY_SCOPE = not _settings.flag("NO_SCOPE_RANK", False)
+RANK_BY_RECENT = not _settings.flag("NO_RECENT_RANK", False)
 # 最近使用表最多记多少个名字（超了丢最旧的一批）。只存名字、不存内容。
 RECENT_MAX = _env_int("VBECOMPLETE_RECENT_MAX", 64)
 # ★v119：把这张表**落盘**，跨会话累计（否则 stop.bat 一停就清零）。
@@ -1091,8 +1078,7 @@ RECENT_MAX = _env_int("VBECOMPLETE_RECENT_MAX", 64)
 # 行为与 v118 完全一致 —— A/B 用）。
 # ⚠️ 写入**绝不在按键路径上**（accept 里只置脏标记），由 main 的轮询
 # 每 2 秒看一眼 —— 见 Completer.flush_recent 与 main.poll_editor。
-PERSIST_RECENT = (os.environ.get(
-    "VBECOMPLETE_NO_RECENT_PERSIST", "0").strip() != "1")
+PERSIST_RECENT = not _settings.flag("NO_RECENT_PERSIST", False)
 
 
 # ★v93：这里原来还有一个 `_name_exists_outside_caret(backend, word, line_no,
