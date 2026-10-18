@@ -3942,12 +3942,6 @@ class VbeBackend:
         # 用来决定"按 Tab 确认之后后面跟空格还是跟括号"：Sub 是无返回值的语句、
         # 标准写法不带括号（补了 VBE 也会删），Function 要括号。
         self._proc_kinds = {}
-        # ★v125：{过程名(小写): (形参表原文, 返回类型)}，给签名提示条用。
-        # 与 _proc_kinds 同源同刷新 —— 见 `get_proc_signatures`。
-        self._proc_sigs = {}
-        # ★v125：上一次 `apply_completion` 有没有真的补出一对 `()`。
-        # 引擎读完就去弹签名条（True）/ 不弹（False）。只反映"最近一次"。
-        self._last_parens_added = False
         # ★v98：{类型名(小写): (收集时间戳, 成员名小写集合)}。
         # 与 _cache_time 同一个 TTL（get_members_of 里比对）。
         self._members_of_cache = {}
@@ -4138,27 +4132,6 @@ class VbeBackend:
             except Exception:
                 return {}
         return getattr(self, "_proc_kinds", None) or {}
-
-    def get_proc_signatures(self):
-        """返回 {小写过程名: (形参表原文, 返回类型)}。★v125
-
-        与 `get_proc_kinds` **同源**（同一次 `get_identifiers`、同一份模块文本、
-        同一个 TTL）—— 所以"这个是不是过程"、"它是哪种过程"、"它长什么样"
-        三件事永远出自同一份代码，不会一边新一边旧。
-
-        用途：按 Tab 补完括号后，`engine` 拿它拼出签名条
-        （`Calc(ByVal x As Long, Optional s As String) As Long`）。
-
-        ⚠️ 交回内部 dict 本身（**只读，调用方不得修改**）。
-        ⚠️ 查不到 = 这个名字没有签名（例如过程头写成我们解析不了的样子）——
-        调用方**不弹**签名条，绝不猜一个出来。
-        """
-        if not getattr(self, "_proc_sigs", None):
-            try:
-                self.get_identifiers()
-            except Exception:
-                return {}
-        return getattr(self, "_proc_sigs", None) or {}
 
     def get_declared_names(self):
         """返回工程里真实声明过的名字（小写集合），供引擎剔除"提示自己"的幻影。
@@ -4363,10 +4336,6 @@ class VbeBackend:
         # ★v103c：过程名(小写) -> "sub" / "function" / "property"。
         # 补全时用它决定"后面跟空格还是跟括号"（见 engine._completion_followup）。
         proc_kinds = {}
-        # ★v125：过程名(小写) -> (形参表原文, 返回类型)，给"补完括号后弹签名条"用。
-        # 与 proc_kinds 同源同刷新（同一份 module 文本、同一批过程头正则），
-        # 额外成本只是每行多跑一次 `find("(")` —— 不额外读 COM。
-        proc_sigs = {}
         # 结构性名字：组件名 + 窗体控件名（v60）+ 语言自带名字（v61/v62）。
         # 详见 __init__ 里的说明。
         structural_names = set()
@@ -4489,25 +4458,6 @@ class VbeBackend:
                     except Exception:
                         _pks = {}
                     proc_kinds.update(_pks)
-                    # ★v125：顺手把形参签名也收了（同一份 code、同一批正则）。
-                    # 同名过程的取舍：**光标所在模块优先**，其余先到先得。
-                    # 为什么不能一律"先到先得"：VBA 允许两个模块各有一个同名
-                    # `Private Function`（很常见，比如 `getDetailShts`），拿错
-                    # 一份就会显示别人的形参名 —— 那还不如不显示。
-                    try:
-                        _psig = dict(vba_parser.extract_proc_signatures(code))
-                    except Exception:
-                        _psig = {}
-                    try:
-                        _is_cur_mod = bool(caret_mod) and \
-                            mod_name.lower() == str(caret_mod).lower()
-                    except Exception:
-                        _is_cur_mod = False
-                    for _sk, _sv in _psig.items():
-                        if _is_cur_mod:
-                            proc_sigs[_sk] = _sv
-                        else:
-                            proc_sigs.setdefault(_sk, _sv)
                     records.extend(recs)
                     # 记下【这一刻光标处的词】：它多半是用户正在输入 / 正在
                     # 回退删除的词。回退删字时，缓存的池子里还留着它更长的
@@ -4746,7 +4696,6 @@ class VbeBackend:
         self._declared_names = declared_names
         self._proc_names = proc_names
         self._proc_kinds = proc_kinds          # ★v103c：过程 -> sub/function/property
-        self._proc_sigs = proc_sigs            # ★v125：过程 -> (形参表, 返回类型)
         self._declared_by_module = _decl_by_mod
         self._structural_names = structural_names
         self._builtin_names = builtin_names
@@ -6047,11 +5996,6 @@ class VbeBackend:
                         _log("apply_completion: 唤出参数信息异常 %r" % (_e107c,))
                 else:
                     _log("apply_completion: 拿不到参数信息命令 -> 静默跳过")
-            # ★v125：记下"这一次到底有没有【我们补出来的】那对括号"。
-            # 引擎据此决定要不要弹签名条 —— 用户自己敲的 `(` 不该再弹一次
-            # （那时 VBE 自己的参数信息已经在管了）。用属性而不是改返回值：
-            # 返回值被上百条用例钉死成"写回后的行文本"，加元组会全红。
-            self._last_parens_added = bool(added_parens)
             return new_line
         except Exception:
             return None

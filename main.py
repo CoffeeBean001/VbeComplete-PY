@@ -83,10 +83,9 @@ import snippets
 import snippet_ui
 import jump_ui
 import vba_builtins
-import vba_signatures
 import wordbank
 from vbe_bridge import VbeBackend, com_backoff_remaining
-from ui import Popup, SignatureTip, MAX_VISIBLE_ROWS, caret_screen_rect
+from ui import Popup, MAX_VISIBLE_ROWS, caret_screen_rect
 from log import log as _log, log_boot as _log_boot
 from log import LOG_ENABLED as _LOG_ENABLED
 
@@ -1206,23 +1205,17 @@ def main():
     #
     # 失败一律退回代码里的种子清单（只记一行日志）—— 词库是增强设施，
     # 没有资格让补全整体起不来。
-    # ★v125：`wordbank.db` 里再带一张 `signatures` 表（内建函数的形参签名）。
-    # 与词库同一个文件、同一次加载 —— 见 wordbank 顶部"为什么不是拆成两个库"。
-    # 老库没有这张表时 `ensure` 只补建它（`words` 表一个字节不碰），失败静默。
     try:
         if settings.flag("NO_WORDBANK", False):
             _log("wordbank: 按 NO_WORDBANK=1 跳过，用代码里的种子清单")
         else:
             _wb_rows = vba_builtins.seed_rows()
-            _wb_sigs = vba_signatures.seed_rows()
-            _wb_created, _wb_path = wordbank.ensure(_wb_rows, sigs=_wb_sigs)
+            _wb_created, _wb_path = wordbank.ensure(_wb_rows)
             if _wb_created:
-                _log("wordbank: 已建库 %s（%d 条 + %d 条签名）"
-                     % (_wb_path, len(_wb_rows), len(_wb_sigs)))
+                _log("wordbank: 已建库 %s（%d 条）" % (_wb_path, len(_wb_rows)))
             if vba_builtins.load_active():
-                _log("wordbank: 已加载 %s %r（签名 %d 条）"
-                     % (_wb_path, vba_builtins.WORDBANK_INFO["counts"],
-                        len(vba_builtins.ACTIVE_SIGNATURES)))
+                _log("wordbank: 已加载 %s %r"
+                     % (_wb_path, vba_builtins.WORDBANK_INFO["counts"]))
             else:
                 _log("wordbank: 未加载（%s）—— 退回种子清单"
                      % vba_builtins.WORDBANK_INFO.get("error"))
@@ -1235,16 +1228,8 @@ def main():
         backend = VbeBackend(send_char=send_char,
                              send_quick_info=send_quick_info)
         popup = Popup(root)
-        # ★v125：形参签名提示条（补完 `()` 之后那一条）。它和候选窗是两个窗：
-        # 候选窗管"选哪个名字"，签名条管"这个名字要什么参数"，出现时机互斥。
-        sig_tip = SignatureTip(root)
-        # 关掉的办法：`NO_SIG_TIP=1` -> 不起注入 `on_signature`，
-        # 引擎那边"没有回调就什么都不做"（旧式/测试后端同一条路）。
-        _on_sig = (None if settings.flag("NO_SIG_TIP", False)
-                   else sig_tip.show)
         # 滚动窗口行数以 UI 为准（两边必须是同一个数，否则窗口会露出半行）
-        completer = engine.Completer(backend, popup, view_rows=MAX_VISIBLE_ROWS,
-                                     on_signature=_on_sig)
+        completer = engine.Completer(backend, popup, view_rows=MAX_VISIBLE_ROWS)
         # ★v119：恢复"最近用过"的名字（跨会话累计）。失败一律静默 ——
         # 一个几 KB 的小 json 读不到，绝不该影响工具启动。
         try:
@@ -1325,8 +1310,6 @@ def main():
         state["trigger_queued"] = False
         # v72：轮询（自动）路径弹出来的候选窗 —— VBE 的成员列表一冒出来就该让位
         state["popup_manual"] = False
-        # ★v125：候选窗要出来了，签名条先收 —— 两个窗都贴光标，叠在一起最难看。
-        sig_tip.hide()
         completer.trigger(True)
 
     # ---- ★v115：代码片段窗 ----
@@ -2420,12 +2403,6 @@ def main():
     def on_press(key):
         # 绝不 return False（否则监听器会被停止）；绝不让异常逃逸。
         try:
-            # ★v125：任何一次按键都先把签名条收起来 —— 它只是"你刚才补的
-            # 那个函数要什么参数"的提示，用户一动键盘就该让位（VBE 自己的
-            # 参数信息在用户继续输入实参时会接管）。放在最前面：修饰键也收，
-            # 这样 Ctrl+Space / Ctrl+Q 这些组合键不会把它留在屏幕上。
-            if sig_tip.is_visible():
-                post(sig_tip.hide)
             if key in (Key.ctrl_l, Key.ctrl_r):
                 state["ctrl"] = True
             elif key in (Key.alt_l, Key.alt_r):

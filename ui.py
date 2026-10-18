@@ -269,311 +269,6 @@ def clashes_with_popup(x, y, w, h, rects):
     return any(rect_overlap(me, r) for r in rects)
 
 
-def set_no_activate(win):
-    """让一个 overrideredirect 悬浮窗【永远不成为激活窗口】。
-
-    弹窗是 overrideredirect + topmost 的悬浮窗，但默认点击它仍会"激活"它、
-    从而把 VBE 从"前台窗口"挤走。一旦 VBE 不再是前台窗口，main.py 的焦点去抖
-    （约 600ms）后会判定"已离开 VBE"并自动收起弹窗 —— 表现就是
-    "用鼠标拖滚动条拖一小会儿，整个列表框连同滚动条一起消失"。
-
-    加 WS_EX_NOACTIVATE 扩展样式后：窗仍能接收鼠标事件（滚动条可拖、行可点），
-    但【永远不成为激活窗口】，VBE 始终保住前台身份。
-
-    ★v125：从 `Popup._apply_noactivate` 提成模块函数 —— 签名提示条
-    （`SignatureTip`）需要同一份实现，绝不允许写两遍（铁律 21）。
-    """
-    try:
-        import ctypes
-        from ctypes import wintypes
-        user32 = ctypes.windll.user32
-        GWL_EXSTYLE = -20
-        WS_EX_NOACTIVATE = 0x08000000
-        hwnd = int(win.winfo_id())
-        if hwnd == 0:
-            return
-        for name, at, rt in (
-            ("GetWindowLongPtrW", [wintypes.HWND, ctypes.c_int], ctypes.c_void_p),
-            ("SetWindowLongPtrW",
-             [wintypes.HWND, ctypes.c_int, ctypes.c_void_p], ctypes.c_void_p),
-            ("GetWindowLongW", [wintypes.HWND, ctypes.c_int], ctypes.c_int),
-            ("SetWindowLongW", [wintypes.HWND, ctypes.c_int, ctypes.c_int],
-             ctypes.c_int),
-        ):
-            fn = getattr(user32, name, None)
-            if fn is not None:
-                try:
-                    fn.argtypes = at
-                    fn.restype = rt
-                except Exception:
-                    pass
-        getf = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
-        setf = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
-        ex = getf(hwnd, GWL_EXSTYLE)
-        ex = int(ex) if ex else 0
-        setf(hwnd, GWL_EXSTYLE, ctypes.c_void_p(ex | WS_EX_NOACTIVATE))
-    except Exception:
-        pass
-
-
-# ---------------------------------------------------------------------------
-# ★v125：形参签名提示条
-# ---------------------------------------------------------------------------
-# 为什么要自己画：真机实测（v124d）VBE 的「参数信息」窗口**从外部唤不出来**
-# —— 注入 Ctrl+Shift+I 安静但窗不出现，菜单命令 `Execute()` 窗不出现还响一声。
-# 而我们恰恰在"程序化补完 `()`"这一刻最需要它：VBE 原生那个只在**用户敲字符**
-# 时触发，我们写行文本它不理。
-#
-# 设计上的三个克制（都是为了不打扰输入）：
-#   1. **不抢焦点**（overrideredirect + WS_EX_NOACTIVATE）：它在，但你照常打字；
-#   2. **只高亮第 1 个参数**：光标刚进括号，正在填的就是第一个；不做"跟逗号走"
-#      的实时跟踪 —— 那需要每次按键都读光标，收益远小于代价（用户接着敲字时
-#      VBE 自己的参数信息会接管，我们这条已经收起）；
-#   3. **几秒后自己消失**，且**任何按键/任何一次新的补全都先收起它**。
-SIG_TTL_MS = 2400              # 自动消失时间（毫秒）
-SIG_GAP_Y = 4                  # 与光标行之间的留白
-SIG_PAD_X = 8
-SIG_PAD_Y = 4
-
-
-def split_params(params):
-    """把形参表按【顶层逗号】切成若干段。纯函数（便于离线钉死）。
-
-    * 跳过 `[...]`（可选参数）与 `(...)`（默认值里的括号）内部的逗号；
-    * 跳过字符串字面量里的逗号（`Optional s As String = "a,b"`）；
-    * 空串 -> []（不是 [""]）—— 真·无参函数要渲染成 `Foo()`。
-    """
-    text = str(params or "")
-    if not text.strip():
-        return []
-    out = []
-    buf = ""
-    depth = 0
-    in_str = False
-    for ch in text:
-        if in_str:
-            buf += ch
-            if ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-            buf += ch
-            continue
-        if ch in "([":
-            depth += 1
-            buf += ch
-            continue
-        if ch in ")]":
-            depth = max(0, depth - 1)
-            buf += ch
-            continue
-        if ch == "," and depth == 0:
-            out.append(buf.strip())
-            buf = ""
-            continue
-        buf += ch
-    if buf.strip():
-        out.append(buf.strip())
-    return out
-
-
-class SignatureTip:
-    """按 Tab 补完 `()` 之后弹出的一行形参签名（★v125）。
-
-    内容形如：
-
-        getDetailShts()                    Calc(ByVal x As Long, [s]) As Long
-        ^^^^^^^^^^^^^^                     ^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^
-        第 1 个参数高亮，返回类型用灰色
-
-    只在"我们**真的**补出了那对括号"时显示（`apply_completion` 的
-    `_last_parens_added`）：用户自己敲的 `(`，VBE 自己的参数信息已经在管，
-    再叠一条只会碍眼。
-    """
-
-    def __init__(self, root):
-        self.root = root
-        self.win = None
-        self.canvas = None
-        self.font_obj = tkfont.Font(family="Consolas", size=10)
-        # 第 1 个参数用粗体强调，必须配一个**独立的粗体 Font 对象**：
-        # `measure()` 是按字体对象算宽度的，拿常规字体量粗体文字会短一截 ——
-        # 后果是下一个片段压到这个词上（真机截图里 `, Optional` 的逗号整个被
-        # 红色参数吃掉过）。见 `_draw_and_place`。
-        self.bold_obj = tkfont.Font(family="Consolas", size=10, weight="bold")
-        self._hide_job = None
-        self._visible = False
-        self._text = ""
-        self._segs = []          # [(文本, 颜色), ...]
-        self._build()
-
-    # ---- 构建 ----
-    def _build(self):
-        self.win = tk.Toplevel(self.root)
-        self.win.withdraw()
-        self.win.overrideredirect(True)
-        self.win.wm_attributes("-topmost", True)
-        self.canvas = tk.Canvas(self.win, highlightthickness=0, bd=0,
-                                bg=COLOR_BG)
-        self.canvas.pack(fill=tk.BOTH, expand=True)
-
-    def is_visible(self):
-        return bool(self._visible)
-
-    # ---- 字体：与候选窗同一套规则（跟随 VBE，小一号）----
-    def _apply_font(self):
-        info = _vbe_font_info()
-        if info:
-            face, px = info
-            try:
-                per_pt = self.root.winfo_fpixels("1p")
-                pt = px / per_pt if per_pt else None
-            except Exception:
-                pt = None
-            if not pt:
-                pt = px * 72.0 / 96.0
-            family, size = face, _clamp_font_size(pt)
-        else:
-            family, size = "Consolas", 10
-        try:
-            self.font_obj.configure(family=family, size=size)
-        except Exception:
-            try:
-                self.font_obj.configure(size=size)
-            except Exception:
-                pass
-        try:
-            self.bold_obj.configure(family=family, size=size)
-        except Exception:
-            try:
-                self.bold_obj.configure(size=size)
-            except Exception:
-                pass
-
-    # ---- 显示 ----
-    def show(self, name, params, ret="", ttl_ms=None):
-        """show(名字, 形参表原文, 返回类型)。任何一步不成立就静默不显示。"""
-        try:
-            name = str(name or "")
-            if not name:
-                return False
-            self._apply_font()
-            parts = split_params(params)
-            ret = str(ret or "").strip()
-            segs = [(name, COLOR_FG), ("(", COLOR_FG)]
-            if parts:
-                segs.append((parts[0], COLOR_HIT))      # 正在填的就是第一个
-                for p in parts[1:]:
-                    segs.append((", " + p, COLOR_FG))
-            segs.append((")", COLOR_FG))
-            if ret:
-                segs.append((" As " + ret, COLOR_DETAIL_FG))
-            self._segs = segs
-            self._text = "".join(s for s, _c in segs)
-            if not self._draw_and_place():
-                # 拿不到光标位置 -> 不显示（别把窗扔在屏幕左上角）
-                self.hide()
-                return False
-            if self.win is None:
-                return False
-            self.win.deiconify()
-            self.win.lift()
-            set_no_activate(self.win)
-            self._visible = True
-            self._schedule_hide(ttl_ms)
-            return True
-        except Exception:
-            return False
-
-    def _draw_and_place(self):
-        """画好并定位。-> False = 定位失败（拿不到光标），调用方**不要**显示。"""
-        f = self.font_obj
-        line_h = max(16, int(f.metrics("linespace") if f else 16))
-        # 宽度必须按**实际使用的字体**量：粗体比常规宽，用常规量粗体会让下一段
-        # 压上来（`As String` 后面那个逗号被吃掉就是这个原因）。
-        def _w(font, text):
-            try:
-                return int(font.measure(text))
-            except Exception:
-                return len(str(text)) * 8
-
-        total = 0
-        paints = []
-        for text, color in self._segs:
-            font = self.bold_obj if color == COLOR_HIT else f
-            paints.append((total, text, color, font))
-            total += _w(font, text)
-        w = total + SIG_PAD_X * 2
-        h = line_h + SIG_PAD_Y * 2
-        self.canvas.configure(width=w, height=h)
-        self.canvas.delete("all")
-        y = h // 2
-        for x, text, color, font in paints:
-            self.canvas.create_text(SIG_PAD_X + x, y, text=text, anchor="w",
-                                    fill=color, font=font)
-        return self._position(w, h)
-
-    def _position(self, w, h):
-        """贴在光标那一行的**下方**；与 VBE 自己弹出的提示窗重叠就往下挪。
-
-        -> True = 位置定好了；False = 拿不到光标位置（铁律 13：什么都不做）。
-        """
-        rect = caret_screen_rect()
-        if not rect:
-            return False
-        # ⚠️ `caret_screen_rect()` 返回的是 **3 元组** `(x, top, bottom)`
-        # （只给左边界和上下沿，没有右边界 —— 光标是个竖条）。按 4 个解包会
-        # 抛 ValueError，而外层的 except 会把它吞成"没定位成功" ⇒ 签名条
-        # 永远不显示。这个坑真机踩过一次（探针里 `show: False`）。
-        left, top, bottom = rect
-        screen_h = self.root.winfo_screenheight()
-        x = int(left)
-        y = int(bottom) + SIG_GAP_Y
-        try:
-            rects = screen_popup_rects()
-        except Exception:
-            rects = []
-        if rects:
-            y = avoid_popup_rects(x, y, w, h, int(top), screen_h, rects)
-        # 右边界别出屏（签名可能很长）
-        try:
-            screen_w = self.root.winfo_screenwidth()
-            if x + w > screen_w:
-                x = max(0, screen_w - w - 4)
-        except Exception:
-            pass
-        self.win.geometry("%dx%d+%d+%d" % (w, h, max(0, x), max(0, y)))
-        return True
-
-    # ---- 收起 ----
-    def _schedule_hide(self, ttl_ms=None):
-        self._cancel_hide()
-        try:
-            ms = SIG_TTL_MS if ttl_ms is None else int(ttl_ms)
-            if ms > 0:
-                self._hide_job = self.root.after(ms, self.hide)
-        except Exception:
-            self._hide_job = None
-
-    def _cancel_hide(self):
-        if self._hide_job is not None:
-            try:
-                self.root.after_cancel(self._hide_job)
-            except Exception:
-                pass
-            self._hide_job = None
-
-    def hide(self):
-        self._cancel_hide()
-        self._visible = False
-        if self.win is not None:
-            try:
-                self.win.withdraw()
-            except Exception:
-                pass
-
-
 class Popup:
     """用 Canvas 自绘的候选列表。
 
@@ -800,12 +495,47 @@ class Popup:
         self._apply_noactivate()
 
     def _apply_noactivate(self):
-        """让弹窗【永远不抢焦点】（实现见模块级 `set_no_activate`）。
+        """让弹窗【永远不抢焦点】。
 
-        ★v125：具体实现提到模块级了 —— `SignatureTip` 也要用同一份，
-        绝不允许在 UI 里出现两套"加 WS_EX_NOACTIVATE"的代码（铁律 21）。
+        弹窗是 overrideredirect + topmost 的悬浮窗，但默认点击它仍会"激活"它、
+        从而把 VBE 从"前台窗口"挤走。一旦 VBE 不再是前台窗口，main.py 的焦点去抖
+        （约 600ms）后会判定"已离开 VBE"并自动收起弹窗 —— 表现就是
+        "用鼠标拖滚动条拖一小会儿，整个列表框连同滚动条一起消失"。
+
+        加 WS_EX_NOACTIVATE 扩展样式后：弹窗仍能接收鼠标事件（滚动条可拖、行可点），
+        但【永远不成为激活窗口】，VBE 始终保住前台身份，焦点驱动逻辑不会再误收起它。
         """
-        set_no_activate(self.win)
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            GWL_EXSTYLE = -20
+            WS_EX_NOACTIVATE = 0x08000000
+            hwnd = int(self.win.winfo_id())
+            if hwnd == 0:
+                return
+            for name, at, rt in (
+                ("GetWindowLongPtrW", [wintypes.HWND, ctypes.c_int], ctypes.c_void_p),
+                ("SetWindowLongPtrW",
+                 [wintypes.HWND, ctypes.c_int, ctypes.c_void_p], ctypes.c_void_p),
+                ("GetWindowLongW", [wintypes.HWND, ctypes.c_int], ctypes.c_int),
+                ("SetWindowLongW", [wintypes.HWND, ctypes.c_int, ctypes.c_int],
+                 ctypes.c_int),
+            ):
+                fn = getattr(user32, name, None)
+                if fn is not None:
+                    try:
+                        fn.argtypes = at
+                        fn.restype = rt
+                    except Exception:
+                        pass
+            getf = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+            setf = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+            ex = getf(hwnd, GWL_EXSTYLE)
+            ex = int(ex) if ex else 0
+            setf(hwnd, GWL_EXSTYLE, ctypes.c_void_p(ex | WS_EX_NOACTIVATE))
+        except Exception:
+            pass
 
     # ---- 文本截断（仿 IDEA：放不下就用 ... 省略）----
     def _truncate_to_width(self, text, max_w):

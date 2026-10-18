@@ -15158,19 +15158,10 @@ def main():
         #      用户口径（原话）："提示自定义函数的时候，不需要在提示词框最下方
         #      提示形参列表。" v103 曾仿 IDEA 在详情行接上 `judge  (s1, s2)`，
         #      现在整套撤掉 —— 这里把"撤干净"钉住（源码护栏 + 接口不存在）。
-        #      ★v125 部分反转：用户改口径了 ——"需要形参签名提示"。于是
-        #      `extract_proc_signatures` **回来**，但**形态换了**：不再是候选窗
-        #      里那一行详情，而是"补完 `()` 之后一条独立的、不抢焦点的提示条"
-        #      （`ui.SignatureTip`）。所以 82.18/82.19 那两条"详情行不许显示
-        #      形参"**照旧有效**，变的是"解析器必须存在 —— 因为它这次真的有
-        #      调用方"（engine._signature_of -> on_signature -> SignatureTip）。
-        check("82.17 ★v125 反转：`parser.extract_proc_signatures` **回来了**！"
-              "v103b 删它是因为当时把形参塞进候选窗详情行（用户明确不要那种）；"
-              "v125 要的是「补完 () 之后一条独立签名条」，形态换了、调用方也"
-              "真的有了 —— 不再是无人调用的死代码",
-              [(hasattr(P, "extract_proc_signatures"),
-                callable(getattr(P, "extract_proc_signatures", None)))],
-              expect_contain=[(True, True)])
+        check("82.17 ★v103b `parser` 不再提供 `extract_proc_signatures`"
+              "（形参表这套解析彻底撤掉，不留无人调用的死代码）",
+              [hasattr(P, "extract_proc_signatures")],
+              expect_contain=[False])
 
         _c82f = _trig82("jud", [("judge", "M1", None, False)])
         check("82.18 ★v103b `Completer` 不再有 `signature_of` / `_proc_sigs_now`"
@@ -15200,13 +15191,11 @@ def main():
                            encoding="utf-8").read()
         _esrc82 = io.open(os.path.join(ROOT, "engine.py"),
                           encoding="utf-8").read()
-        check("82.19b ★v125 反转：`get_proc_signatures` / `_proc_sigs` 现在"
-              "**必须有**（与 `get_proc_kinds` 同源收集，一份文本三个用途）；"
-              "但 `_proc_sigs_now` 仍然不许回来 —— 那是 v103b 详情行那条路的"
-              "临时名字，谁接回来就等于把详情行那套也接回来了",
-              [("def get_proc_signatures(" in _bsrc82b,
-                "self._proc_sigs = {}" in _bsrc82b,
-                "extract_proc_signatures(" in _bsrc82b,
+        check("82.19b 源码护栏：`vbe_bridge` / `engine` 里也不许再留"
+              " `get_proc_signatures` / `_proc_sigs`（后端那一路收集一并撤掉）",
+              [("get_proc_signatures" not in _bsrc82b,
+                "_proc_sigs" not in _bsrc82b,
+                "extract_proc_signatures" not in _bsrc82b,
                 "_proc_sigs_now" not in _esrc82)],
               expect_contain=[(True, True, True, True)])
 
@@ -20268,12 +20257,12 @@ def main():
 
         # ---- 108.16 三个开关都登记了 ----
         _keys108 = [k for (k, _d, _s) in _ST108.KNOWN]
-        # ★v125：KNOWN 总数 55 -> 56（再拆出 NO_SIG_TIP，见 §113）
+        # ★v124d：KNOWN 总数 54 -> 55（再拆出 PARAM_INFO，见 §112）
         check("108.16 三个开关都进了 `settings.KNOWN`（各自独立，误触哪个关哪个）",
               [(_keys108.count("NO_INSERT_ABOVE"),
                 _keys108.count("NO_DUP_LINE"),
                 _keys108.count("NO_DEL_LINE"), len(_keys108))],
-              expect_contain=[(1, 1, 1, 56)])
+              expect_contain=[(1, 1, 1, 55)])
     finally:
         VB106._get_vbe_cached = _o_vbe108
 
@@ -20572,12 +20561,12 @@ def main():
 
         # ---- 109.13 两个新键都登记了 ----
         _keys109s = [k for k, _d, _s in _ST109.KNOWN]
-        # ★v125：KNOWN 总数 55 -> 56（再拆出 NO_SIG_TIP，见 §113）
+        # ★v124d：KNOWN 总数 54 -> 55（再拆出 PARAM_INFO，见 §112）
         check("109.13 两个新键都进了 `settings.KNOWN`：`NO_WORDBANK`（排错开关）、"
               "`WORD_BANK`（库路径）",
               [(_keys109s.count("NO_WORDBANK"), _keys109s.count("WORD_BANK"),
                 len(_keys109s))],
-              expect_contain=[(1, 1, 56)])
+              expect_contain=[(1, 1, 55)])
 
         check("109.14 启动接线在 `main()` 里、且**先建库再加载**"
               "（顺序反了就会先读到「没有库」、退回种子，然后建了库却不生效）",
@@ -21376,266 +21365,6 @@ def main():
         import traceback as _tp112
         _tp112.print_exc()
         check("第 112 节异常: %s" % _e112, [True], expect_contain=[False])
-
-    # ------------------------------------------------------------------
-    # 113. ★v125：形参签名提示（签名库 / 工程解析 / 提示条）
-    #
-    #     背景：v124d 用设备音量计实测确认 —— VBE 自己的「参数信息」**从外部
-    #     唤不出来**（注入按键安静但窗不出现；菜单命令窗不出现还响一声）。
-    #     用户口径："需要形参签名提示" ⇒ 自己画一条：
-    #       内建函数 -> `wordbank.db` 的 signatures 表（种子在 vba_signatures.py）
-    #       工程过程 -> 从代码里解析（与 extract_proc_kinds 同一批正则）
-    #
-    #     ⚠️ 本节**不实例化 tk 窗**：测试网的 tkinter 是桩（见文件顶部），
-    #        真 GUI 用例会静默跳过。提示条的几何/不抢焦点由真机验证，
-    #        这里只钉"纯函数判据 + 源码接线"（铁律 2 / §20.11 的教训）。
-    # ------------------------------------------------------------------
-    print("\n=== 113. ★v125：形参签名提示（签名库 / 解析 / 提示条）===")
-    try:
-        import shutil
-        import tempfile
-
-        import ui as UI113
-        import vba_builtins as VB113
-        import vba_signatures as VS113
-        import wordbank as WB113
-
-        # ---- 113.1 种子自洽 ----
-        _sig113 = VS113.SIGNATURES
-        _names113 = [str(n) for n, _s in _sig113]
-        _low113 = set(n.lower() for n in _names113)
-        _fn113 = set(n.lower() for n in VB113.BUILTIN_FUNCTIONS)
-        check("113.1 签名种子自洽：没有重名、没有空名，而且**每一条都对应一个"
-              "真正的内建函数**（名字写错 = 这条签名永远查不到，等于白写）",
-              [(len(_names113) == len(_low113),
-                all(n.strip() for n in _names113),
-                sorted(_low113 - _fn113))],
-              expect_contain=[(True, True, [])])
-
-        # ---- 113.2 覆盖率 ----
-        check("113.2 覆盖率：≥120 条，且 6 个最常用的必须有 —— "
-              "`Left` / `Mid` / `UBound` / `MsgBox` / `Format` / `Split`",
-              [(len(_low113) >= 120,
-                all(k in _low113 for k in
-                    ("left", "mid", "ubound", "msgbox", "format", "split")))],
-              expect_contain=[(True, True)])
-
-        # ---- 113.3 seed_rows：去重 + 空串语义 ----
-        _rows113 = VS113.seed_rows()
-        _d113 = dict((n.lower(), s) for n, s in _rows113)
-        check("113.3 `seed_rows()`：小写去重后条数不变；`Now` 是**空串**"
-              "（真·无参函数），不是 None —— 「空签名」与「没有签名」必须分得开",
-              [(len(_d113), len(_rows113), _d113.get("now"),
-                _d113.get("nosuchfn"))],
-              expect_contain=[(132, 132, "", None)])
-
-        # ---- 113.4 ~ 113.7 词库层（临时库，测完删）----
-        _tmp113 = tempfile.mkdtemp(prefix="vbc113_")
-        _db113 = os.path.join(_tmp113, "wb.db")
-        try:
-            import sqlite3 as _sq113
-
-            _c113, _p113 = WB113.ensure(VB113.seed_rows(), _db113,
-                                        sigs=VS113.seed_rows())
-            _snap113 = WB113.load(_db113)
-            check("113.4 新建库同时带上签名表：`Snapshot.sigs` 能查到 "
-                  "`Left -> 'string, length'`、`Now -> ''`，查不到的名字返回 None",
-                  [(_c113, len(_snap113.sigs), _snap113.signature("Left"),
-                    _snap113.signature("now"),
-                    _snap113.signature("NoSuchFn"))],
-                  expect_contain=[(True, 132, "string, length", "", None)])
-
-            # 造一个 v123 的老库：删掉 signatures 表 + 手改一条 note
-            _con113 = _sq113.connect(_db113)
-            _con113.execute("DROP TABLE signatures")
-            _con113.execute(
-                "UPDATE words SET note='用户手改过' WHERE name='Left'")
-            _con113.commit()
-            _con113.close()
-            _snap113b = WB113.load(_db113)
-            check("113.5a 老库（v123 建的、没有 signatures 表）：`load()` **不炸**，"
-                  "只是没有签名 —— 绝不能因此整库退回种子、把用户的手改丢掉",
-                  [(len(_snap113b.sigs), len(_snap113b.rows))],
-                  expect_contain=[(0, len(VB113.seed_rows()))])
-
-            _c113b, _ = WB113.ensure(VB113.seed_rows(), _db113,
-                                     sigs=VS113.seed_rows())
-            _snap113c = WB113.load(_db113)
-            check("113.5b `ensure()` 对**已存在**的老库只补建 signatures 表："
-                  "签名回来了 132 条，而 `words` 表一个字节没动（那条手改的 "
-                  "note 还在）",
-                  [(_c113b, len(_snap113c.sigs),
-                    _snap113c.signature("Left"),
-                    [r[5] for r in _snap113c.rows if r[0] == "Left"])],
-                  expect_contain=[(False, 132, "string, length", ["用户手改过"])])
-
-            _con113c = _sq113.connect(_db113)
-            _con113c.execute(
-                "UPDATE signatures SET sig='string' WHERE name='Left'")
-            _con113c.commit()
-            _con113c.close()
-            WB113.ensure(VB113.seed_rows(), _db113, sigs=VS113.seed_rows())
-            check("113.6 用户改过的签名**绝不覆盖**：`Left` 仍是 `string` —— "
-                  "补建只在表为空时灌种子（铁律：不覆盖用户手改）",
-                  [WB113.load(_db113).signature("Left")],
-                  expect_contain=["string"])
-
-            # ---- 113.7 加载：库覆盖种子 ----
-            _keys113 = ("ACTIVE_FUNCTIONS", "ACTIVE_CONSTANTS",
-                        "ACTIVE_TYPE_NAMES", "ACTIVE_KEYWORDS",
-                        "ACTIVE_FUNCTION_LOWER", "ACTIVE_TYPE_LOWER",
-                        "ACTIVE_KEYWORD_LOWER", "ACTIVE_KEYWORD_SPACE",
-                        "ACTIVE_BUILTIN_LOWER", "ACTIVE_SIGNATURES")
-            _saved113 = dict((k, getattr(VB113, k)) for k in _keys113)
-            _savedinfo113 = dict(VB113.WORDBANK_INFO)
-            _old_dbpath113 = WB113.db_path
-            WB113.db_path = lambda: _db113
-            try:
-                _ok113 = VB113.load_active()
-                _got113 = (VB113.ACTIVE_SIGNATURES.get("left"),
-                           VB113.ACTIVE_SIGNATURES.get("ubound"))
-            finally:
-                WB113.db_path = _old_dbpath113
-                for _k113, _v113 in _saved113.items():
-                    setattr(VB113, _k113, _v113)
-                VB113.WORDBANK_INFO.clear()
-                VB113.WORDBANK_INFO.update(_savedinfo113)
-            check("113.7 `load_active()` 里签名**以库为准**：库里把 `Left` 改成 "
-                  "`string`，生效快照就是 `string`；库里没有的（`UBound`）"
-                  "由种子兜底 —— 两个方向都要对",
-                  [(_ok113, _got113)],
-                  expect_contain=[(True, ("string", "arrayname, [dimension]"))])
-        finally:
-            shutil.rmtree(_tmp113, ignore_errors=True)
-
-        # ---- 113.8 ~ 113.10 解析层 ----
-        _code113 = (
-            "Option Explicit\n"
-            "Sub NoArgs()\n"
-            "End Sub\n"
-            "Public Function Calc(ByVal x As Long, Optional s As String) As Long\n"
-            "End Function\n"
-            "Function NoParen As String\n"
-            "End Function\n"
-            "Property Get Name() As String\n"
-            "End Property\n"
-            'Private Declare PtrSafe Function Sleep Lib "kernel32" '
-            "(ByVal ms As Long) As Long\n"
-        )
-        _ps113 = P.extract_proc_signatures(_code113)
-        check("113.8 `extract_proc_signatures`：普通过程 / 无参 / 没写括号 / "
-              "Property / Declare 五种都解析对（`None` = 声明里根本没写括号，"
-              "与「有括号但为空」是两件事）",
-              [(_ps113.get("noargs"), _ps113.get("calc"),
-                _ps113.get("noparen"), _ps113.get("name"),
-                _ps113.get("sleep"))],
-              expect_contain=[(("", ""),
-                               ("ByVal x As Long, Optional s As String", "Long"),
-                               (None, ""),
-                               ("", "String"),
-                               ("ByVal ms As Long", "Long"))])
-
-        _code113b = (
-            "Public Function Multi(ByVal a As Long, _\n"
-            "                      Optional b As String) As String\n"
-            "Sub Foo_\n"
-            'Function Q(ByVal s As String = "),(") As Long\n'
-        )
-        _ps113b = P.extract_proc_signatures(_code113b)
-        check("113.9 三个坑：① 过程头用 `_` 续行要**拼起来**（否则永远只能"
-              "看到半个括号）；② `Sub Foo_` 的名字以 `_` 结尾，**不许**当成续行"
-              "（否则会吞掉下一行、把别的过程算进来）；③ 默认值里的 `\" ),( \"` "
-              "不能干扰括号配对",
-              [(_ps113b.get("multi"), _ps113b.get("foo_"), _ps113b.get("q"))],
-              expect_contain=[(("ByVal a As Long, Optional b As String", "String"),
-                               (None, ""),
-                               ('ByVal s As String = "),("', "Long"))])
-
-        check("113.10 同一批正则：`extract_proc_signatures` 与 "
-              "`extract_proc_kinds` 认出来的**名字集合必须完全一致** —— "
-              "否则会出现「能提示它、却查不到它长什么样」",
-              [sorted(P.extract_proc_signatures(_code113).keys())
-               == sorted(P.extract_proc_kinds(_code113).keys())],
-              expect_contain=[True])
-
-        # ---- 113.11 UI 纯函数：切参数 ----
-        check("113.11 `ui.split_params` 按**顶层逗号**切：`[]` / `()` / 引号里的"
-              "逗号都不切；空串 -> []（真·无参，渲染成 `Foo()`）",
-              [(UI113.split_params(""),
-                UI113.split_params("ByVal x As Long, Optional s As String"),
-                UI113.split_params('ByVal s As String = "a,b", [c]'),
-                UI113.split_params("[a, b], c"))],
-              expect_contain=[([],
-                               ["ByVal x As Long", "Optional s As String"],
-                               ['ByVal s As String = "a,b"', "[c]"],
-                               ["[a, b]", "c"])])
-
-        # ---- 113.12 ~ 113.13 引擎：查找顺序 + 三道闸门 ----
-        class _B113(object):
-            def __init__(self, parens=False):
-                self._last_parens_added = parens
-
-            def apply_completion(self, *a, **k):
-                self._last_parens_added = True
-
-            def get_proc_signatures(self):
-                return {"left": ("自定 Left 的参数", "")}
-
-        _c113e = E.Completer(_B113(), None)
-        check("113.12 查找顺序：**工程里声明的过程优先**于语言自带（用户昨天刚"
-              "改过签名，就该显示他的）；工程里没有的才查内建库；都没有 -> None",
-              [(_c113e._signature_of("Left"),
-                _c113e._signature_of("UBound"),
-                _c113e._signature_of("NoSuchProc"))],
-              expect_contain=[(("自定 Left 的参数", ""),
-                               ("arrayname, [dimension]", ""),
-                               None)])
-
-        _calls113 = []
-        _c113f = E.Completer(_B113(False), None,
-                             on_signature=lambda n, p, r: _calls113.append(n))
-        _r113a = _c113f._maybe_show_signature("UBound")
-        _c113f.backend._last_parens_added = True
-        _r113b = _c113f._maybe_show_signature("UBound")
-        _r113c = _c113f._maybe_show_signature("NoSuchProc")
-        _r113d = E.Completer(_B113(True), None)._maybe_show_signature("UBound")
-        check("113.13 `_maybe_show_signature` 三道闸门缺一不可：没补括号 -> 不弹；"
-              "补了 + 查得到 -> 弹一次；查不到 -> 不弹；没注入回调 -> 不弹",
-              [(_r113a, _r113b, _r113c, _r113d, _calls113)],
-              expect_contain=[(False, True, False, False, ["UBound"])])
-
-        # ---- 113.14 源码护栏：接线顺序 + 「不抢焦点」只有一份实现 ----
-        _vsrc113 = io.open(os.path.join(ROOT, "vbe_bridge.py"),
-                           encoding="utf-8").read()
-        _msrc113 = io.open(os.path.join(ROOT, "main.py"),
-                           encoding="utf-8").read()
-        _usrc113 = io.open(os.path.join(ROOT, "ui.py"),
-                           encoding="utf-8").read()
-        _i_set113 = _vsrc113.find(
-            "self._last_parens_added = bool(added_parens)")
-        _i_ret113 = _vsrc113.find("return new_line", _i_set113)
-        _tip_body113 = _usrc113.split("class SignatureTip")[1].split(
-            "class Popup")[0]
-        check("113.14 源码护栏：① `apply_completion` 必须在 `return new_line` "
-              "**之前**记下 `_last_parens_added`（记在后面 = 引擎永远读到 False）；"
-              "② main 把签名回调注入给引擎（`NO_SIG_TIP=1` 时注入 None = 整个关掉）；"
-              "③ 任意按键收起签名条；"
-              "④ 「加 WS_EX_NOACTIVATE」只有一处实现（`set_no_activate`），"
-              "且提示条自己**不许 focus_force**（否则会把 VBE 焦点抢走）",
-              [(0 < _i_set113 < _i_ret113,
-                "on_signature=_on_sig" in _msrc113
-                and "sig_tip.show" in _msrc113
-                and "NO_SIG_TIP" in _msrc113,
-                "if sig_tip.is_visible():" in _msrc113,
-                _usrc113.count("WS_EX_NOACTIVATE = ") == 1
-                and "def set_no_activate(" in _usrc113,
-                "focus_force" not in _tip_body113,
-                "set_no_activate(self.win)" in _tip_body113)],
-              expect_contain=[(True, True, True, True, True, True)])
-    except Exception as _e113:
-        import traceback as _tp113
-        _tp113.print_exc()
-        check("第 113 节异常: %s" % _e113, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原
