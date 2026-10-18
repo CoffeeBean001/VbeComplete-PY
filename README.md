@@ -70,7 +70,8 @@ the window and gives focus back to the VBE.
 to bring them back verbatim; blank lines are skipped and the indentation is never swallowed. Same
 rule as IDEA: it *removes* only when **every non-blank line is already commented**, otherwise it
 adds. Removal strips one `' ` (quote + space) and falls back to a bare `'`, so hand-written
-`'notes` uncomment correctly too.
+`'notes` uncomment correctly too. One caveat: N lines means **N undo steps** (the VBE has no
+command groups), so `Ctrl+Z` needs to be pressed N times to get all the way back.
 
 **Turning features off: `settings.ini`** — created in the **project folder** on first start, with
 **every line commented out** (so it changes nothing by itself). Delete the `;` in front of a line,
@@ -79,10 +80,10 @@ actually in effect and where each value came from, run `py -3 settings.py` in th
 
 **What is suggested**: your variables, constants and procedures, plus modules, forms and control
 names, keywords and built-in functions / types (≈260) — enums (`vb*` / `xl*` / `mso*`) are excluded.
-While you *declare* a new name (`Dim …`, `Sub …`) no existing symbol is offered,
-exactly like IDEA — but the keywords that belong at the caret are: after `Private` / `Public` you get
-`Sub` / `Function` / …, inside a parameter list `ByVal` / `ByRef` / `Optional` / `ParamArray` / `As`;
-after `As` / `New` it still offers types.
+While you *declare* a new name (`Dim …`, `Sub …`) no existing symbol is offered, exactly like IDEA —
+but the keywords that belong at the caret are: after `Private` / `Public` you get `Sub` / `Function` /
+…, inside a parameter list `ByVal` / `ByRef` / `Optional` / `ParamArray` / `As`; after `As` / `New` it
+still offers types.
 
 **No popup?** Check note 3 first — that is it nine times out of ten. Then look for `pythonw.exe` in
 Task Manager; if a list won't close, run `stop.bat` then `run.bat`.

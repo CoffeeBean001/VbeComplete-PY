@@ -8,7 +8,8 @@
 > `settings.ini`（第一次启动时在**项目文件夹**自动生成）里对应的那一行前面的 `;` 删掉即可，
 > **键名可以省掉 `VBECOMPLETE_` 前缀**（`NO_SNIPPETS` 与 `VBECOMPLETE_NO_SNIPPETS` 都认，
 > 大小写不敏感）。优先级是 **环境变量 > `settings.ini` > 代码默认值**，老写法继续有效。
-> 详见 [v120 小节](#v120配置中心--批量注释ctrl) 与 [`settings.example.ini`](../settings.example.ini)。
+> 详见下面的「v120：配置中心（`settings.ini`）+ 批量注释（`Ctrl+/`）」小节与
+> [`settings.example.ini`](../settings.example.ini)。
 
 ---
 
