@@ -20102,36 +20102,90 @@ def main():
                                 "    b = 2", "End Sub"],
                                [("insert", 3, 2)])])
 
-        # ---- 108.6 删单行 + 落点 ----
+        # ---- 108.6 删单行 + 落点（★v126b：落到【上一行行尾】）----
         _be, _m, _p = _be108(["Sub Foo()", "    a = 1", "    b = 2", "End Sub"],
                              (2, 7, 2, 7))
         _ok_f = _be.delete_lines_here()
-        check("108.6 Ctrl+K 删掉光标那一行，光标落到**原位置的第 1 列**"
-              "（第 1 列在任何列语义下都无歧义 —— 铁律 15）；"
-              "原第 3 行顶上来",
+        check("108.6 ★用户口径（v126b）：Ctrl+K 删掉光标那一行后，光标落到"
+              "【被删行上一行（第 1 行 `Sub Foo()`）的行尾】第 10 列，而不是"
+              "顶上来的那一行的行首 —— 删完继续打字接的是上一行原来那句话，"
+              "不用先按 End；原第 3 行顶上来",
               [(_ok_f, list(_m.lines),
                (_p.sets[-1] if _p.sets else None))],
               expect_contain=[(True,
                                ["Sub Foo()", "    b = 2", "End Sub"],
-                               (2, 1, 2, 1))])
+                               (1, 10, 1, 10))])
+
+        # ---- 108.6b ★上一行含汉字：列交给 VBE 钳，不许自己按字符列算 ----
+        class _PaneClamp108(_Pane108):
+            """忠实模拟真 VBE 的两条行为（与 §74 的 `_Pane74` 同一口径）：
+
+              ① 列是**显示列**（全角占 2 格、Tab 展开到 4）；
+              ② 超出行尾的列被**钳到行尾**。
+
+            108.1~108.13 用的那个 `_Pane108` 是纯记录器（不钳列），所以
+            `_caret_to_line_end` 在那边必然失败、走 `_eol_caret_col` 兜底；
+            要验"让 VBE 自己钳"这条主路（v94b 的结论）就得用这个。
+            """
+
+            def SetSelection(self, sl, sc, el, ec):
+                ln = max(1, min(int(sl), max(1, len(self.CodeModule.lines))))
+                try:
+                    _t = self.CodeModule.lines[ln - 1]
+                except Exception:
+                    _t = ""
+                _eol = VB106._disp_width(_t, 4, True) + 1
+                self.sel = (ln, max(1, min(int(sc), _eol)),
+                            ln, max(1, min(int(ec), _eol)))
+                self.sets.append(self.sel)
+
+        def _be108c(lines, sel):
+            _m = _Mod108(lines)
+            _p = _PaneClamp108(_m, sel)
+            VB106._get_vbe_cached = lambda: _Vbe108(_p)
+            return VB106.VbeBackend(), _m, _p
+
+        _be, _m, _p = _be108c(["Sub F1()", '    MsgBox "完成"', "    a = 1",
+                               "End Sub"], (3, 1, 3, 1))
+        _ok_f2 = _be.delete_lines_here()
+        check("108.6b ★上一行含中文时落点仍必须是【真行尾】第 18 列（显示列、"
+              "全角占 2 格）—— 按字符列算只有 16，VBE 把它当显示列解释，光标正好"
+              "停在两个汉字中间。列**不自己算**：给一个远超行尾的列让 VBE 钳",
+              [(_ok_f2, list(_m.lines),
+               (_p.sets[-1] if _p.sets else None))],
+              expect_contain=[(True,
+                               ["Sub F1()", '    MsgBox "完成"', "End Sub"],
+                               (2, 18, 2, 18))])
+
+        # ---- 108.6c 删的是第 1 行：没有"上一行"可落 ----
+        _be, _m, _p = _be108c(["    a = 1", "    b = 2"], (1, 5, 1, 5))
+        _ok_f3 = _be.delete_lines_here()
+        check("108.6c 删的是**第 1 行**（没有上一行）：整行照样删掉，光标落到"
+              "新首行第 1 列，不抛异常也不返回 False",
+              [(_ok_f3, list(_m.lines),
+               (_p.sets[-1] if _p.sets else None))],
+              expect_contain=[(True, ["    b = 2"], (1, 1, 1, 1))])
 
         # ---- 108.7 删多行选区 ----
         _be, _m, _p = _be108(["Sub Foo()", "    a = 1", "    b = 2", "End Sub"],
                              (2, 1, 3, 1))
         _ok_g = _be.delete_lines_here()
-        check("108.7 Ctrl+K 有选区时删掉**选中的那几行**，一次 DeleteLines",
-              [(_ok_g, list(_m.lines), list(_m.writes))],
+        check("108.7 Ctrl+K 有选区时删掉**选中的那几行**，一次 DeleteLines；"
+              "落点同样是【选区上方那一行】的行尾（第 1 行第 10 列）",
+              [(_ok_g, list(_m.lines), list(_m.writes),
+               (_p.sets[-1] if _p.sets else None))],
               expect_contain=[(True, ["Sub Foo()", "End Sub"],
-                               [("delete", 2, 2, ["    a = 1", "    b = 2"])])])
+                               [("delete", 2, 2, ["    a = 1", "    b = 2"])],
+                               (1, 10, 1, 10))])
 
         # ---- 108.8 删的是最后一行：落点不许超界 ----
         _be, _m, _p = _be108(["Sub Foo()", "    a = 1"], (2, 1, 2, 1))
         _ok_h = _be.delete_lines_here()
-        check("108.8 删的是**最后一行**时，落点退到新的最后一行"
-              "（不能 SetSelection 到一个已经不存在的行号）",
+        check("108.8 删的是**最后一行**时，落点退到剩下的最后一行（也就是上一行）"
+              "的行尾 —— 不能 SetSelection 到一个已经不存在的行号",
               [(_ok_h, list(_m.lines),
                (_p.sets[-1] if _p.sets else None))],
-              expect_contain=[(True, ["Sub Foo()"], (1, 1, 1, 1))])
+              expect_contain=[(True, ["Sub Foo()"], (1, 10, 1, 10))])
 
         # ---- 108.9 把模块删空：照样算成功 ----
         _be, _m, _p = _be108(["    a = 1"], (1, 1, 1, 1))

@@ -6436,13 +6436,22 @@ class VbeBackend:
             _release_vbe_proxy()
 
     def delete_lines_here(self):
-        """删掉光标所在行（有选区 = 选中的那几行），光标落到原位置的行首（★v122）。
+        """删掉光标所在行（有选区 = 选中的那几行），光标落到**上一行的行尾**（★v122/v126b）。
 
         对应 VS Code 的 Delete Line（`Ctrl+Shift+K`）/ IDEA 的 `Ctrl+Y`。
 
-        落点选**被删块原来的那一行**（也就是删完之后"下面接上来的第一行"）的
-        **第 1 列**：第 1 列在任何列语义下都没有歧义（铁律 15）。删到文件末尾
-        时落到新的最后一行。
+        ★v126b 落点改口径（用户报「删完光标应该停在被删行上一行的行尾」）：
+        原来是落到"下面顶上来的那一行"的第 1 列，现在落到**被删块上方那一行
+        （`sl - 1`）的末尾** —— 删完继续打字时，接的就是上一行原来那句话，
+        不用先按 End。上一行是空行时行尾就是第 1 列，语义自洽。
+
+        列的算法不自己猜：`_caret_to_line_end` 给一个远超行尾的列让 VBE 自己
+        夹回行尾（含全角 / Tab 时按字符列算必错，见那里的说明）；它没走通才
+        退回 `_eol_caret_col`。两条路与 `delete_blank_line_here` 完全同一份实现。
+
+        删的是第 1 行（没有"上一行"）时落到新首行第 1 列；删到一行不剩
+        （整个模块被删空）时**不落光标** —— 那时行 1 已经不存在，`SetSelection`
+        会抛异常。
 
         ⚠️ 把整个模块删空是允许的：VBE 的 `CountOfLines` 会变成 0，此时
         `SetSelection(1, 1)` 会抛异常 —— 但删除本身已经成功了，所以落光标
@@ -6461,15 +6470,29 @@ class VbeBackend:
             if blk is None:
                 return False
             sl, el = blk[0], blk[1]
+            # ★v126b：落点要落到**上一行**行尾，所以先把上一行的原文取下来 ——
+            # 删除不动它，但删完之后再读就要看 CountOfLines 的脸；删除前读最稳。
+            prev_no = sl - 1
+            prev_raw = ""
+            if prev_no >= 1:
+                try:
+                    prev_raw = str(cm.Lines(prev_no, 1)).rstrip("\r\n")
+                except Exception:
+                    prev_raw = ""
             cm.DeleteLines(sl, el - sl + 1)
             try:
                 left = int(cm.CountOfLines)
             except Exception:
                 left = 0
             if left > 0:
-                target = sl if sl <= left else left
                 try:
-                    cp.SetSelection(target, 1, target, 1)
+                    if prev_no < 1:
+                        # 删的就是第 1 行：没有"上一行"，落在新首行行首
+                        cp.SetSelection(1, 1, 1, 1)
+                    elif not _caret_to_line_end(cp, cm, prev_no, prev_raw):
+                        # 兜底：该编辑器不夹列 -> 才回去按列语义算（同 v94b）
+                        _c = _eol_caret_col(prev_raw, _sem_cache.get("info"))
+                        cp.SetSelection(prev_no, _c, prev_no, _c)
                 except Exception:
                     pass
             return True

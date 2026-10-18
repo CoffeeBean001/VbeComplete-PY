@@ -55,7 +55,7 @@ autostart on login · `run_tests.bat` runs the offline regression suite.
 | `Ctrl+Shift+F` | **Find references** (text level): with the caret inside a name, lists every occurrence of it in the active project — fuzzy search, **click** (or `Enter`) to jump |
 | `Ctrl+Shift+Enter` | Insert a new line **above** the current one (same indent; one level deeper when the current line is a block **closer** such as `End If` / `Next`) |
 | `Ctrl+D` | **Duplicate the current line** below (the selected lines, when there is a selection); the caret follows to the same column |
-| `Ctrl+K` | **Delete the whole line** (the selected lines, when there is a selection); the caret lands at column 1 |
+| `Ctrl+K` | **Delete the whole line** (the selected lines, when there is a selection); the caret moves to the end of the line above |
 
 On accept a `Sub` gets a trailing space, a `Function` gets `()` with the caret inside **and the
 VBE's own parameter info pops up** (so you can see the signature while filling in the arguments),
@@ -102,7 +102,8 @@ convention.
   line is a block **closer** (`End If` / `Next i` / `End Sub`), where the new line belongs *inside*
   the block and is indented one level deeper.
 - `Ctrl+D` duplicates the line **below**, with the caret following to the copy at the same column.
-- `Ctrl+K` deletes the whole line, caret to column 1. Deleting the entire module is allowed.
+- `Ctrl+K` deletes the whole line, moving the caret to the **end of the line above** the deleted block.
+  Deleting the entire module is allowed.
 
 ⚠️ On the key choice: `Shift+D` / `Shift+K` were the original request, but those keys are how you
 **type an uppercase `D` / `K`** — VBE's auto-capitalisation only applies to keywords, not to string

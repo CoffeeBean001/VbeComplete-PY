@@ -228,7 +228,9 @@
   `Ctrl+Shift+Enter` inserts a line **above**, at the current line's indent — except when that line is
   a block **closer** (`End If` / `Next i` / `End Sub`), where the new line belongs *inside* the block
   and goes one level deeper. `Ctrl+D` duplicates the line **below**, the caret following to the copy
-  at the same column. `Ctrl+K` deletes the whole line, caret to column 1.
+  at the same column. `Ctrl+K` deletes the whole line, the caret moving to the **end of the line above**
+  the deleted block (so you can keep typing right where that line left off; deleting the first line puts
+  the caret at column 1 of the new first line).
 
   On the key choice: `Shift+D` / `Shift+K` were the original request, but those keys are how you type
   an uppercase `D` / `K` — and the VBE's auto-capitalisation only covers keywords, so `"Debug"` inside

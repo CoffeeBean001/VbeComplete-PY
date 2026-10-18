@@ -102,6 +102,19 @@ def main():
            and str(cm.Lines(target + 1, 1)).rstrip("\r\n").strip()
            == "probeVar = 1",
            (ok3, n3))
+
+        # ★v126b：删完光标要停在【被删行上一行】的行尾。这里上一行是 `    `
+        # 那行（4 个空格），行尾显示列 = 5。真机读一次 —— 这条正是"VBE 会不会
+        # 把远超行尾的列夹回行尾"的现场验证，假对象上永远测不出来。
+        try:
+            _sl3, _sc3, _el3, _ec3 = cp.GetSelection()
+            sel3 = (int(_sl3), int(_sc3), int(_el3), int(_ec3))
+        except Exception:
+            sel3 = None
+        ck("Ctrl+K 删完光标落到【上一行行尾】（第 %d 行、显示列 5）" % target,
+           sel3 is not None and sel3[0] == target and sel3[1] == 5
+           and sel3[2] == target and sel3[3] == 5,
+           (sel3, target))
     finally:
         # 无论中间发生什么，把追加的内容删干净，并与备份逐字比对。
         try:
