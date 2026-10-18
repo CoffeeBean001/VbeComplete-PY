@@ -15,6 +15,9 @@
 > `Ctrl+Shift+F` 文本级查找引用 —— 详见下文 v121 小节。
 > **★v122 新增三个按行的编辑键**（会改代码，但每次只写一次、失败一定把按键还回去）：
 > `Ctrl+Shift+Enter` 上方插一行、`Ctrl+D` 复制当前行、`Ctrl+K` 删除整行 —— 详见下文 v122 小节。
+> **★v123 提示词表搬进词库 `wordbank.db`**（项目文件夹，SQLite，可以自己改：禁用不喜欢的
+> 名字、加自己常用的宿主 API）—— 启动时读进内存，**改库不影响按键速度**；代码里定义的
+> 函数名/变量名照旧每轮现读。详见下文 v123 小节。
 
 ---
 
@@ -1984,6 +1987,140 @@ A/B 三处独立回退：去掉"收尾行深一级" → 只红 108.2；`duplicat
 6 项全过 —— 追加 4 行 / 上方插行（行数 +1、缩进 4 格、原行整体下移）/ 复制行（内容逐字相同）/
 删行（行数 -1）/ **跑完与开工前备份逐字相同**。
 
+### v123：词库 —— 提示词表从代码常量搬进可手改的 SQLite（`wordbank.db`）
+
+**用户的原始口径**：
+
+> "是不是可以创建个 SQLite 数据库，存放在这个数据里，然后项目启动，就把数据库里的加载到
+> 内存里，我也可以手动去编辑数据库，项目就能动态加载提示关键字。提示词来源两部分，一部分
+> 是数据库，另一部分就是代码里定义的函数名、变量名。"
+
+**先回答"是不是可以"**：可以，而且这个项目的结构正好适合这么切 —— 因为"语言自带的名字"
+和"你工程里的名字"本来就是两条完全独立的路：
+
+| 来源 | 从哪来 | 什么时候读 |
+| --- | --- | --- |
+| **语言自带**：关键字 / 内建函数 / 内建类型 / 常用常量 | 词库 `wordbank.db`（种子清单编译在 `vba_builtins.py` 里） | **启动时一次**，读进内存 |
+| **你的代码**：过程名 / 变量名 / 常量名 / 模块名 / 窗体控件名 | 每一轮从 VBE 工程里现读（`_collect_identifiers`） | 每次弹候选（带 v118 的分模块缓存） |
+
+这次只动第一条。第二条一个字节都没碰 —— 它才是补全的主路，也最不该被"配置"干扰。
+
+#### 分层：三块，各管一件事
+
+```
+vba_builtins.py   种子清单（BUILTIN_*）+ 生效快照（ACTIVE_*）
+wordbank.py       只管 "SQLite <-> 行列表"，**不认识 VBA 语义**
+收集侧 / 引擎侧    照旧读 vba_builtins.ACTIVE_*，一行都没改逻辑
+```
+
+- `BUILTIN_*` 保留为**冻结的种子**：二十多处测试拿它当"代码里带的那份名单"体检
+  （`len >= 150`、`MsgBox in …`、`FUNCTIONS | CONSTANTS == NAMES`）。如果它随用户手改的
+  库变化，这些用例就会"因为用户配置而红/绿"—— 那是测试网最不该有的性质。
+- `ACTIVE_*` 才是**此刻真正生效的**（词库优先，失败退回种子）。`load_active()` 之前
+  它们**逐字等于**种子，所以"不改库"就等于 v122 的行为（§109.1 钉住）。
+- `wordbank.py` 刻意**不认识 VBA**：它不知道"NULL 的 `wants_space` 是什么意思"，那是
+  VBA 语义，由 `vba_builtins.load_active()` 解释。这样词库层可以独立测试，也不会和
+  `vba_builtins` 形成循环 import。
+
+#### 表结构
+
+```sql
+words(name, kind, is_builtin, enabled, wants_space, note)   -- PRIMARY KEY (name, kind)
+meta(key, value)                                            -- schema_version / created_at
+```
+
+主键是 **(name, kind)** 而不是 name：`Date` / `String` **既是函数又是类型**，两行都要在
+（`As |` 位置只认 type、表达式位置只认 function，混成一行就分不开 —— 铁律 6）。
+
+| 列 | 含义 |
+| --- | --- |
+| `kind` | `keyword` / `function` / `constant` / `type`，与四个开关一一对应 |
+| `enabled` | 0 = 保留但不提示（比删掉好：随时开回来，`note` 也不丢） |
+| `is_builtin` | 1 = 语言自带（参与"公共词汇"模糊匹配收紧）；0 = 自加（**不**收紧） |
+| `wants_space` | 只对关键字有用。NULL = 按默认排除法；1 = 一定补；0 = 一定不补 |
+| `note` | 纯备注，程序不读 |
+
+#### 六个刻意的决定
+
+1. **`ensure()` 只在文件不存在时建库**，已存在就一个字节都不碰（§109.3：插一条再
+   `ensure`，那条必须还在）。启动流程**永远不许覆盖用户的手改** —— 这是词库的立身之本。
+2. **`load()` 用 `mode=ro` 的 URI 打开，读完立刻关，不持有任何锁**。于是"程序在跑"和
+   "你拿 DB Browser 一边改"互不干扰。⚠️ 不用 `pathname2url`：它在 Windows 上返回
+   `///C:/…`（已带三斜杠），再补 `file://` 就是五斜杠，SQLite 直接
+   `unable to open database file`（第一版就栽在这里）。
+3. **不用 WAL**：WAL 库的**只读连接还需要能写 `-shm`**，`mode=ro` 会打不开；而且第三方
+   工具一边编辑时锁关系更难看懂。我们一次启动只读一遍、写完就关，DELETE 日志足够。
+4. **任何坏库都退回种子，一个异常都不往外抛**：垃圾字节 / 缺 `meta` 表 / 空库 /
+   `schema_version` 比程序新 / 文件不存在 —— 五种全覆盖（§109.10）。一个**可选**的增强
+   设施没有资格让补全整体起不来。
+5. **`schema_version` 比程序新就整库不读**（不是"尽量解析"）：不认识新列/新语义时猜着读，
+   比不读危险得多。
+6. **自加的词不进 `ACTIVE_BUILTIN_LOWER`**（§109.7/109.9）：那个集合专供引擎收紧 2~3
+   字符的跳步命中（`BUILTIN_SCATTER_MIN`）。用户特意加的词反而被"公共词汇"那套规则
+   连坐，是最没道理的事。
+
+#### 性能：为什么"读库"不影响按键
+
+| 动作 | 实测 |
+| --- | --- |
+| 首次建库（一次性） | 12.4 ms |
+| `load()` 读 365 行 | **1.00 ms**（20 次平均 0.90~1.35） |
+| `load_active()`（含快照构建 + frozenset） | **1.30 ms** |
+| `import vba_builtins`（顶层**不**读库） | 0.87 ms（与 v122 相同） |
+
+`load_active()` 只在 `main()` 里调**一次**；之后整个运行期只读内存里的 tuple / frozenset，
+与改之前**完全等价**（那时读的也是模块级元组）。§109.12 用 **AST** 钉住这条红线：
+`engine.py` 全文件不许出现 `sqlite3`，`vba_builtins.py` **顶层**不许出现 `sqlite3` /
+`wordbank`（只能在 `load_active()` 里惰性 import）。
+
+#### 顺带删掉的一层缓存
+
+v98 起 `engine` 有三个惰性缓存（`_BUILTIN_TYPE_NAMES_LOW` 等），自己把清单 lower 一遍存
+起来。v123 改成**直接取** `vba_builtins.ACTIVE_*_LOWER`：
+
+- 缓存与"用户改库后重新加载"天然冲突 —— 谁忘了清缓存，表现就是"库改了、提示没变"，
+  这种 bug 极难查；
+- 少一层缓存 = 少一个必须同步的状态；代价只是一次属性访问（纳秒级）。
+
+顺带把 `engine._keyword_wants_space` 从"自己抄一份集合判断"改成**直接复用**
+`vba_builtins.keyword_wants_space`（铁律 21：同一语义只能一份实现）。
+
+#### 命令行（不装 GUI 工具也能维护）
+
+```
+py -3 wordbank.py                    统计：库在哪、每组多少条、几条被禁用/自加
+py -3 wordbank.py list [kind]        逐条列出
+py -3 wordbank.py add Name [kind]    加一条（is_builtin=0）
+py -3 wordbank.py disable Name       保留但不提示
+py -3 wordbank.py remove Name        真删
+py -3 wordbank.py reset --yes        重建（先自动备份 wordbank.db.bak-<时间>）
+py -3 wordbank.py export/import csv  导出 / 合并导入
+```
+
+#### 开关
+
+- `NO_WORDBANK = 1` —— 完全不用库，退回代码里的种子清单（**排错首选**）。
+- `WORD_BANK = <路径>` —— 库放别处；留空 = 项目文件夹的 `wordbank.db`。
+
+#### 回归
+
+新增 §109（14 条），全量 **1116 → 1130 PASS / 0 FAIL**。覆盖：种子与生效逐字等值 /
+主键双身份（`Date`/`String` 各两行）/ `ensure` 幂等且绝不覆盖 / 读回逐字同序 /
+默认路径 / 手改生效 / 自加词不进收紧集合 / `wants_space` 三态 / **收集侧端到端** /
+五种坏库兜底 / CLI / AST 性能护栏 / 两个开关登记 / 启动次序（先建库再加载）。
+
+A/B 四处独立回退：
+- 收集侧改回读 `BUILTIN_*` → 红 **109.9**（另带 47.11，它本来就在盯接线）；
+- `load_active()` 忽略 `wants_space` 覆盖 → 只红 **109.8**；
+- `ensure()` 每次重建（删库）→ 红 **109.3 / 109.4 / 109.6**（后两条是同一条链上的：
+  `KeepMe` 被删了，所以"读得到它"那两条一起红）；
+- `engine.py` 顶层加 `import sqlite3` → 只红 **109.12**。
+
+真机探针 `tests/probe_wordbank.py`（真 Excel + VBE，**一个字节都不写用户代码**，也
+**不碰你自己的 `wordbank.db`** —— 只用临时库）：基线 393 个名字 / 临时库加
+`ZzProbeWord`、禁用 `DDB` / `load_active()` 之后**前者进了池子、后者消失** /
+自加词不在收紧集合 / `reset_active()` 之后与基线**完全一致**（多了 0、少了 0）。
+
 ## 与 IntelliJ IDEA 的对照
 
 这个项目的目标就是**把 IDEA 那套"聪明补全"搬进 VBE**。VBE 原生只对 `对象.成员`
@@ -2018,6 +2155,7 @@ A/B 三处独立回退：去掉"收尾行深一级" → 只红 108.2；`duplicat
 | **删除整行**（Delete Line）              | `Ctrl+K` 删掉整行（有选区 = 选中的几行），光标落到原位置第 1 列                                   | **v122**       |
 | **在上方插入新行**（Start New Line Before） | `Ctrl+Shift+Enter` 插在光标行上方，缩进与本行齐平；本行是**块收尾**时深一级（那等于块内最后一行）        | **v122**       |
 | 让位给原生成员列表                      | **`对象.` 之后我们根本不出候选**（v103c 起默认关），整个让给 VBE 的「自动列出成员」                                  | v97+/**v103c** |
+| **裁剪/扩充内置提示词**                 | 词库 `wordbank.db`：内置的关键字/函数/类型/常量可以**逐条**禁用、改"补不补空格"，也能加自己常用的宿主 API。IDEA 只有「Exclude from import and completion」按包/类整块排除，比这个粗 | **v123**       |
 
 ### 二、刻意不做，及为什么
 
@@ -2065,11 +2203,17 @@ IDEA 的这些能力**都建立在一个前提上：IDE 手里有整个工程的
 ## 文件说明
 
 - `parser.py` — VBA 标识符提取（纯文本）
-- `vba_builtins.py` — VBA 语言自带名字的清单（内建函数/常量/数据类型 + 关键字）。
+- `vba_builtins.py` — VBA 语言自带名字的**种子清单**（内建函数/常量/数据类型 + 关键字）
     
-  ⚠️ 清单本身保持完整：★v96 起**关键字 + 内建函数/数据类型默认进候选池**，
+  + ★v123 的生效快照 `ACTIVE_*`（启动时从词库加载）。清单本身保持完整：★v96 起
     
-  两批枚举（`vb*` / `xl*` / `mso*`）仍默认不收（见上文默认口径）
+  **关键字 + 内建函数/数据类型默认进候选池**，两批枚举（`vb*` / `xl*` / `mso*`）仍默认
+  不收（见上文默认口径）
+- `wordbank.py` — ★v123 **词库**：`wordbank.db` 的建库 / 只读加载 / 命令行维护。
+    
+  只管 "SQLite <-> 行列表"，**不认识 VBA 语义**（`wants_space` 的 NULL 由谁解释、
+    
+  `is_builtin` 怎么用，都是 `vba_builtins` 的事）
 - `engine.py` — 补全引擎（触发/模糊匹配/排序/选择/插入，纯逻辑）
 - `vbe_bridge.py` — 对接真实 VBE（pywin32 COM，唯一需 Excel 的部分）
 - `ui.py` — 悬浮弹窗（tkinter Canvas 自绘，支持命中字符高亮）
@@ -2100,7 +2244,8 @@ IDEA 的这些能力**都建立在一个前提上：IDE 手里有整个工程的
 | `engine.py`                                                     | 补全引擎：候选打分、排序、过滤、弹窗收放                 |
 | `vbe_bridge.py`                                                 | VBE COM 桥接：读代码、读光标、写回、光标落点           |
 | `parser.py`                                                     | VBA 代码解析（语句、作用域、注释/字符串）              |
-| `vba_builtins.py`                                               | VBA 自带词汇清单（内建函数/类型/关键字/枚举），按开关在收集侧取舍 |
+| `vba_builtins.py`                                               | VBA 自带词汇**种子清单** + 生效快照 `ACTIVE_*`（v123 起从词库加载） |
+| `wordbank.py`                                                   | **词库**（v123）：`wordbank.db` 的建/读/CLI，只管 SQLite 不认识 VBA |
 | `ui.py`                                                         | 候选弹窗（tkinter）与避让逻辑                   |
 | `snippet_ui.py`                                                 | 代码片段窗（`Ctrl+Q`，tkinter）：搜索、增删改、插入按钮 |
 | `jump_ui.py`                                                    | **大纲 / 引用窗**（v121，tkinter）：`Ctrl+Shift+O` 与 `Ctrl+Shift+F` 共用，一列模糊搜索结果、回车跳转；跳失败不关窗、红字说原因 |
@@ -2112,7 +2257,7 @@ IDEA 的这些能力**都建立在一个前提上：IDE 手里有整个工程的
 | `requirements.txt`                                              | 依赖（`pywin32` / `pynput`）             |
 | `run.bat` / `stop.bat` / `stop.ps1`                             | 启停                                   |
 | `install_autostart.ps1` / `uninstall_autostart.ps1`（及对应 `.bat`） | 开机自启的安装与卸载                           |
-| `tests/` + `run_tests.bat`                                      | **回归测试**（1116 条），见下；另有六个手工探针：`probe_ime_mode.py`（问输入法转换模式）、`probe_hook_gate.py`（实证钩子门控 / 前台窗口卡死对主线程的影响）、`probe_perf.py`（量弹窗链路的耗时：`get_context` / 全量重解析 / 打分曲线）、`probe_comment.py`（真 Excel + VBE 验 `Ctrl+/`：只在模块末尾追加 4 行、跑完删掉并与开工前备份逐字比对）、`probe_outline.py`（真机验 v121：列过程 / 查引用 / 跳转后读回 `GetSelection()` / 没打开的模块拒绝跳，★还会**真弹一次窗、真发一次左键松开**验「单击即跳 + 跳完不关窗」，**一个字节都不写**）、`probe_lineops.py`（真机验 v122：`Ctrl+Shift+Enter` 上方插行 / `Ctrl+D` 复制行 / `Ctrl+K` 删行 —— **只在模块末尾追加一个临时过程**，跑完删掉并与开工前备份**逐字比对**） |
+| `tests/` + `run_tests.bat`                                      | **回归测试**（1130 条），见下；另有七个手工探针：`probe_ime_mode.py`（问输入法转换模式）、`probe_hook_gate.py`（实证钩子门控 / 前台窗口卡死对主线程的影响）、`probe_perf.py`（量弹窗链路的耗时：`get_context` / 全量重解析 / 打分曲线）、`probe_comment.py`（真 Excel + VBE 验 `Ctrl+/`：只在模块末尾追加 4 行、跑完删掉并与开工前备份逐字比对）、`probe_outline.py`（真机验 v121：列过程 / 查引用 / 跳转后读回 `GetSelection()` / 没打开的模块拒绝跳，★还会**真弹一次窗、真发一次左键松开**验「单击即跳 + 跳完不关窗」，**一个字节都不写**）、`probe_lineops.py`（真机验 v122：`Ctrl+Shift+Enter` 上方插行 / `Ctrl+D` 复制行 / `Ctrl+K` 删行 —— **只在模块末尾追加一个临时过程**，跑完删掉并与开工前备份**逐字比对**）、`probe_wordbank.py`（真机验 v123：临时库里加一个词、禁用一个内建函数，`load_active()` 之后**前者进池子、后者消失**，`reset_active()` 后与基线完全一致；**只用临时库，不碰你自己的 `wordbank.db`**） |
 
 ## 附：跑回归测试与 log.py 说明（原文）
 

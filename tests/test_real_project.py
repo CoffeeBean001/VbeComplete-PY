@@ -6082,8 +6082,8 @@ def main():
             _okwire47 = all(k in _src47 for k in (
                 "ENABLE_VBA_CONSTANTS", "VBECOMPLETE_VBA_CONSTANTS",
                 "VBECOMPLETE_HOST_ENUMS", "def _env_flag",
-                "vba_builtins.BUILTIN_FUNCTIONS",
-                "vba_builtins.BUILTIN_CONSTANTS")) and (
+                "vba_builtins.ACTIVE_FUNCTIONS",
+                "vba_builtins.ACTIVE_CONSTANTS")) and (
                 "BUILTIN_FUNCTIONS" in _src47b
                 and "BUILTIN_CONSTANTS" in _src47b)
         except Exception as _e47w:
@@ -19001,7 +19001,7 @@ def main():
         _allsrc102 = "".join(
             io.open(os.path.join(ROOT, _f102), encoding="utf-8").read()
             for _f102 in ("main.py", "engine.py", "vbe_bridge.py", "log.py",
-                          "recent.py", "snippets.py"))
+                          "recent.py", "snippets.py", "wordbank.py"))
         _unused102 = [k for k, _d, _s in S102.KNOWN
                       if ('"%s"' % k) not in _allsrc102
                       and ('"VBECOMPLETE_%s"' % k) not in _allsrc102]
@@ -20134,9 +20134,347 @@ def main():
               [(_keys108.count("NO_INSERT_ABOVE"),
                 _keys108.count("NO_DUP_LINE"),
                 _keys108.count("NO_DEL_LINE"), len(_keys108))],
-              expect_contain=[(1, 1, 1, 51)])
+              expect_contain=[(1, 1, 1, 53)])
     finally:
         VB106._get_vbe_cached = _o_vbe108
+
+
+    # ------------------------------------------------------------------
+    # 109. ★v123：词库（`wordbank.db`）—— 提示词从代码常量搬进可手改的 SQLite
+    #     用户原话："是不是可以创建个 SQLite 数据库，存放在这个数据里，然后项目
+    #     启动，就把数据库里的加载到内存里，我也可以手动去编辑数据库，项目就能
+    #     动态加载提示关键字。"
+    #
+    #     这一节要证明的**不是**"能建库"，而是下面四件事：
+    #       ① 不改库时行为**逐字等于** v122（否则就是偷偷改了用户的手感）；
+    #       ② 手改库真的能生效（禁用 / 自加 / 覆盖补空格），而且**走到收集侧与
+    #          引擎侧**——不是只改了常量定义、看上去能跑；
+    #       ③ 库坏了 / 空库 / 版本更高：一律退回种子，主体功能不受影响；
+    #       ④ 热路径上**没有任何 SQLite 调用**（性能红线）。
+    #
+    #     ⚠️ 这一节会把 `ACTIVE_*` 改成"临时库那一份"，finally 里必须
+    #     `reset_active()` 还原 —— 否则后面每一节都在用被改过的词表（§90 盯着）。
+    # ------------------------------------------------------------------
+    _saved_env109 = os.environ.get("VBECOMPLETE_WORD_BANK")
+    _d109 = None
+    try:
+        import ast as _ast109
+        import contextlib as _cl109
+        import shutil as _sh109
+        import sqlite3 as _sq109
+        import tempfile as _tf109
+
+        import engine as _E109
+        import settings as _ST109
+        import vba_builtins as _VB109
+        import vbe_bridge as _BV109
+        import wordbank as _WB109
+
+        _d109 = _tf109.mkdtemp(prefix="wb109_")
+        _p109 = os.path.join(_d109, "wordbank.db")
+        _rows109 = _VB109.seed_rows()
+
+        print("\n=== 109. ★v123：词库（wordbank.db）—— 可手改的提示词表 ===")
+
+        # ---- 109.1 不改库 = v122 的行为 ----
+        _VB109.reset_active()
+        check("109.1 没有词库时 `ACTIVE_*` 与代码里的种子**逐字相同**（含顺序），"
+              "补空格集合也一样 —— \"不改库\"就等于 v122 的行为，一个字节没变",
+              [(_VB109.ACTIVE_FUNCTIONS == _VB109.BUILTIN_FUNCTIONS,
+                _VB109.ACTIVE_CONSTANTS == _VB109.BUILTIN_CONSTANTS,
+                _VB109.ACTIVE_TYPE_NAMES == _VB109.BUILTIN_TYPE_NAMES,
+                _VB109.ACTIVE_KEYWORDS == _VB109.BUILTIN_KEYWORDS,
+                _VB109.ACTIVE_KEYWORD_SPACE == _VB109.BUILTIN_KEYWORD_NEEDS_SPACE,
+                _VB109.WORDBANK_INFO["loaded"] is False)],
+              expect_contain=[(True,) * 6])
+
+        # ---- 109.2 主键是 (name, kind)，双身份名字两行都在 ----
+        _key109 = set((n.lower(), k) for n, k, *_r in _rows109)
+        check("109.2 主键是 (name, kind)：`Date` / `String` 在 function 与 type "
+              "**各占一行**（既是函数又是类型；混成一行，`As |` 位置和表达式位置就"
+              "分不开了 —— 铁律 6「两道判据问不同问题」）；种子自身按主键无重复",
+              [("date" in [n.lower() for n in _VB109.BUILTIN_FUNCTIONS],
+                "date" in [n.lower() for n in _VB109.BUILTIN_TYPE_NAMES],
+                ("date", "function") in _key109,
+                ("date", "type") in _key109,
+                ("string", "function") in _key109,
+                ("string", "type") in _key109,
+                len(_rows109) == len(_key109))],
+              expect_contain=[(True,) * 7])
+
+        # ---- 109.3 建库 + 幂等 + 绝不覆盖 ----
+        _cr109, _got109 = _WB109.ensure(_rows109, _p109)
+        _sz109 = os.path.getsize(_p109) if os.path.isfile(_p109) else 0
+        _cr109b, _ = _WB109.ensure(_rows109, _p109)
+        # 真的"不覆盖"要这样证：先手插一条，再调一次 ensure，那条必须还在
+        _c109 = _sq109.connect(_p109)
+        _c109.execute("INSERT INTO words VALUES"
+                      " ('KeepMe','function',0,1,NULL,'手插的')")
+        _c109.commit()
+        _c109.close()
+        _WB109.ensure(_rows109, _p109)
+        _snap109 = _WB109.load(_p109)
+        _fn109 = [n for n, _b, _w in _snap109.by_kind("function")] if _snap109 else []
+        check("109.3 `ensure()` 建库之后**幂等**，而且**绝不覆盖**用户手改"
+              "（插一条 KeepMe，再 ensure 一次，它必须还在）",
+              [(_cr109, _cr109b, _sz109 > 0, "KeepMe" in _fn109,
+                len(_fn109) == len(_VB109.BUILTIN_FUNCTIONS) + 1)],
+              expect_contain=[(True, False, True, True, True)])
+
+        # ---- 109.4 读回来与种子逐字同序 ----
+        check("109.4 库读回来与种子**逐字同序**（顺序也一致 —— 候选池的顺序不去"
+              "二次排序，改这一层就是改手感）",
+              [(_snap109 is not None,
+                tuple(_fn109) == _VB109.BUILTIN_FUNCTIONS + ("KeepMe",),
+                tuple(n for n, _b, _w in _snap109.by_kind("type"))
+                == _VB109.BUILTIN_TYPE_NAMES,
+                tuple(n for n, _b, _w in _snap109.by_kind("keyword"))
+                == _VB109.BUILTIN_KEYWORDS,
+                tuple(n for n, _b, _w in _snap109.by_kind("constant"))
+                == _VB109.BUILTIN_CONSTANTS)],
+              expect_contain=[(True,) * 5])
+
+        # ---- 109.5 库路径：默认在项目文件夹，`WORD_BANK` 可改 ----
+        check("109.5 默认库就在**项目文件夹**（与 `snippets.db` 同一处，"
+              "一眼能找到），`WORD_BANK` 可改到别处",
+              [_WB109.DEFAULT_DB_NAME, _WB109.db_path().lower().startswith(
+                  _WB109.PROJECT_DIR.lower())],
+              expect_contain=["wordbank.db", True])
+
+        # ---- 109.6 手改真的生效（走 load_active）----
+        _c109 = _sq109.connect(_p109)
+        _c109.execute("UPDATE words SET enabled=0 WHERE name='Kill'")
+        _c109.execute("UPDATE words SET wants_space=0 WHERE name='Sub'")
+        _c109.execute("INSERT INTO words VALUES"
+                      " ('MyHostApi','function',0,1,NULL,'自加')")
+        _c109.execute("INSERT INTO words VALUES"
+                      " ('ZzzKey','keyword',0,1,1,'自加要空格')")
+        _c109.commit()
+        _c109.close()
+        os.environ["VBECOMPLETE_WORD_BANK"] = _p109
+        _ok109 = _VB109.load_active()
+        check("109.6 手改库 -> `load_active()` 生效：禁用的 `Kill` 走了、自加的 "
+              "`MyHostApi` 进来了、109.3 手插的 `KeepMe` 也读得到（其余照旧）",
+              [(_ok109, _VB109.WORDBANK_INFO["loaded"],
+                "Kill" not in _VB109.ACTIVE_FUNCTIONS,
+                "MyHostApi" in _VB109.ACTIVE_FUNCTIONS,
+                "KeepMe" in _VB109.ACTIVE_FUNCTIONS,
+                "MsgBox" in _VB109.ACTIVE_FUNCTIONS)],
+              expect_contain=[(True, True, True, True, True, True)])
+
+        check("109.7 自加的词**不算**\"语言自带\"（`ACTIVE_BUILTIN_LOWER` 里没有 "
+              "MyHostApi / ZzzKey）—— 否则引擎会拿\"公共词汇\"那套收紧规则连坐它，"
+              "用户特意加的词反而打不出来",
+              [("myhostapi" in _VB109.ACTIVE_BUILTIN_LOWER,
+                "zzzkey" in _VB109.ACTIVE_BUILTIN_LOWER,
+                "msgbox" in _VB109.ACTIVE_BUILTIN_LOWER,
+                "if" in _VB109.ACTIVE_BUILTIN_LOWER)],
+              expect_contain=[(False, False, True, True)])
+
+        # ---- 109.8 补空格三态：NULL 走排除法，1 / 0 覆盖它 ----
+        check("109.8 补空格是**三态**：`Sub` 被显式写成 0 -> 不补；`Public` 仍是 "
+              "NULL -> 按排除法补；`ZzzKey` 显式 1 -> 补。引擎侧直接查生效集合"
+              "（不再自己抄一份）",
+              [(_E109._keyword_wants_space("Sub"),
+                _E109._keyword_wants_space("Public"),
+                _E109._keyword_wants_space("ZzzKey"),
+                _E109._keyword_wants_space("Else"))],
+              expect_contain=[(False, True, True, False)])
+
+        # ---- 109.9 收集侧真的读生效词表（不是只改了常量定义）----
+        class _CM109(object):
+            """照真 VBE 的形状：`Lines(a, n)` 回来是 CRLF 连接的多行。"""
+
+            def __init__(self, code):
+                self._ls = str(code).split("\n")
+
+            @property
+            def CountOfLines(self):
+                return len(self._ls)
+
+            def Lines(self, a, b=None):
+                if b is None:
+                    return self._ls[a - 1]
+                return "\r\n".join(self._ls[a - 1:a - 1 + b])
+
+        class _Comp109(object):
+            def __init__(self, name, code):
+                self.Name = name
+                self.Type = 1                        # vbext_ct_StdModule
+                self.CodeModule = _CM109(code)
+
+        _o_vbe109 = _BV109._get_vbe_cached
+        _o_cc109 = _BV109._collect_components
+        _o_cp109 = _BV109._caret_position
+        _o_sw109 = (_BV109.ENABLE_VBA_BUILTINS, _BV109.ENABLE_VBA_KEYWORDS,
+                    _BV109.ENABLE_VBA_CONSTANTS, _BV109.ENABLE_HOST_ENUMS)
+        try:
+            _BV109._get_vbe_cached = lambda: object()
+            _BV109._collect_components = lambda vbe, cm: [
+                _Comp109("Module1", "Sub Foo()\n    x = 1\nEnd Sub")]
+            _BV109._caret_position = lambda vbe: (None, None)
+            _BV109.ENABLE_VBA_BUILTINS = True
+            _BV109.ENABLE_VBA_KEYWORDS = True
+            _BV109.ENABLE_VBA_CONSTANTS = False
+            _BV109.ENABLE_HOST_ENUMS = False
+            _bk109 = _BV109.VbeBackend()
+            _nm109 = set(str(r[0]).lower() for r in _bk109.get_identifiers())
+            _bl109 = _bk109.get_builtin_names()
+        finally:
+            _BV109._get_vbe_cached = _o_vbe109
+            _BV109._collect_components = _o_cc109
+            _BV109._caret_position = _o_cp109
+            (_BV109.ENABLE_VBA_BUILTINS, _BV109.ENABLE_VBA_KEYWORDS,
+             _BV109.ENABLE_VBA_CONSTANTS, _BV109.ENABLE_HOST_ENUMS) = _o_sw109
+
+        check("109.9 ★收集侧端到端：拿到的是**生效词表**——`MyHostApi` 进了池子、"
+              "`Kill` 没进（被禁用）、`If` 照常；而 `MyHostApi` 不在收紧集合里"
+              "（用户自加的词不该被\"公共词汇\"连坐）",
+              [("myhostapi" in _nm109, "kill" not in _nm109, "if" in _nm109,
+                "sub" in _nm109,
+                "myhostapi" in _bl109, "msgbox" in _bl109, "if" in _bl109)],
+              expect_contain=[(True, True, True, True, False, True, True)])
+
+        # ---- 109.10 四种坏库：一律退回种子，绝不抛 ----
+        def _try_bad109(_path, _tag):
+            os.environ["VBECOMPLETE_WORD_BANK"] = _path
+            _VB109.reset_active()
+            _loaded = _VB109.load_active()
+            return (_loaded, _VB109.ACTIVE_FUNCTIONS == _VB109.BUILTIN_FUNCTIONS,
+                    bool(_VB109.WORDBANK_INFO.get("error")), _tag)
+
+        _bad109 = []
+        _pbad = os.path.join(_d109, "garbage.db")
+        with open(_pbad, "wb") as _f:
+            _f.write(b"definitely not a sqlite database" * 8)
+        _bad109.append(_try_bad109(_pbad, "垃圾字节"))
+
+        _pmeta = os.path.join(_d109, "nometa.db")
+        _c109 = _sq109.connect(_pmeta)
+        _c109.execute("CREATE TABLE words (name TEXT, kind TEXT)")
+        _c109.commit()
+        _c109.close()
+        _bad109.append(_try_bad109(_pmeta, "缺 meta 表"))
+
+        _pempty = os.path.join(_d109, "empty.db")
+        _WB109.ensure([], _pempty)
+        _bad109.append(_try_bad109(_pempty, "空库"))
+
+        _pver = os.path.join(_d109, "newver.db")
+        _sh109.copyfile(_p109, _pver)
+        _c109 = _sq109.connect(_pver)
+        _c109.execute("UPDATE meta SET value='99' WHERE key='schema_version'")
+        _c109.commit()
+        _c109.close()
+        _bad109.append(_try_bad109(_pver, "版本 99"))
+
+        _pmiss = os.path.join(_d109, "nope", "missing.db")
+        _bad109.append(_try_bad109(_pmiss, "文件不存在"))
+
+        check("109.10 ★五种坏库（垃圾字节 / 缺 meta / 空库 / 版本 99 / 文件不存在）"
+              "全部：`load_active()` 返回 False、`ACTIVE_*` 退回种子、"
+              "`WORDBANK_INFO['error']` 有话说 —— **一个异常都不许往外抛**",
+              [(_bad109[0][0], _bad109[1][0], _bad109[2][0], _bad109[3][0],
+                _bad109[4][0]),
+               tuple(x[1] for x in _bad109),
+               tuple(x[2] for x in _bad109)],
+              expect_contain=[(False,) * 5, (True,) * 5, (True,) * 5])
+
+        # ---- 109.11 命令行（用户不一定装 GUI 工具）----
+        _out109 = io.StringIO()
+        try:
+            with _cl109.redirect_stdout(_out109):
+                _WB109._cmd_add(_p109, "CliWord", "keyword")
+                _WB109._cmd_set_enabled(_p109, "CliWord", False)
+                _WB109._cmd_stats(_p109)
+        except Exception as _e109c:
+            _out109.write("ERR: %s" % _e109c)
+        _snapC = _WB109.load(_p109)
+        _kwC = [n for n, _b, _w in _snapC.by_kind("keyword")] if _snapC else []
+        check("109.11 命令行能改库（`add` 加进去、`disable` 之后就查不到），"
+              "`stats` 不炸 —— 不装 DB Browser 也能维护",
+              [("CliWord" not in _kwC, "共 " in _out109.getvalue(),
+                "ERR:" not in _out109.getvalue())],
+              expect_contain=[(True, True, True)])
+
+        # ---- 109.12 热路径上没有 SQLite（性能红线）----
+        def _top_imports109(_path):
+            _tree = _ast109.parse(io.open(_path, encoding="utf-8").read())
+            _out = []
+            for _nd in _tree.body:                   # ★只看**模块级**语句
+                if isinstance(_nd, _ast109.Import):
+                    _out.extend(_a.name.split(".")[0] for _a in _nd.names)
+                elif isinstance(_nd, _ast109.ImportFrom):
+                    _out.append((_nd.module or "").split(".")[0])
+            return _out
+
+        def _all_imports109(_path):
+            _tree = _ast109.parse(io.open(_path, encoding="utf-8").read())
+            _out = []
+            for _nd in _ast109.walk(_tree):
+                if isinstance(_nd, _ast109.Import):
+                    _out.extend(_a.name.split(".")[0] for _a in _nd.names)
+                elif isinstance(_nd, _ast109.ImportFrom):
+                    _out.append((_nd.module or "").split(".")[0])
+            return _out
+
+        _eng_top109 = _top_imports109(os.path.join(ROOT, "engine.py"))
+        _eng_all109 = _all_imports109(os.path.join(ROOT, "engine.py"))
+        _vb_top109 = _top_imports109(os.path.join(ROOT, "vba_builtins.py"))
+        check("109.12 ★性能红线：`engine.py` **全文件**都没有 `sqlite3`"
+              "（引擎不该碰库），`vba_builtins.py` **顶层**也没有 `sqlite3` / "
+              "`wordbank`（只在 `load_active()` 里惰性 import）—— 按键热路径上"
+              "一个数据库调用都没有",
+              [("sqlite3" in _eng_all109, "sqlite3" in _eng_top109,
+                "wordbank" in _eng_all109,
+                "sqlite3" in _vb_top109, "wordbank" in _vb_top109,
+                "engine" in _vb_top109)],
+              expect_contain=[(False,) * 6])
+
+        # ---- 109.13 两个新键都登记了 ----
+        _keys109s = [k for k, _d, _s in _ST109.KNOWN]
+        check("109.13 两个新键都进了 `settings.KNOWN`：`NO_WORDBANK`（排错开关）、"
+              "`WORD_BANK`（库路径）",
+              [(_keys109s.count("NO_WORDBANK"), _keys109s.count("WORD_BANK"),
+                len(_keys109s))],
+              expect_contain=[(1, 1, 53)])
+
+        check("109.14 启动接线在 `main()` 里、且**先建库再加载**"
+              "（顺序反了就会先读到「没有库」、退回种子，然后建了库却不生效）",
+              [(("wordbank.ensure(" in
+                 io.open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()),
+                ("vba_builtins.load_active()" in
+                 io.open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()),
+                (io.open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+                 .index("wordbank.ensure(")
+                 < io.open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+                 .index("vba_builtins.load_active()")))],
+              expect_contain=[(True, True, True)])
+
+    except Exception as _e109:
+        import traceback as _tp109
+        _tp109.print_exc()
+        check("第 109 节异常: %s" % _e109, [True], expect_contain=[False])
+    finally:
+        # ⚠️ 三件事必须还原：环境变量、`ACTIVE_*`（否则后面每一节都用改过的词表）、
+        #    临时目录。§90 会盯着"猴补丁有没有还原"。
+        try:
+            if _saved_env109 is None:
+                os.environ.pop("VBECOMPLETE_WORD_BANK", None)
+            else:
+                os.environ["VBECOMPLETE_WORD_BANK"] = _saved_env109
+        except Exception:
+            pass
+        try:
+            import vba_builtins as _VB109f
+            _VB109f.reset_active()
+        except Exception:
+            pass
+        try:
+            if _d109:
+                _sh109.rmtree(_d109, ignore_errors=True)
+        except Exception:
+            pass
 
 
     # ------------------------------------------------------------------

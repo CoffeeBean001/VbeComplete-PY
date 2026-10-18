@@ -30,6 +30,16 @@ recent.json.tmp
 # 跟着代码走 —— 换机器时它会被自动复制成新的 settings.ini。
 settings.ini
 
+# ---- 用户数据：词库（★v123）----
+# VBA 关键字 / 内建函数 / 内建类型 / 常用常量的提示词表。首次启动时按
+# vba_builtins.py 里的种子生成，之后**就是你自己的数据**：禁用不喜欢的、
+# 加上自己常用的宿主 API —— 所以不进仓库，换机器时想带走就单独拷一份。
+wordbank.db
+wordbank.db-journal
+wordbank.db-wal
+wordbank.db-shm
+wordbank.db.bak-*
+
 # ---- 调试输出 ----
 _dbg.txt
 _o.txt

@@ -108,13 +108,41 @@ convention.
 **type an uppercase `D` / `K`** — VBE's auto-capitalisation only applies to keywords, not to string
 contents like `"Debug"`. Hence `Ctrl+D` / `Ctrl+K`, neither of which the VBE code pane binds.
 
+**Where the suggestions come from: `wordbank.db`, which you can edit.** VBA's keywords, built-in
+functions, built-in types and common constants live in `wordbank.db` in the **project folder** (SQLite,
+seeded from the list compiled into the program on first start). It is read into memory once at startup;
+every keystroke afterwards only touches memory — so **editing the bank costs you no speed**, and reading
+it takes about 1 ms.
+
+Three ways to change it (restart to take effect):
+
+- open it with any SQLite tool (DB Browser for SQLite and friends) and edit the `words` table;
+- no tool needed: `py -3 wordbank.py` for a summary, `list` to see everything, `add Name` to add one,
+  `disable Name` to keep but stop suggesting it, `enable` to bring it back, `remove` to delete;
+- broke something? `py -3 wordbank.py reset --yes` rebuilds it (a `wordbank.db.bak-<time>` is written
+  automatically first).
+
+One row per word, primary key `(name, kind)` — names like `Date` / `String` that are **both a function
+and a type** get one row each. Columns: `kind` (`keyword` / `function` / `constant` / `type`); `enabled`
+(0 = keep but do not suggest); `is_builtin` (1 = shipped with the language; write 0 for your own words so
+they are not subjected to the "common vocabulary" fuzzy-match tightening); `wants_space` (keywords only:
+NULL = follow the default rule, 1 = always append a space, 0 = never); `note` (free text, not read by
+the program).
+
+⚠️ **Functions, variables, module and control names defined in your code are not in there** — those are
+read from your live VBE project on every pass, and that is the main path. `wordbank.db` only covers the
+language-provided set plus whatever you add.
+⚠️ For troubleshooting: `NO_WORDBANK = 1` in `settings.ini` ignores the bank entirely and falls back to
+the seed list compiled into the program.
+
 **Turning features off: `settings.ini`** — created in the **project folder** on first start, with
 **every line commented out** (so it changes nothing by itself). Delete the `;` in front of a line,
 edit the value, save, restart. **Environment variables still win** over the file. To see what is
 actually in effect and where each value came from, run `py -3 settings.py` in the project folder.
 
 **What is suggested**: your variables, constants and procedures, plus modules, forms and control
-names, keywords and built-in functions / types (≈260) — enums (`vb*` / `xl*` / `mso*`) are excluded.
+names, keywords and built-in functions / types (the language-provided set now comes from
+`wordbank.db`, so you can trim or extend it) — enums (`vb*` / `xl*` / `mso*`) are excluded.
 While you *declare* a new name (`Dim …`, `Sub …`) no existing symbol is offered, exactly like IDEA —
 but the keywords that belong at the caret are: after `Private` / `Public` you get `Sub` / `Function` /
 …, inside a parameter list `ByVal` / `ByRef` / `Optional` / `ParamArray` / `As`; after `As` / `New` it

@@ -83,6 +83,8 @@ import vbe_bridge
 import snippets
 import snippet_ui
 import jump_ui
+import vba_builtins
+import wordbank
 from vbe_bridge import VbeBackend, com_backoff_remaining
 from ui import Popup, MAX_VISIBLE_ROWS, caret_screen_rect
 from log import log as _log, log_boot as _log_boot
@@ -1176,6 +1178,34 @@ def main():
 
     if not acquire_single_instance():
         return
+
+    # ★v123：词库（`wordbank.db`）—— VBA 关键字 / 内建函数 / 内建类型 / 常用常量
+    # 从代码常量搬进了**可手改的 SQLite**。这里只做两件事：
+    #   ① 库不存在就按 `vba_builtins.seed_rows()` 建一份（**已存在则一个字节都不碰**，
+    #      绝不覆盖用户的手改）；
+    #   ② 读进内存，覆盖 `vba_builtins.ACTIVE_*`。
+    #
+    # 之后整个运行期只读内存里的 tuple / frozenset，**按键热路径零额外成本**
+    # （与改之前完全等价：那时读的也是模块级元组）。
+    #
+    # 失败一律退回代码里的种子清单（只记一行日志）—— 词库是增强设施，
+    # 没有资格让补全整体起不来。
+    try:
+        if settings.flag("NO_WORDBANK", False):
+            _log("wordbank: 按 NO_WORDBANK=1 跳过，用代码里的种子清单")
+        else:
+            _wb_rows = vba_builtins.seed_rows()
+            _wb_created, _wb_path = wordbank.ensure(_wb_rows)
+            if _wb_created:
+                _log("wordbank: 已建库 %s（%d 条）" % (_wb_path, len(_wb_rows)))
+            if vba_builtins.load_active():
+                _log("wordbank: 已加载 %s %r"
+                     % (_wb_path, vba_builtins.WORDBANK_INFO["counts"]))
+            else:
+                _log("wordbank: 未加载（%s）—— 退回种子清单"
+                     % vba_builtins.WORDBANK_INFO.get("error"))
+    except Exception as _e_wb:
+        _log("wordbank: 初始化异常 %s —— 退回种子清单" % _e_wb)
 
     try:
         root = tk.Tk()

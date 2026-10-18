@@ -4411,10 +4411,19 @@ class VbeBackend:
         # 见 engine.BUILTIN_SCATTER_MIN）—— 它一直是活的，只是 v77 之后
         # `_builtin_names()` 默认空集、整段不生效。v96 把这一批放回池子，
         # 那道收紧也就自动重新起作用了（这正是当初为它们准备的）。
+        # ★v123：读【生效快照】`ACTIVE_*`（= 词库里的那一份），不再是代码里的
+        # 常量清单。属性访问发生在每次收集时，所以 `vba_builtins.load_active()`
+        # 之后立刻生效，不需要重启进程内任何东西。
+        #
+        # 语言自带的那批（供引擎收紧 2~3 字符的跳步命中，见 BUILTIN_SCATTER_MIN）。
+        # ★只为 is_builtin=1 的词记名：用户自己加进词库的词不该被"公共词汇"那套
+        # 收紧连坐 —— 他是特意加的，当然希望打得出来。集合取一次放局部，两个分支
+        # 共用（且必须提到分支之外：内建函数关掉、只开关键字时也要能用）。
+        _bn_builtin = vba_builtins.ACTIVE_BUILTIN_LOWER
         if ENABLE_VBA_BUILTINS:
-            _bn_src = vba_builtins.BUILTIN_FUNCTIONS
+            _bn_src = vba_builtins.ACTIVE_FUNCTIONS
             if ENABLE_VBA_CONSTANTS:
-                _bn_src = _bn_src + vba_builtins.BUILTIN_CONSTANTS
+                _bn_src = _bn_src + vba_builtins.ACTIVE_CONSTANTS
             for _bn in _bn_src:
                 _bl = _bn.lower()
                 if _bl in declared_names:
@@ -4422,13 +4431,14 @@ class VbeBackend:
                 records.append((_bn, _BUILTIN_MODULE, None, False))
                 declared_names.add(_bl)
                 structural_names.add(_bl)
-                builtin_names.add(_bl)
+                if _bl in _bn_builtin:
+                    builtin_names.add(_bl)
                 _decl_by_mod.setdefault(_bl, set()).add(_BUILTIN_MODULE)
             # 内建数据类型名：既进候选池（`As |` 位置的候选是从可见标识符里筛出来
             # 的，不在池子里就永远显示不出来），也进 type_names（那一位置只该冒
             # 类型名）。与函数清单重合的（Date / String 等）由上面的 declared_names
             # 去重挡掉，不会再收一遍。
-            for _tn in vba_builtins.BUILTIN_TYPE_NAMES:
+            for _tn in vba_builtins.ACTIVE_TYPE_NAMES:
                 _tl = _tn.lower()
                 type_names.add(_tn)
                 if _tl in declared_names:
@@ -4436,7 +4446,8 @@ class VbeBackend:
                 records.append((_tn, _BUILTIN_MODULE, None, False))
                 declared_names.add(_tl)
                 structural_names.add(_tl)
-                builtin_names.add(_tl)
+                if _tl in _bn_builtin:
+                    builtin_names.add(_tl)
                 _decl_by_mod.setdefault(_tl, set()).add(_BUILTIN_MODULE)
 
         # ---- 语言关键字 / 保留字（v62）----
@@ -4461,14 +4472,15 @@ class VbeBackend:
         #    "2~3 字符的跳步命中要求首字母对齐"的收紧就是为它们准备的
         #    （见 engine.trigger 与 BUILTIN_SCATTER_MIN）—— 别把它关掉。
         if ENABLE_VBA_KEYWORDS:
-            for _kn in vba_builtins.BUILTIN_KEYWORDS:
+            for _kn in vba_builtins.ACTIVE_KEYWORDS:
                 _kl = _kn.lower()
                 if _kl in declared_names:
                     continue
                 records.append((_kn, _BUILTIN_MODULE, None, False))
                 declared_names.add(_kl)
                 structural_names.add(_kl)
-                builtin_names.add(_kl)
+                if _kl in _bn_builtin:
+                    builtin_names.add(_kl)
                 _decl_by_mod.setdefault(_kl, set()).add(_BUILTIN_MODULE)
 
         # ---- 宿主类型库的枚举常量（v67）----

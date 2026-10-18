@@ -30,37 +30,35 @@ import parser as vba_parser
 import recent as _recent_store
 import settings as _settings
 
-# ★v98：内建数据类型名（小写）的惰性缓存。首次用时才 import vba_builtins。
-# ★v99 补上内建**函数**名的白名单缓存（见 _builtin_function_names）。
+# ★v123：这三份数据改由 `vba_builtins.ACTIVE_*` 提供（词库加载后的生效快照）。
+# 刻意**不再自己缓存**：`vba_builtins` 在加载时就把 frozenset 算好了，我们每次
+# 只是取一个现成的对象引用（一次 sys.modules 字典查找 + 属性访问，纳秒级）。
+#
+# 为什么把 v98 那层惰性缓存删掉：缓存与"用户改词库后重新加载"天然冲突 ——
+# 谁忘了清缓存，表现就是"库改了、提示没变"，这种 bug 极难查。少一层缓存，
+# 少一个必须同步的状态。代价是一次属性访问，收益是永远不会读到陈旧快照。
+#
+# ★v99 补上内建**函数**名的白名单（见 _builtin_function_names）。
 #     两份都要：白名单挡关键字/常量，这份挡 String / Date 这类"既是类型又是
 #     函数"的双身份名字（MEMORY：两道判据问的是不同问题，不能合成一条）。
-_BUILTIN_TYPE_NAMES_LOW = None
-_BUILTIN_FUNCTION_NAMES_LOW = None
 
 from log import log as _log
 from log import LOG_ENABLED as _LOG_ENABLED
-
-# ★v103b：会被补空格的关键字（小写）的惰性缓存 —— 同 _builtin_function_names
-# 的理由，vba_builtins 是几百行的常量模块，顶层 import 没必要。
-_BUILTIN_KEYWORD_SPACE_LOW = None
 
 
 def _keyword_wants_space(name):
     """这个补全词是不是"后面要跟一个空格"的 VBA 关键字（纯函数）。★v103b。
 
-    对应 `vba_builtins.keyword_wants_space` 的惰性封装：取不到就返回 False
+    ★v123 起**直接复用** `vba_builtins.keyword_wants_space`，不再自己抄一份
+    集合判断 —— 同一语义只能有一份实现（MEMORY 铁律 21）。取不到就返回 False
     —— 宁可少补一个空格，也绝不补错（补错 = 往用户代码里塞一个多余字符）。
     只认语言关键字；工程里的过程名 / 变量名一律 False。
     """
-    global _BUILTIN_KEYWORD_SPACE_LOW
-    if _BUILTIN_KEYWORD_SPACE_LOW is None:
-        try:
-            import vba_builtins as _vb
-            _BUILTIN_KEYWORD_SPACE_LOW = frozenset(
-                _vb.BUILTIN_KEYWORD_NEEDS_SPACE)
-        except Exception:
-            _BUILTIN_KEYWORD_SPACE_LOW = frozenset()
-    return str(name or "").strip().lower() in _BUILTIN_KEYWORD_SPACE_LOW
+    try:
+        import vba_builtins as _vb
+        return _vb.keyword_wants_space(name)
+    except Exception:
+        return False
 
 
 def _is_own_proc_name(name, enclosing_proc):
@@ -1610,18 +1608,15 @@ class Completer:
         （少做一次，用户按两下 `(` 也行）；黑名单漏一类则是"写坏用户的代码"。
         这个方向的错误代价不对称，所以宁可白名单。
 
-        惰性取：vba_builtins 只被这一处用到，而它是个几百行的常量模块 ——
-        顶层 import 会拖慢每次启动（虽然只有一次，但没必要）。
+        ★v123：改成取 `vba_builtins.ACTIVE_FUNCTION_LOWER`（词库加载后的生效
+        快照）—— 用户在词库里加了自己的函数名，它也能补括号；把某个名字禁用
+        掉，它就不补。取不到就空集（白名单为空 = 谁都不补，方向仍然安全）。
         """
-        global _BUILTIN_FUNCTION_NAMES_LOW
-        if _BUILTIN_FUNCTION_NAMES_LOW is None:
-            try:
-                import vba_builtins as _vb
-                _BUILTIN_FUNCTION_NAMES_LOW = frozenset(
-                    str(t).lower() for t in _vb.BUILTIN_FUNCTIONS)
-            except Exception:
-                _BUILTIN_FUNCTION_NAMES_LOW = frozenset()
-        return _BUILTIN_FUNCTION_NAMES_LOW
+        try:
+            import vba_builtins as _vb
+            return _vb.ACTIVE_FUNCTION_LOWER
+        except Exception:
+            return frozenset()
 
     def _builtin_type_names(self):
         """内建**数据类型**名（小写集合）—— Long / String / Object …。★v98。
@@ -1638,18 +1633,13 @@ class Completer:
         两道闸门分工不同、都必须留着：这条管"名字本身像不像类型"，那条管
         "这个位置是不是类型位置"。
 
-        惰性取：vba_builtins 只被这一处用到，而它是个几百行的常量模块 ——
-        顶层 import 会拖慢每次启动（虽然只有一次，但没必要）。
+        ★v123：取 `vba_builtins.ACTIVE_TYPE_LOWER`（词库的 type 组）。
         """
-        global _BUILTIN_TYPE_NAMES_LOW
-        if _BUILTIN_TYPE_NAMES_LOW is None:
-            try:
-                import vba_builtins as _vb
-                _BUILTIN_TYPE_NAMES_LOW = frozenset(
-                    str(t).lower() for t in _vb.BUILTIN_TYPE_NAMES)
-            except Exception:
-                _BUILTIN_TYPE_NAMES_LOW = frozenset()
-        return _BUILTIN_TYPE_NAMES_LOW
+        try:
+            import vba_builtins as _vb
+            return _vb.ACTIVE_TYPE_LOWER
+        except Exception:
+            return frozenset()
 
     def _proc_kinds(self):
         """后端给出的"过程名 -> sub / function / property"（小写键）。可选接口。★v103c。

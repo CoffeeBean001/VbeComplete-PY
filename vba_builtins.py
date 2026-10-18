@@ -266,5 +266,146 @@ def keyword_wants_space(word):
     （它们走"补括号"那条路，由 engine._is_callable_name 判）。
 
     大小写不敏感（候选窗里给的是关键字原文，如 `Public`）。
+
+    ★v123：查的是【生效】集合 `ACTIVE_KEYWORD_SPACE`（词库里的 `wants_space`
+    列可以逐条覆盖），不再是写死的 `BUILTIN_KEYWORD_NEEDS_SPACE`。没有词库 /
+    词库不可用时两者**逐字相同**，行为不变。
     """
-    return str(word or "").strip().lower() in BUILTIN_KEYWORD_NEEDS_SPACE
+    return str(word or "").strip().lower() in ACTIVE_KEYWORD_SPACE
+
+
+# ---------------------------------------------------------------------------
+# ★v123：生效快照 —— 词库（SQLite）里加载出来的那一份
+# ---------------------------------------------------------------------------
+# 为什么要多一层 `ACTIVE_*` 而不是直接让 `BUILTIN_*` 变成"可变的"：
+#
+#   `BUILTIN_*` 现在是**冻结的种子清单**，被二十多处测试当"代码里带的那份名单"
+#   来体检（`len(...) >= 150`、`MsgBox in ...`、`FUNCTIONS | CONSTANTS == NAMES`）。
+#   如果它随用户手改的词库变化，这些用例就会"因为用户配置而红/绿"——那是测试网
+#   最不该有的性质。
+#
+#   所以职责拆开：
+#     `BUILTIN_*`  代码里带的那份（永不变化，测试和文档引用它）
+#     `ACTIVE_*`   此刻真正生效的（词库优先，失败退回种子）
+#   收集侧与引擎侧一律读 `ACTIVE_*`；`load_active()` 之前它们**就是**种子。
+#
+# ⚠️ 本模块顶层**仍然零 import**（sqlite3 只在 `load_active()` 内部惰性引入），
+#    这样 import vba_builtins 的成本与 v122 完全一样，热路径不受任何影响。
+
+ACTIVE_FUNCTIONS = BUILTIN_FUNCTIONS
+ACTIVE_CONSTANTS = BUILTIN_CONSTANTS
+ACTIVE_TYPE_NAMES = BUILTIN_TYPE_NAMES
+ACTIVE_KEYWORDS = BUILTIN_KEYWORDS
+ACTIVE_FUNCTION_LOWER = frozenset(n.lower() for n in ACTIVE_FUNCTIONS)
+ACTIVE_TYPE_LOWER = frozenset(n.lower() for n in ACTIVE_TYPE_NAMES)
+ACTIVE_KEYWORD_LOWER = frozenset(n.lower() for n in ACTIVE_KEYWORDS)
+ACTIVE_KEYWORD_SPACE = frozenset(BUILTIN_KEYWORD_NEEDS_SPACE)
+
+# "语言自带"那一批（小写）。收集侧用它决定要不要把某个名字算进
+# `builtin_names` —— 那个集合专供引擎收紧 2~3 字符的跳步命中（BUILTIN_SCATTER_MIN）。
+# 用户自己加进词库的词 (is_builtin=0) 刻意**不**进这里：他是特意加的，
+# 不该被"公共词汇"那套收紧规则连坐。
+ACTIVE_BUILTIN_LOWER = frozenset(
+    n.lower() for n in (BUILTIN_FUNCTIONS + BUILTIN_CONSTANTS
+                        + BUILTIN_TYPE_NAMES + BUILTIN_KEYWORDS))
+
+# 词库状态（`load_active()` 之后才有意义，给自检 / 排错 / 测试看）
+WORDBANK_INFO = {"loaded": False, "path": "", "counts": {}, "error": "未尝试加载"}
+
+
+def seed_rows():
+    """种子行：首次建库时写进 SQLite 的那批。-> [(name, kind, is_b, en, ws, note)]
+
+    `wants_space` 一律 None —— "NULL 是什么意思"（不在排除表里就补空格）是
+    VBA 语义，由 `load_active()` 解释，不让词库层去猜。
+    """
+    rows = []
+    seen = set()
+    for names, kind in ((BUILTIN_FUNCTIONS, "function"),
+                        (BUILTIN_CONSTANTS, "constant"),
+                        (BUILTIN_TYPE_NAMES, "type"),
+                        (BUILTIN_KEYWORDS, "keyword")):
+        for n in names:
+            k = (n.lower(), kind)
+            if k in seen:
+                continue
+            seen.add(k)
+            rows.append((n, kind, 1, 1, None, ""))
+    return rows
+
+
+def load_active(force=False):
+    """从词库加载生效快照。-> True = 用上了库；False = 退回种子。
+
+    只应在**启动时调用一次**（`main.py`）。任何失败都不抛异常：`ACTIVE_*` 保持
+    种子、`WORDBANK_INFO["error"]` 记原因，程序照常跑 —— 这是本模块对外的契约。
+    """
+    global ACTIVE_FUNCTIONS, ACTIVE_CONSTANTS, ACTIVE_TYPE_NAMES, ACTIVE_KEYWORDS
+    global ACTIVE_FUNCTION_LOWER, ACTIVE_TYPE_LOWER, ACTIVE_KEYWORD_LOWER
+    global ACTIVE_KEYWORD_SPACE, ACTIVE_BUILTIN_LOWER
+    try:
+        import wordbank
+    except Exception as e:                           # pragma: no cover
+        WORDBANK_INFO.update({"loaded": False, "error": "导入 wordbank 失败: %s" % e})
+        return False
+    try:
+        snap = wordbank.load()
+    except Exception as e:                           # 契约要求：不抛
+        WORDBANK_INFO.update({"loaded": False, "error": "读库异常: %s" % e})
+        return False
+    if snap is None:
+        WORDBANK_INFO.update({"loaded": False, "path": wordbank.db_path(),
+                              "error": wordbank.last_error() or "未知原因"})
+        return False
+
+    fn = [r[0] for r in snap.by_kind("function")]
+    co = [r[0] for r in snap.by_kind("constant")]
+    ty = [r[0] for r in snap.by_kind("type")]
+    kw = snap.by_kind("keyword")
+    if not (fn or co or ty or kw):
+        WORDBANK_INFO.update({"loaded": False, "path": snap.path,
+                              "error": "库里一条启用的词都没有"})
+        return False
+
+    # 空格三态：NULL -> 默认排除法；1 / 0 -> 用户显式指定（覆盖排除法）
+    space = set()
+    for name, _is_b, ws in kw:
+        low = name.lower()
+        if ws is None:
+            if low not in KEYWORDS_NO_TRAIL_SPACE:
+                space.add(low)
+        elif ws:
+            space.add(low)
+
+    ACTIVE_FUNCTIONS = tuple(fn)
+    ACTIVE_CONSTANTS = tuple(co)
+    ACTIVE_TYPE_NAMES = tuple(ty)
+    ACTIVE_KEYWORDS = tuple(r[0] for r in kw)
+    ACTIVE_FUNCTION_LOWER = frozenset(n.lower() for n in ACTIVE_FUNCTIONS)
+    ACTIVE_TYPE_LOWER = frozenset(n.lower() for n in ACTIVE_TYPE_NAMES)
+    ACTIVE_KEYWORD_LOWER = frozenset(n.lower() for n in ACTIVE_KEYWORDS)
+    ACTIVE_KEYWORD_SPACE = frozenset(space)
+    ACTIVE_BUILTIN_LOWER = frozenset(
+        r[0].lower() for r in snap.rows if r[2])
+    WORDBANK_INFO.update({"loaded": True, "path": snap.path,
+                          "counts": dict(snap.counts), "error": ""})
+    return True
+
+
+def reset_active():
+    """退回种子（`NO_WORDBANK=1` 或测试用）。"""
+    global ACTIVE_FUNCTIONS, ACTIVE_CONSTANTS, ACTIVE_TYPE_NAMES, ACTIVE_KEYWORDS
+    global ACTIVE_FUNCTION_LOWER, ACTIVE_TYPE_LOWER, ACTIVE_KEYWORD_LOWER
+    global ACTIVE_KEYWORD_SPACE, ACTIVE_BUILTIN_LOWER
+    ACTIVE_FUNCTIONS = BUILTIN_FUNCTIONS
+    ACTIVE_CONSTANTS = BUILTIN_CONSTANTS
+    ACTIVE_TYPE_NAMES = BUILTIN_TYPE_NAMES
+    ACTIVE_KEYWORDS = BUILTIN_KEYWORDS
+    ACTIVE_FUNCTION_LOWER = frozenset(n.lower() for n in ACTIVE_FUNCTIONS)
+    ACTIVE_TYPE_LOWER = frozenset(n.lower() for n in ACTIVE_TYPE_NAMES)
+    ACTIVE_KEYWORD_LOWER = frozenset(n.lower() for n in ACTIVE_KEYWORDS)
+    ACTIVE_KEYWORD_SPACE = frozenset(BUILTIN_KEYWORD_NEEDS_SPACE)
+    ACTIVE_BUILTIN_LOWER = frozenset(
+        n.lower() for n in (BUILTIN_FUNCTIONS + BUILTIN_CONSTANTS
+                            + BUILTIN_TYPE_NAMES + BUILTIN_KEYWORDS))
+    WORDBANK_INFO.update({"loaded": False, "counts": {}, "error": "已退回种子"})

@@ -246,6 +246,51 @@
   three write text, so a half-composed IME word would leave the line text stale.
   `VBECOMPLETE_NO_INSERT_ABOVE=1` / `VBECOMPLETE_NO_DUP_LINE=1` / `VBECOMPLETE_NO_DEL_LINE=1`.
 
+- **v123 — the vocabulary lives in `wordbank.db`, which you can edit.**
+  VBA's keywords, built-in functions, built-in types and common constants used to be Python tuples in
+  `vba_builtins.py`. They now live in a SQLite database in the **project folder**, seeded from those
+  tuples on the first start. It is read **once at startup** and then lives in memory as plain tuples and
+  frozensets, so per-keystroke cost is exactly what it was (measured: `load()` 1.0 ms,
+  `load_active()` 1.3 ms, `import vba_builtins` 0.87 ms — unchanged, because the module still does no
+  I/O at import time).
+
+  This is the two-source split the user asked for, and the two halves are already independent: the
+  **language-provided** set comes from the bank and is loaded at startup; **your code's** procedures,
+  variables, module names and control names are read from the live VBE project on every pass
+  (`_collect_identifiers`) and are **not** configurable — that is the main path and it should not be
+  something a config file can break.
+
+  Table: `words(name, kind, is_builtin, enabled, wants_space, note)` with **`PRIMARY KEY (name, kind)`** —
+  `Date` and `String` are both a function and a type, so they get one row each; collapsing them into one
+  row would make the `As |` position and the expression position indistinguishable. `enabled=0` keeps a
+  word without suggesting it; `is_builtin=0` marks your own words so they are **not** subjected to the
+  "common vocabulary" tightening; `wants_space` is keyword-only (NULL = default rule, 1 = always insert a
+  space, 0 = never); `note` is free text the program never reads.
+
+  Decisions worth knowing. `ensure()` writes the bank **only when the file does not exist** — an
+  existing bank is never touched (pinned by a test that inserts a row and calls `ensure()` again).
+  `load()` opens it with a `mode=ro` URI, reads, closes immediately, and holds no lock, so you can edit
+  it in DB Browser while the tool runs. ⚠️ The URI is built by hand rather than with
+  `urllib.request.pathname2url`: on Windows that returns `///C:/…` (three slashes already), so adding
+  `file://` produced five and SQLite answered `unable to open database file`. Journal mode is
+  **DELETE, not WAL** — a WAL database needs a writable `-shm` even for a read-only connection.
+  Every failure mode (garbage bytes, missing `meta`, empty bank, a `schema_version` newer than the
+  program, missing file) falls back to the seed list and records the reason in `WORDBANK_INFO["error"]`;
+  nothing is ever raised — an optional enhancement has no business taking completion down with it.
+  A newer `schema_version` means the bank is **not read at all** rather than parsed half-blindly.
+
+  Two names are exported deliberately: `BUILTIN_*` stays the **frozen seed list** (twenty-odd tests use
+  it as "the list compiled into the code", which must not go red or green because of a user's local
+  config), while `ACTIVE_*` is what is actually in effect. `ACTIVE_*` equals the seed until
+  `load_active()` runs, which a test pins. The v98 lazy caches in `engine` (which lower-cased the
+  lists themselves) were **deleted**: a cache and "reload after the user edits the bank" are natural
+  enemies, and a stale cache shows up as "I edited the bank and nothing changed".
+
+  Maintenance without a GUI: `py -3 wordbank.py` (summary), `list [kind]`, `add Name [kind]`,
+  `disable Name`, `enable Name`, `remove Name`, `reset --yes` (backs up to `wordbank.db.bak-<time>`
+  first), `export` / `import` CSV. `VBECOMPLETE_NO_WORDBANK=1` ignores the bank entirely (first thing to
+  try when something looks wrong); `VBECOMPLETE_WORD_BANK=<path>` moves it.
+
 **Coexistence**
 
 - After `object.`, VbeComplete steps aside and lets the VBE's own, type-aware member list take over.
@@ -287,6 +332,7 @@ semantic infrastructure.
 | Trailing space for keywords; `()` after functions | ✅ |
 | No completion while declaring a new name | ✅ |
 | Type-aware member completion | Delegated to the VBE's native member list |
+| Trim / extend the built-in vocabulary | ✅ the bank (`wordbank.db`) — disable any built-in keyword/function/type/constant individually, control its trailing space, or add your own host APIs. IDEA only excludes by whole package/class, which is coarser |
 
 **Deliberately not implemented**
 
@@ -335,6 +381,8 @@ different ini file (portable installs and tests).
 | `VBECOMPLETE_NO_INSERT_ABOVE` | off | `1` disables `Ctrl+Shift+Enter` (insert a line above). |
 | `VBECOMPLETE_NO_DUP_LINE` | off | `1` disables `Ctrl+D` (duplicate the line). |
 | `VBECOMPLETE_NO_DEL_LINE` | off | `1` disables `Ctrl+K` (delete the line). |
+| `VBECOMPLETE_NO_WORDBANK` | off | `1` ignores `wordbank.db` and uses the seed list compiled into the program. |
+| `VBECOMPLETE_WORD_BANK` | *(project folder)* | Path to the vocabulary bank. Empty = `wordbank.db` next to the program. |
 | `VBECOMPLETE_SETTINGS` | `<project folder>\settings.ini` | Which ini file to read (portable installs / tests). |
 | `VBECOMPLETE_SNIPPET_DB` | `<project folder>\snippets.db` | Where the snippet database lives (portable installs / tests point it elsewhere). |
 | `VBECOMPLETE_NO_MOD_CACHE` | off | `1` goes back to re-parsing every module on each refresh (v117 behaviour). Only useful for A/B timing; the per-module cache is what keeps a refresh at ~27 ms instead of ~224 ms. |
@@ -347,7 +395,8 @@ different ini file (portable installs and tests).
 | `engine.py` | Completion engine: scoring, ranking, filtering, popup lifecycle |
 | `vbe_bridge.py` | VBE COM bridge: read code, read caret, write back, caret placement |
 | `parser.py` | VBA text parsing (statements, scope, comments and strings) |
-| `vba_builtins.py` | VBA built-in vocabulary (functions, types, keywords, enums) |
+| `vba_builtins.py` | VBA built-in vocabulary: the **seed** list (`BUILTIN_*`) plus the effective snapshot (`ACTIVE_*`) loaded from the bank |
+| `wordbank.py` | The vocabulary bank (`wordbank.db`): create / read-only load / CLI. Knows about SQLite, **not** about VBA |
 | `ui.py` | The floating popup (tkinter) and its screen-avoidance logic |
 | `snippet_ui.py` | The snippet window (`Ctrl+Q`): search, add / edit / delete, insert button |
 | `jump_ui.py` | The outline / find-references window (v121, `Ctrl+Shift+O` and `Ctrl+Shift+F`): one fuzzy-searchable list, `Enter` to jump; a failed jump keeps the window open and says why |
@@ -356,7 +405,7 @@ different ini file (portable installs and tests).
 | `settings.py` | The configuration centre (v120): `settings.ini` parsing, the three-layer lookup, the `KNOWN` table and the commented-out template. Imports nothing from the project — `log.py` depends on it, not the other way round. `py -3 settings.py` dumps every value with its source. |
 | `settings.example.ini` | The template that `settings.py` generates, checked in so you can read it without running anything (every line commented out). |
 | `log.py` | Optional diagnostic log (off by default, zero overhead) |
-| `tests/` | Regression suite (`test_real_project.py`, 1116 checks) and the sample project it runs against. Six one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand), and `probe_outline.py` verifies v121 on the same setup (list procedures, find references, jump and read `GetSelection()` back, confirm a module without an open code pane is refused; it also **opens the real window and injects a real left-button release** to check that a single click jumps and that the window stays open — **without writing a single byte**). `probe_lineops.py` verifies v122 on the same setup (`Ctrl+Shift+Enter` above, `Ctrl+D`, `Ctrl+K`): it appends **one temporary procedure to the end of a module**, deletes it afterwards, and byte-compares the module with the backup taken beforehand. |
+| `tests/` | Regression suite (`test_real_project.py`, 1130 checks) and the sample project it runs against. Seven one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand), and `probe_outline.py` verifies v121 on the same setup (list procedures, find references, jump and read `GetSelection()` back, confirm a module without an open code pane is refused; it also **opens the real window and injects a real left-button release** to check that a single click jumps and that the window stays open — **without writing a single byte**). `probe_lineops.py` verifies v122 on the same setup (`Ctrl+Shift+Enter` above, `Ctrl+D`, `Ctrl+K`): it appends **one temporary procedure to the end of a module**, deletes it afterwards, and byte-compares the module with the backup taken beforehand. `probe_wordbank.py` verifies v123 on a real Excel + VBE: it builds a **temporary** bank (never your own `wordbank.db`), adds a word and disables a built-in function, then checks that after `load_active()` the added word is in the pool and the disabled one is gone, and that `reset_active()` restores the baseline exactly. |
 
 ## Credits
 
