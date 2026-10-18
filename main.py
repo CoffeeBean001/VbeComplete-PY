@@ -77,6 +77,7 @@ except ImportError:
     raise
 
 import engine
+import parser
 import vbe_bridge
 import snippets
 import snippet_ui
@@ -811,6 +812,12 @@ except Exception:
 # 太小会每敲一个键都全量解析所有模块（大工程会卡），太大则新声明的变量
 # 迟迟不进候选。0.4s 兼顾：连打时最多 2.5 次/秒。
 ID_REFRESH_MIN_SEC = 0.4
+
+# ★v118：普通行（不像声明行）的限流间隔。只有声明行才可能新增名字，
+# 拼一个已有的名字 / 调函数 / 改注释都不需要重建候选池 —— 而重建一次要在
+# 主线程上占几十毫秒（见 vbe_bridge.MOD_CACHE_ENABLED 的实测数据）。
+# 判据：parser.line_may_declare（含糊时判"是"，宁可多刷）。
+ID_REFRESH_MIN_SEC_PLAIN = 2.0
 
 try:
     import win32gui as _win32gui
@@ -2310,15 +2317,37 @@ def main():
                     if _poll_mod_switch(last, snap):
                         _log("poll: 换了模块 -> 收起（不是输入）")
                         post(completer.hide)
+                        # ★v118：换模块 = 另一个模块的声明可能刚被改过（改名
+                        # 那种改法不会改变行数，模块级缓存察觉不到）-> 整体
+                        # 作废一次。这一次重建 ~90ms，而切模块不在打字节奏里。
+                        try:
+                            backend.invalidate_identifiers(modules=True)
+                        except Exception:
+                            pass
                     # 必须是「同一行内的文本变化」才算真的输入了内容。
                     # 单纯换到别的行（鼠标点击、方向键换行）不应弹列表，
                     # 否则在代码里点来点去会被弹窗打扰。
                     elif last[0] == snap[0]:
-                        # 文本变了 -> 让标识符缓存尽快失效，保证"刚声明的
-                        # 变量"也能进候选。限流：最快 ID_REFRESH_MIN_SEC
-                        # 重解析一次，避免每敲一个键都全量解析所有模块。
+                        # 文本变了 -> 让标识符缓存失效，保证"刚声明的变量"也能
+                        # 进候选。★v118：分两档限流 ——
+                        #   * 这一行【像在写声明】（Dim / Sub / As / 形参…）：
+                        #     按 ID_REFRESH_MIN_SEC（0.4s）尽快失效；
+                        #   * 其它行（拼一个已有的名字、调函数、改注释）：
+                        #     按 ID_REFRESH_MIN_SEC_PLAIN（2s）—— 这些字符
+                        #     不可能新增名字，每敲一下就扔掉池子重建纯属白花，
+                        #     而重建一次要在主线程上占几十毫秒，表现的正是
+                        #     "弹窗跟不上手"（用户报的"提示变慢"）。
+                        # 判据见 parser.line_may_declare（含糊时判"是"）。
+                        _decl_like = False
+                        try:
+                            _decl_like = (parser.line_may_declare(snap[1])
+                                          or parser.line_may_declare(last[1]))
+                        except Exception:
+                            _decl_like = True
+                        _min_gap = (ID_REFRESH_MIN_SEC if _decl_like
+                                    else ID_REFRESH_MIN_SEC_PLAIN)
                         if (time.time() - getattr(backend, "_cache_time", 0.0)
-                                > ID_REFRESH_MIN_SEC):
+                                > _min_gap):
                             backend.invalidate_identifiers()
                         # v52：这一下敲的是空格/标点（行【变长】且插进来的
                         # 这段不含标识符字符）-> 直接收起，别去 trigger。

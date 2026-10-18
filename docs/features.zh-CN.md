@@ -1584,6 +1584,64 @@ Toplevel。代价是：打开期间焦点不在 VBE ⇒ `main.reconcile` 会把�
 分层与快捷键护栏）。A/B 三处独立回退各自只红该红的那条（判据恒 False -> 99.5；
 砍掉子序列 -> 99.1；单行片段被拆成两行 -> 99.4）。
 
+### v118：弹窗反应速度（候选池改成增量刷新）
+
+**用户口径**（原话）："我感觉，提示词的弹窗怎么变慢了？能让他反应快点吗？是因为提示词太多的缘故吗？"
+
+**先量，再改。** 探针 `tests/probe_perf.py` 在 24 个模块 / 628 行的工程上实测：
+
+| 环节 | 改前 | 改后 |
+|---|---|---|
+| `get_identifiers()` 一次全量重解析 | **224 ms** | **27 ms** |
+| 打着字时池子被扔掉重建的频率 | 每 **0.4 s** 一次 | 普通行每 **2 s**、声明行 0.4 s |
+| `get_context()`（每次按键必付） | 9.5 ms | 9.5 ms（未动） |
+| 打分（455 条候选） | 0.6 ms | 0.6 ms（未动） |
+
+结论：**不是"提示词太多"**。池子 455 条时打分只要 0.6 ms，就算塞到 6200 条也才 17 ms。
+真正的问题是**那次全量重解析被排在了按键路径上**：`poll_editor` 一看见文本变化，只要距
+上次刷新超过 `ID_REFRESH_MIN_SEC`（0.4 s）就 `invalidate_identifiers()`，于是用户打字时
+每 0.4 秒就有一拍要在主线程上付掉 224 ms —— 表现就是"弹窗跟不上手、输入一顿一顿"。
+
+**224 ms 花在哪**（cProfile，`tottime` 排序）：`PyITypeComp.Bind` 65 ms + `Invoke` 25 ms +
+`GetTypeAttr` 21 ms + `GetNames` 19 ms ≈ **160 ms 全是 win32com 的惰性绑定**，真正的
+Python 正则解析只有 ~40 ms。也就是说：慢的不是我们算得慢，是**每轮都把 COM 对象重新
+包装一遍**（`for comp in proj.VBComponents` 枚举出来的每个元素都是新包装，读一次
+`comp.Name` / `comp.Type` / `comp.CodeModule` 就要 Bind 一次）。
+
+**三个手法**（都在 `vbe_bridge`，互不依赖）：
+
+1. **模块级解析缓存**（`_mod_cache`）——"其它模块"的解析结果只由它的代码文本决定，与
+   光标无关：记下 `(行数, 五路承接的增量)`，行数没变就整段重放。命中时省掉读全文 +
+   三趟正则。
+   ⚠️ **光标所在的那个模块永远不缓存**（每轮重读重解析）：带 `caret` 的解析结果与光标
+   位置绑定（回声防护、隐式变量的作用域、`decl_names_at_caret`），缓存下来会串味。
+   ⚠️ `_MOD_CACHE_TTL`（30 s）兜的是"行数没变但内容改了"——跨模块查找替换那种改法。
+   ⚠️ **换模块时整体作废一次**（`invalidate_identifiers(modules=True)`）：用户在 A 模块
+   把 `Foo` 改成 `Fob`，行数没变，缓存察觉不到；切到 B 模块时重建一次最省心。
+2. **组件列表缓存**（`_comp_list_cache`）——复用上一次那批组件对象，后续属性访问免 Bind。
+   失效条件两道：组件【数量】变了（一次 `Count` 就够），或 15 s 到点（兜"改了模块名但
+   数量没变"）。
+3. **`CodeModule` 按模块名复用**（`_cm_cache`）——`comp.CodeModule` 每次返回新包装，
+   而 CodeModule 引用本身是稳定的；读数抛异常就丢掉重拿一次。
+
+**限流分两档**（`main`）：只有【声明行】才可能新增名字，所以
+
+```python
+_decl_like = parser.line_may_declare(snap[1]) or parser.line_may_declare(last[1])
+_min_gap = ID_REFRESH_MIN_SEC if _decl_like else ID_REFRESH_MIN_SEC_PLAIN   # 0.4s / 2.0s
+```
+
+`line_may_declare` 认声明头（`Dim`/`Const`/`Sub`/`Function`/`Property`/`Type`/`Enum`/
+`Declare`/`Event`/`WithEvents`/`Static`，含只打了半截的 `Private Su`）、形参表
+（`ByVal`/`ByRef`/`Optional`/`ParamArray`）、以及行内的 ` As `。**宁可判宽**：多刷一次
+只是 27 ms，漏刷会让"刚声明的变量不提示"这种硬 bug 回来。
+
+**开关**：`set VBECOMPLETE_NO_MOD_CACHE=1` 整段退回 v117 的逐模块全量解析（A/B 用）。
+
+回归：新增 §100（判据真值表 28 例 / 限流两档 / 开关默认值 / **五路承接等价性**（真机，
+全量重解析 vs 命中缓存必须逐字相同）/ 当前模块不进缓存 / 引用清单缓存生效）。A/B 两处
+独立回退各自只红 100.4：漏重放 `declared`、漏重放 `type_names` —— 其余 1048 条全绿。
+
 ## 与 IntelliJ IDEA 的对照
 
 这个项目的目标就是**把 IDEA 那套"聪明补全"搬进 VBE**。VBE 原生只对 `对象.成员`
@@ -1702,7 +1760,7 @@ IDEA 的这些能力**都建立在一个前提上：IDE 手里有整个工程的
 | `requirements.txt`                                              | 依赖（`pywin32` / `pynput`）             |
 | `run.bat` / `stop.bat` / `stop.ps1`                             | 启停                                   |
 | `install_autostart.ps1` / `uninstall_autostart.ps1`（及对应 `.bat`） | 开机自启的安装与卸载                           |
-| `tests/` + `run_tests.bat`                                      | **回归测试**（1043 条），见下；另有两个手工探针：`probe_ime_mode.py`（问输入法转换模式）、`probe_hook_gate.py`（实证钩子门控 / 前台窗口卡死对主线程的影响） |
+| `tests/` + `run_tests.bat`                                      | **回归测试**（1049 条），见下；另有三个手工探针：`probe_ime_mode.py`（问输入法转换模式）、`probe_hook_gate.py`（实证钩子门控 / 前台窗口卡死对主线程的影响）、`probe_perf.py`（量弹窗链路的耗时：`get_context` / 全量重解析 / 打分曲线） |
 
 ## 附：跑回归测试与 log.py 说明（原文）
 

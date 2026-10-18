@@ -18334,6 +18334,143 @@ def main():
         check("第 99 节异常: %s" % _e99, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
+    # 100. ★v118：弹窗反应慢 —— 候选池刷新从"每 0.4s 全量重解析"改成
+    #      "按模块增量复用 + 只有声明行才提前失效"
+    #
+    # 病根（真机实测 24 模块 / 628 行的工程）：`_collect_identifiers` 一次
+    # 224ms，而 main 的轮询只要距上次刷新 > 0.4s 就 invalidate 一次 ⇒ 打字时
+    # 每 0.4 秒有一拍要在主线程上付这 224ms。改成模块级缓存后同一工程 29ms。
+    #
+    # 这一节的护栏分两类：
+    #   * 纯判据：line_may_declare（限流分档的唯一判据）；
+    #   * 等价性：开了缓存与关掉缓存，候选池必须**逐字相同** —— 这是这类
+    #     缓存唯一真正危险的地方（重放漏一个字段就会静默少几条候选）。
+    # ------------------------------------------------------------------
+    print("\n=== 100. ★v118：弹窗反应速度（候选池增量刷新）===")
+    try:
+        import vbe_bridge as VB100
+
+        # ---- 100.1 限流判据（纯函数）----
+        _cases100 = [
+            ("Dim x As Long", True), ("Dim x", True), ("Dim", True),
+            ("Public Sub ", True), ("Private Su", True), ("Private", True),
+            ("    Static x As Long", True), ("Const N = 5", True),
+            ("Sub test()", True), ("Function F() As Long", True),
+            ("Type T", True), ("Enum E", True),
+            ("Sub Foo(ByVal a", True),     # 形参表
+            ("msgbox \"hi\"", False), ("x = foo(1, 2)", False),
+            ("    If a Then", False), ("' Dim x", False),
+            ("Set c = New Cls", False), ("End Sub", False),
+            ("", False), ("   ", False), ("ReDim arr(10)", False),
+            ("s = \"Dim x\"", False),      # 字符串里的 Dim 不算
+            ("MsgBox \"a: b\"", False), ("x.As", False), ("a & b", False),
+            ("For i = 1 To 3", False), ("i = i + 1", False),
+        ]
+        _bad100 = [(t, e, P.line_may_declare(t)) for t, e in _cases100
+                   if P.line_may_declare(t) is not e]
+        check("100.1 `parser.line_may_declare`（限流判据）：声明行/形参表一律"
+              "判\"是\"（含只打了半截的 `Private Su`、只打了修饰词的 "
+              "`Private`）；赋值 / 调用 / 注释 / 字符串里的 Dim 全判\"否\"；"
+              "宁可判宽（多刷一次只是几十毫秒，漏刷会让\"刚声明的变量不提示\"复发）",
+              [(_bad100, len(_cases100))],
+              expect_contain=[(_bad100, len(_cases100))])
+
+        # ---- 100.2 模块缓存的两档间隔 ----
+        _gap100 = None
+        if M is not None:
+            _gap100 = (M.ID_REFRESH_MIN_SEC, M.ID_REFRESH_MIN_SEC_PLAIN)
+        check("100.2 刷新限流分两档：声明行用 `ID_REFRESH_MIN_SEC`（0.4s）、"
+              "普通行用 `ID_REFRESH_MIN_SEC_PLAIN`（2s，普通字符不可能新增"
+              "名字，没必要重建池子）",
+              [(_gap100, _gap100 is not None and (0 < _gap100[0]
+                                                  < _gap100[1]))],
+              expect_contain=[((0.4, 2.0), True)])
+
+        # ---- 100.3 开关默认值（关掉退回 v117 行为）----
+        check("100.3 模块缓存默认开启，`VBECOMPLETE_NO_MOD_CACHE=1` 可整段退回"
+              "v117 的逐模块全量解析（A/B 用）",
+              [(VB100.MOD_CACHE_ENABLED, VB100._MOD_CACHE_TTL)],
+              expect_contain=[(True, 30.0)])
+
+        # ---- 100.4 等价性（真机）：开缓存 vs 全量重建，池子必须一致 ----
+        _bk100 = VB100.VbeBackend()
+        _ctx100 = None
+        try:
+            _ctx100 = _bk100.get_context()
+        except Exception:
+            _ctx100 = None
+
+        def _snap100(clear_mod):
+            _bk100._cache = None
+            if clear_mod:
+                _bk100._mod_cache = {}
+                _bk100._cm_cache = {}
+                VB100._comp_list_cache["comps"] = None
+            _recs = _bk100.get_identifiers()
+            # 比【五路承接】的全貌，不只是候选池：缓存重放漏任何一路
+            # （type_names / proc_names / proc_kinds / structural / declared）
+            # 都会让某处判据悄悄退化，而池子本身看不出来。
+            return (sorted(str(r[0]) + "|" + str(r[1]) for r in _recs),
+                    sorted(str(n) for n in (getattr(_bk100, "_type_names", ()) or ())),
+                    sorted(str(n) for n in (getattr(_bk100, "_proc_names", ()) or ())),
+                    sorted((str(k), str(v)) for k, v in
+                           (getattr(_bk100, "_proc_kinds", {}) or {}).items()),
+                    sorted(str(n) for n in (getattr(_bk100, "_structural_names", ()) or ())),
+                    sorted(str(n) for n in (getattr(_bk100, "_declared_names", ()) or ())),
+                    sorted((str(k), tuple(sorted(str(x) for x in v)))
+                           for k, v in
+                           (getattr(_bk100, "_declared_by_module", {}) or {}).items()))
+
+        _full100 = _snap100(True)     # 全量重建（相当于关掉缓存）
+        _hot100 = _snap100(False)     # 命中模块缓存
+        _g100 = (len(_full100[0]), _full100 == _hot100, bool(_full100[0]),
+                 sum(len(x) for x in _full100[1:]))
+        check("100.4 等价性（真机）：全量重解析与命中模块缓存得到的【五路承接】"
+              "**逐字相同** —— 候选池（含模块归属）、类型名、过程名、过程种类、"
+              "结构性名字、真名集合、跨模块声明表。重放漏任何一路都会让某处"
+              "判据悄悄退化，而池子本身看不出来",
+              [_g100], expect_contain=[(_g100[0], True, True, _g100[3])])
+
+        # ---- 100.5 光标所在模块必须【不】进缓存 ----
+        # 那是用户正在改的那一块：带着 caret 的解析结果与光标位置绑定，
+        # 缓存下来会把"上一拍的光标处词"串到下一拍（回声防护 / 隐式变量）。
+        _cur100 = None
+        _cached100 = None
+        if _ctx100:
+            _cur100 = str(_ctx100.get("module_name") or "").lower()
+            _cached100 = _cur100 not in _bk100._mod_cache
+        check("100.5 光标所在的那个模块【不进模块缓存】（每轮重读重解析）："
+              "带 caret 的解析结果与光标位置绑定，缓存会串味；"
+              "其它模块才复用（这条同时守住\"刚声明的变量立刻能提示\"）",
+              [(_cur100, _cached100,
+                _ctx100 is None or _cached100 is True)],
+              expect_contain=[(_cur100, True, True)])
+
+        # ---- 100.6 引用清单的时间缓存确实生效 ----
+        # 读一次 References 要 ~22ms（每个 Item 都是新包装对象），原来每轮
+        # 刷新都重读一遍。这条确认第二次调用没有重读（ts 不变）。
+        # ⚠️ 直接测 `_host_enum_refs`，不走 `host_enum_constants` —— 后者在
+        # `ENABLE_HOST_ENUMS` 关着（出厂默认）时压根不会调它。
+        _refs100 = None
+        try:
+            _r1 = VB100._host_enum_refs()
+            _ts1 = VB100._host_refs_cache["ts"]
+            _r2 = VB100._host_enum_refs()
+            _ts2 = VB100._host_refs_cache["ts"]
+            _refs100 = (isinstance(_r1, list), _ts1 == _ts2,
+                        _r1 is not None and len(_r1) > 0, _r1 == _r2)
+        except Exception:
+            _refs100 = (False, False, False, False)
+        check("100.6 `_host_enum_refs` 的时间缓存生效（真机）：第二次调用不再"
+              "重读 References —— 每轮刷新白花的 22ms 省掉了；两次返回的清单"
+              "必须一致",
+              [_refs100], expect_contain=[(True, True, True, True)])
+    except Exception as _e100:
+        import traceback as _tp100
+        _tp100.print_exc()
+        check("第 100 节异常: %s" % _e100, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原
     #     这不是在测产品代码，而是在测【测试网自己】：一节忘了还原，后面每一节
     #     都会悄悄跑在别人的假对象上，而**不会有任何一条用例变红**。

@@ -97,6 +97,26 @@
   **verbatim** — your indentation is kept — and the caret lands right after it. Turn it off with
   `VBECOMPLETE_NO_SNIPPETS=1`.
 
+- **v118 — the popup keeps up with your typing.** Measured with `tests/probe_perf.py` on a
+  24-module / 628-line project: one full `get_identifiers()` refresh cost **224 ms**, and
+  `poll_editor` threw the pool away **every 0.4 s** while you typed (any text change with
+  `time.time() - _cache_time > ID_REFRESH_MIN_SEC`). So one keystroke every 400 ms had to sit
+  through 224 ms of COM on the main thread — that is the "the popup got slow" feeling.
+  cProfile says it is not our regexes: `PyITypeComp.Bind` 65 ms + `Invoke` 25 ms +
+  `GetTypeAttr` 21 ms + `GetNames` 19 ms ≈ 160 ms of win32com **late binding**, because every
+  element enumerated from `proj.VBComponents` is a fresh wrapper that has to Bind its type info
+  before the first `comp.Name` / `comp.Type` / `comp.CodeModule` read.
+  Fixes (three, independent): **per-module parse cache** (replay the five sets for a module whose
+  line count did not change; the module under the caret is *never* cached — its results are bound
+  to the caret position; `_MOD_CACHE_TTL` 30 s and "invalidate on module switch" cover renames
+  that leave the line count alone), **component-list cache** (`_comp_list_cache`, reused wrappers,
+  invalidated by component count or 15 s), and **`CodeModule` reuse** (`_cm_cache`).
+  Full refresh: **224 ms → 27 ms**. Scoring was never the problem: 455 candidates take 0.6 ms,
+  and even 6200 take 17 ms — "too many suggestions" was not the cause.
+  Refresh throttling is now two-tier (`parser.line_may_declare`): 0.4 s on declaration lines
+  (`Dim` / `Sub` / `As` / parameter lists — the only lines that can add a name), 2 s elsewhere.
+  `VBECOMPLETE_NO_MOD_CACHE=1` restores the v117 behaviour for A/B.
+
 **Coexistence**
 
 - After `object.`, VbeComplete steps aside and lets the VBE's own, type-aware member list take over.
@@ -165,6 +185,7 @@ Behaviour is tuned through environment variables (set them before launching):
 | `VBECOMPLETE_NO_CTRL_NAV_TAB` | off | `1` keeps the `Ctrl+↓` jump but never adds the procedure-level indent to the landing line. |
 | `VBECOMPLETE_NO_SNIPPETS` | off | `1` disables the `Ctrl+Q` snippet window; the key stays with the VBE. |
 | `VBECOMPLETE_SNIPPET_DB` | `<project folder>\snippets.db` | Where the snippet database lives (portable installs / tests point it elsewhere). |
+| `VBECOMPLETE_NO_MOD_CACHE` | off | `1` goes back to re-parsing every module on each refresh (v117 behaviour). Only useful for A/B timing; the per-module cache is what keeps a refresh at ~27 ms instead of ~224 ms. |
 
 ## Project structure
 

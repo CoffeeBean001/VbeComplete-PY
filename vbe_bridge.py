@@ -29,6 +29,27 @@ from engine import replace_word, _in_rem_comment
 
 _CACHE_TTL = 2.0  # 标识符缓存刷新间隔（秒）
 
+# ★v118：按模块缓存解析结果 —— 单次全量刷新从 ~220ms 降到 ~45ms。
+#
+# 病根（真机实测，24 个模块 / 628 行的小工程）：`_collect_identifiers` 一次
+# 要 220ms，而 main 的轮询在【每次文本变化】后只要距上次刷新 > 0.4s 就
+# invalidate 一次 —— 也就是打着字时每 0.4 秒就有一拍要在主线程上付这 220ms，
+# 用户看到的就是"弹窗明显滞后、打字一顿一顿"。
+#
+# 220ms 里真正做 Python 解析的只有 ~40ms，其余全是 COM：每轮重新枚举
+# VBComponents、每个模块重新拿 CodeModule（每次都是新的 pywin32 包装对象，
+# 要重新 Bind 类型信息）、再把每个模块的全文读一遍。
+#
+# 而"其它模块"的解析结果其实【只由它的代码文本决定】，与光标无关：
+#   * 光标所在的模块（caret_mod）每轮都重读重解析 —— 用户正在改的就是它；
+#   * 其它模块记下 (行数, 解析产物)，行数没变就整段复用；
+#   * 再加 _MOD_CACHE_TTL 兜底：超过这个时间无论如何重扫一次，防"行数不变
+#     但内容改了"（跨模块查找替换那种改法）永远不生效。
+#
+# 开关 VBECOMPLETE_NO_MOD_CACHE=1 退回 v117 的逐模块全量解析（A/B 用）。
+# 模块缓存的最长有效期（秒）。超时强制重扫该模块一次。
+_MOD_CACHE_TTL = 30.0
+
 
 def _env_flag(name, default):
     """三态环境变量开关：`1/true/yes/on` -> True，`0/false/no/off` -> False，
@@ -47,6 +68,10 @@ def _env_flag(name, default):
     if v in ("0", "false", "no", "off"):
         return False
     return default
+
+
+# ★v118：模块级解析缓存的开关（说明见文件顶部的 _MOD_CACHE_TTL 段）。
+MOD_CACHE_ENABLED = not _env_flag("VBECOMPLETE_NO_MOD_CACHE", False)
 
 
 # 未声明即使用的"隐式变量"（不写 Option Explicit 时的用法）是否纳入提示。
@@ -2198,6 +2223,18 @@ def _components_of(proj):
         return []
 
 
+# ★v118：组件列表缓存。`for comp in proj.VBComponents` 这一圈是纯 COM 枚举，
+# 而【真正的贵】不在于枚举本身，而在于每次枚举出来的都是**新的 pywin32 包装
+# 对象** —— 之后每读一次 `comp.Name` / `comp.Type` / `comp.CodeModule` 都要
+# 重新 Bind 一遍类型信息（实测 24 个模块约 40ms/轮）。
+#
+# 复用上一次那批对象，后续属性访问就几乎免费。失效条件两道：
+#   * 组件【数量】变了（增删模块）—— 一次 Count 就够，很便宜；
+#   * _COMP_LIST_TTL 到点 —— 兜住"改了模块名但数量没变"这种。
+_COMP_LIST_TTL = 15.0
+_comp_list_cache = {"ts": 0.0, "count": -1, "proj": None, "comps": None}
+
+
 def _collect_components(vbe, caret_mod=None):
     """返回本次应参与补全的组件列表（默认只含【活动工程】的组件）。
 
@@ -2209,7 +2246,24 @@ def _collect_components(vbe, caret_mod=None):
     if not ENABLE_CROSS_PROJECT:
         proj = _active_vb_project(vbe)
         if proj is not None:
-            comps = _components_of(proj)
+            comps = None
+            # ★v118：先看缓存 —— 同一批组件对象复用，属性访问免 Bind。
+            if MOD_CACHE_ENABLED and _comp_list_cache["comps"] is not None:
+                try:
+                    _cnt = int(proj.VBComponents.Count)
+                except Exception:
+                    _cnt = -1
+                if (_cnt == _comp_list_cache["count"]
+                        and (time.time() - _comp_list_cache["ts"])
+                        < _COMP_LIST_TTL):
+                    comps = _comp_list_cache["comps"]
+                    _log("collect: 复用组件列表（%d 个）" % len(comps))
+            if comps is None:
+                comps = _components_of(proj)
+                if comps:
+                    _comp_list_cache["ts"] = time.time()
+                    _comp_list_cache["count"] = len(comps)
+                    _comp_list_cache["comps"] = comps
             if comps:
                 if caret_mod:
                     names = []
@@ -2223,6 +2277,8 @@ def _collect_components(vbe, caret_mod=None):
                              % (_project_name(proj), caret_mod))
                         proj = None
                         comps = []
+                        # 缓存与现场对不上（换工程 / 改了模块名）—— 作废
+                        _comp_list_cache["comps"] = None
             if comps:
                 _log("collect: 仅收集活动工程 %r（%d 个组件）"
                      % (_project_name(proj), len(comps)))
@@ -3551,12 +3607,23 @@ def _tlb_enum_members(guid, major, minor):
     return list(dict.fromkeys(out))
 
 
+# ★v118：引用清单的时间缓存。读一次 References 要 ~22ms（每个 Item 都是新的
+# COM 包装对象，pywin32 要重新 Bind），而"引用了哪些类型库"基本不变 ——
+# 原来是每轮刷新都重读一遍，纯属白花。30 秒兜底一次，用户增删引用最多滞后
+# 这么点时间才看到新的 xl* 枚举常量。
+_HOST_REFS_TTL = 30.0
+_host_refs_cache = {"ts": 0.0, "refs": None}
+
+
 def _host_enum_refs():
     """当前 VBE 里各工程引用的类型库 -> [(名称, GUID, 主版本, 次版本), ...]。
 
     读不到（Excel 没开 / COM 失败）返回 None —— 与"读完发现没有引用"区分开，
     调用方据此决定要不要缓存结果。
     """
+    if (MOD_CACHE_ENABLED and _host_refs_cache["refs"] is not None
+            and (time.time() - _host_refs_cache["ts"]) < _HOST_REFS_TTL):
+        return _host_refs_cache["refs"]
     try:
         vbe = _get_vbe_cached()
         if vbe is None:
@@ -3596,6 +3663,8 @@ def _host_enum_refs():
                     refs.append((str(getattr(r, "Name", "") or ""),) + key)
                 except Exception:
                     continue
+        _host_refs_cache["ts"] = time.time()
+        _host_refs_cache["refs"] = refs
         return refs
     except Exception:
         return None
@@ -3711,6 +3780,12 @@ class VbeBackend:
         # 只认"从头开始的连续前缀"命中，且输入长度不低于家族前缀长度 ——
         # 它们数量太大（实测 4538 条），放开跳步匹配会淹没正常候选。
         self._host_enum_names = {}
+        # ★v118：见 MOD_CACHE_ENABLED 的说明。
+        #   _mod_cache: 模块名(小写) -> {"count", "ts", "recs", "proc_names",
+        #               "proc_kinds", "type_names", "declared", "decl_by_mod"}
+        #   _cm_cache : 模块名(小写) -> 复用中的 CodeModule 包装对象
+        self._mod_cache = {}
+        self._cm_cache = {}
 
     def release(self):
         """Excel/VBE 关闭或离开 VBE 时调用：清空标识符缓存并释放 COM 资源。
@@ -3725,6 +3800,14 @@ class VbeBackend:
         self._structural_names = set()
         self._builtin_names = set()
         self._host_enum_names = {}
+        # ★v118：缓存里握着 CodeModule 包装对象 —— 必须一起丢掉，
+        # 否则 Excel 关闭时这些悬空引用会把进程拖住（release 的本意就在这儿）。
+        self._mod_cache = {}
+        self._cm_cache = {}
+        # ★v118：组件列表缓存同样握着 COM 包装 —— 一并作废（模块级全局）。
+        _comp_list_cache["comps"] = None
+        _comp_list_cache["count"] = -1
+        _comp_list_cache["ts"] = 0.0
         # 丢掉缓存的 VBE 对象 —— 这是 Excel 能否真正退出的关键一步。
         # 刻意【不】调 CoFreeUnusedLibraries —— 它释放不了我们持有的引用，
         # 在 Excel 关闭期间调用反而会拖慢/惊扰 COM（详见 _co_free 的说明）。
@@ -3777,15 +3860,23 @@ class VbeBackend:
             return None
 
     # ---- 标识符缓存 ----
-    def invalidate_identifiers(self):
+    def invalidate_identifiers(self, modules=False):
         """文本内容变化后调用：丢弃标识符缓存，下次取用时会重新解析。
 
         避免「刚声明的变量不提示」——缓存里可能还是若干秒前解析的旧内容，
         新敲出来的名字还不在里面。只清 _cache、不动 _cache_time，
         以便调用方用 _cache_time 做重解析的限流。
+
+        ★v118：modules=True 时连【模块级解析缓存】一起扔掉。给"换模块"用 ——
+        用户可能在 A 模块里改过声明（行数没变，比如把 `Foo` 改成 `Fob`），
+        然后切到 B 模块里调用它；那一改不会让 A 的行数发生变化，模块缓存
+        察觉不到。切模块时整体作废一次最省心（这一次重建 ~90ms，而换模块
+        本来就不是打字节奏里的动作）。
         """
         self._cache = None
         self._caret_word = ""
+        if modules:
+            self._mod_cache = {}
 
     def get_identifiers(self):
         now = time.time()
@@ -4091,22 +4182,59 @@ class VbeBackend:
                             structural_names.add(_cn.lower())
                             _decl_by_mod.setdefault(
                                 _cn.lower(), set()).add(str(mod_name).lower())
-                    cm = comp.CodeModule
-                    count = cm.CountOfLines
+                    # ★v118：CodeModule 按模块名复用 —— `comp.CodeModule` 每次都
+                    # 返回一个新的 COM 包装对象，pywin32 要为它重新 Bind 一遍类型
+                    # 信息（真机实测 24 个模块合计约 19ms/轮）。CodeModule 本身是
+                    # 稳定引用，按模块名缓存即可；万一模块被删了重建，旧包装会在
+                    # 读数时抛异常 —— 那就丢掉缓存重新拿一次。
+                    _mk = str(mod_name).lower()
+                    cm = self._cm_cache.get(_mk)
+                    count = None
+                    if cm is not None:
+                        try:
+                            count = int(cm.CountOfLines)
+                        except Exception:
+                            cm = None
+                            count = None
+                    if cm is None:
+                        cm = comp.CodeModule
+                        count = int(cm.CountOfLines)
+                        self._cm_cache[_mk] = cm
                     if count <= 0:
                         continue
-                    code = cm.Lines(1, count)
                     # 模块名对不上就等于没拿到光标，会出现"打什么就提示什么"
                     # 的自我提示；取不到模块名时宁可对所有模块应用（误伤极小），
                     # 也不要丢弃 caret。
                     apply_caret = caret if (
                         not caret_mod
-                        or str(caret_mod).lower() == str(mod_name).lower()
+                        or str(caret_mod).lower() == _mk
                     ) else None
+                    # ★v118：非当前模块且行数没变 -> 直接重放上次的解析产物。
+                    # 为什么可以这么做、TTL 兜的是什么，见 MOD_CACHE_ENABLED 的
+                    # 说明。重放的是"该模块对四路承接的增量"，与原来逐字等价：
+                    # records 的顺序（recs 在前、imp 在后）、proc_kinds 的覆盖
+                    # 顺序都按同一个模块遍历顺序重演。
+                    _ent = (self._mod_cache.get(_mk)
+                            if (MOD_CACHE_ENABLED and apply_caret is None)
+                            else None)
+                    if (_ent is not None and _ent["count"] == count
+                            and (time.time() - _ent["ts"]) < _MOD_CACHE_TTL):
+                        type_names |= _ent["type_names"]
+                        records.extend(_ent["recs"])
+                        proc_names |= _ent["proc_names"]
+                        proc_kinds.update(_ent["proc_kinds"])
+                        declared_names |= _ent["declared"]
+                        for _dn, _dms in _ent["decl_by_mod"].items():
+                            _decl_by_mod.setdefault(_dn, set()).update(_dms)
+                        _log("  mod=%-16s 复用模块缓存（%d 行）"
+                             % (mod_name, count))
+                        continue
+                    code = cm.Lines(1, count)
                     is_std = _is_std_module(comp.Type)
                     # 代码里自定义的 Type / Enum 名同样是类型名
-                    for tn in vba_parser.extract_type_enum_names(code):
-                        type_names.add(tn)
+                    # ★v118：顺手收成局部集合 —— 缓存要存"本模块的增量"。
+                    _tns = set(vba_parser.extract_type_enum_names(code))
+                    type_names |= _tns
                     recs, _proc_of = vba_parser.extract_records(
                         code, module=mod_name, is_std_module=is_std,
                         caret=apply_caret)
@@ -4115,10 +4243,10 @@ class VbeBackend:
                     # （同一行、同一批正则，不额外打 COM）。补全时需要它来定
                     # "后面跟空格还是跟括号"，见 engine._completion_followup。
                     try:
-                        proc_kinds.update(
-                            vba_parser.extract_proc_kinds(code))
+                        _pks = dict(vba_parser.extract_proc_kinds(code))
                     except Exception:
-                        pass
+                        _pks = {}
+                    proc_kinds.update(_pks)
                     records.extend(recs)
                     # 记下【这一刻光标处的词】：它多半是用户正在输入 / 正在
                     # 回退删除的词。回退删字时，缓存的池子里还留着它更长的
@@ -4150,9 +4278,11 @@ class VbeBackend:
                                     code, apply_caret) or ()))
                         except Exception:
                             caret_decl = set()
-                    declared_names.update(
+                    # ★v118：同样收成局部集合 —— 缓存存"本模块的增量"。
+                    _decl_add = set(
                         str(r[0]).lower() for r in recs
                         if str(r[0]).lower() not in caret_decl)
+                    declared_names |= _decl_add
                     # ★v87：`_decl_by_mod` 只收【别的模块能裸名引用】的声明 ——
                     # 它的唯一消费者是 declared_elsewhere（引擎问"这个名字在
                     # 【别的模块】声明过吗"，用来证明一个回声候选是真名字）。
@@ -4167,6 +4297,9 @@ class VbeBackend:
                     # SummaryClass 的 `订单金额`），在 类2 那一行打 / 退格这个词时，
                     # declared_elsewhere 因【另一个类模块的那份私有声明】返回 True
                     # ⇒ 回声防护放行 ⇒ 弹窗把用户正在敲的字原样提示回来。
+                    # ★v118：先收到局部表里，最后统一并进 _decl_by_mod ——
+                    # 缓存存的就是这张"本模块的增量表"。
+                    _dbm_add = {}
                     for _r in recs:
                         _n = str(_r[0]).lower()
                         if _n in caret_decl:
@@ -4175,8 +4308,9 @@ class VbeBackend:
                         _r_proc = _r[2] if len(_r) > 2 else None
                         if _r_priv or _r_proc:
                             continue
-                        _decl_by_mod.setdefault(
-                            _n, set()).add(str(mod_name).lower())
+                        _dbm_add.setdefault(_n, set()).add(_mk)
+                    for _dn, _dms in _dbm_add.items():
+                        _decl_by_mod.setdefault(_dn, set()).update(_dms)
                     # 隐式变量（没写 Option Explicit 时"用到即存在"）：
                     # 只补 extract_records 没声明过的名字，避免重复与作用域冲突。
                     #
@@ -4198,6 +4332,21 @@ class VbeBackend:
                     _log("  mod=%-16s type=%-3s std=%-5s recs=%-4d imp=%-4d caret_applied=%s"
                          % (mod_name, comp.Type, is_std, len(recs), len(imp),
                             bool(apply_caret)))
+                    # ★v118：把"本模块对四路承接的增量"整套存下来，下一轮行数
+                    # 没变就直接重放（见上面命中分支）。只在【光标不在这块】时
+                    # 存 —— 带 caret 的解析结果与光标位置绑定，存了会串。
+                    if MOD_CACHE_ENABLED and apply_caret is None:
+                        self._mod_cache[_mk] = {
+                            "count": count,
+                            "ts": time.time(),
+                            "recs": list(recs) + list(imp),
+                            "proc_names": frozenset(_proc_of or ()),
+                            "proc_kinds": dict(_pks),
+                            "type_names": frozenset(_tns),
+                            "declared": frozenset(_decl_add),
+                            "decl_by_mod": {k: frozenset(v)
+                                            for k, v in _dbm_add.items()},
+                        }
                 except Exception:
                     continue
         except Exception:

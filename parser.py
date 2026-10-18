@@ -739,6 +739,63 @@ _PARAM_LIST_KEYWORDS = frozenset(
 _RE_VISIBILITY_MODIFIER = re.compile(
     r"^\s*(?:Public|Private|Global|Friend)\s+", re.I)
 
+# ★v118：限流用 —— 判断"这一行是不是在写声明"。比 _RE_VISIBILITY_MODIFIER
+# 多剥一个 Static（`Static x As Long`），因为它只服务于"要不要提前刷新候选池"，
+# 宽一点没关系（多刷一次只是多 28ms，漏刷才是 bug）。
+_RE_LEAD_DECL_WORDS = re.compile(
+    r"^\s*(?:Public|Private|Global|Friend|Static)\s+", re.I)
+
+
+def line_may_declare(line_text):
+    """这一行【看起来在写声明】吗？——只给 main 的"标识符缓存刷新限流"用。
+
+    ★v118 的来龙去脉：候选池必须及时收进"刚声明的名字"，所以 main 的轮询一
+    看见文本变化就 `invalidate_identifiers()`。可它在【打任何一个字符】时都会
+    发生 —— 用户拼 `MsgB` 的这三下，池子会被扔掉重建三遍，纯属白花。
+    真正可能新增名字的只有【声明行】（Dim / Sub / Function / Const / Type /
+    Enum / 形参表），所以：声明行才提前失效，其它行交给 _CACHE_TTL 兜底。
+
+    宁可判"是"：判据含糊时一律返回 True —— 多刷一次的代价只是几十毫秒，
+    而漏刷会让"刚声明的变量不提示"这种硬 bug 回来。
+    """
+    try:
+        masked = _mask_strings_and_comments(line_text or "")
+    except Exception:
+        return True
+    t = masked.strip()
+    if not t:
+        return False
+    # 只敲了修饰词本身（`Private`，还没打空格）—— 正在起一个声明
+    if t.lower() in ("private", "public", "global", "friend", "static"):
+        return True
+    # 剥掉可见性 / Static 修饰词再看第一个词：`Private Su|` 也算声明行
+    while True:
+        m = _RE_LEAD_DECL_WORDS.match(t)
+        if not m:
+            break
+        t = t[m.end():].strip()
+        if not t:
+            return True        # 只敲了修饰词 —— 正在起一个声明
+    low = t.lower()
+    # 第一个词后面紧跟这些符号 = 赋值 / 成员访问 / 运算 —— 不可能是声明。
+    # 没有这一条，`s = "Dim x"` 里那个 `s` 会被当成长度 1 的前缀去匹配
+    # `Sub` / `Static`（前缀判据本来就宽），于是每一行赋值都被判成声明行。
+    _m = re.match(r"[A-Za-z_]\w*", low)
+    _rest = low[_m.end():].lstrip() if _m else low
+    if _rest[:1] in ("=", ".", "+", "-", "*", "/", "\\", "&", "<", ">", ":"):
+        return False
+    first = (_m.group(0) if _m else low.split(None, 1)[0])
+    # 允许只打了半截（`Private Su|`）：前缀也算。这一路只服务于"要不要提前
+    # 刷新候选池"，判宽一点最多多刷一次，判窄则会让"刚声明的变量不提示"复发。
+    if first in _DECL_HEAD_KEYWORDS or any(
+            k.startswith(first) for k in _DECL_HEAD_KEYWORDS):
+        return True
+    if " as " in (" " + low + " "):
+        return True
+    if any(k in low for k in ("byval ", "byref ", "optional ", "paramarray ")):
+        return True
+    return False
+
 
 def _logical_line_at(lines, idx):
     """返回包含第 idx 行（0-based）的、合并了行继续符后的【逻辑行】文本。
