@@ -112,6 +112,8 @@ VK_I = 0x49            # v107c：Ctrl+Shift+I = VBE 的「参数信息 / 快速�
 VK_Q = 0x51            # v115：Ctrl+Q = 代码片段窗
 VK_O = 0x4F            # v121：Ctrl+Shift+O = 过程大纲
 VK_F = 0x46            # v121：Ctrl+Shift+F = 查找引用（文本级）
+VK_D = 0x44            # v122：Ctrl+D = 复制当前行到下方
+VK_K = 0x4B            # v122：Ctrl+K = 删除整行
 VK_OEM_2 = 0xBF        # v120：Ctrl+/ = 批量注释 / 取消注释（US 布局的 `/` 键）
 VK_LWIN = 0x5B         # v110：左 Win 键。Win+↑ 是系统快捷键（窗口最大化），
 VK_RWIN = 0x5C         #       绝不接管 —— 见 _ctrl_nav_key_ok 的修饰键门槛
@@ -400,6 +402,58 @@ def _usages_vk_ok(vk, ctrl_down, shift_down, alt_down, win_down):
     if vk != VK_F or not ctrl_down or not shift_down:
         return False
     return not (alt_down or win_down)
+
+
+# ---------------------------------------------------------------------------
+# ★v122：三个"按行"的编辑动作 —— Ctrl+Shift+Enter 上方插行 / Ctrl+D 复制行 /
+#         Ctrl+K 删除整行
+#
+# 用户口径（原话）："编辑手感可以帮我添加一下。1. Ctrl+Shift+Enter 在上方插入新行
+# 2. Shift+d 复制当前行到下方新行 3. Shift+k 删除整行"
+#
+# ⚠️ 键位已经改掉：`Shift+D` / `Shift+K` 在代码窗里就是"输入大写 D / 大写 K"。
+# 接管之后用户在**字符串和注释**里再也敲不出这两个大写字母 —— VBE 的自动大写只管
+# 关键字，`"Debug"` / `' Key` 它不管。拿走一个输入能力换一个便利，不划算。
+# 确认后改用 Ctrl+D / Ctrl+K（IDEA 的 Duplicate Line 同键；VBE 代码窗里没有绑定）。
+#
+# 三条都**要写代码**，所以闸门比开窗类功能多一道 `pending_keys > 0` —— 输入法正在
+# 组字 / 刚敲的字还没落进文档时，读到的行文本是旧的，一写就错位。钩子线程照旧只读
+# 本地状态 + 纯 Win32，三个动作全在主线程（铁律 9）。
+#
+# 想关掉：`NO_INSERT_ABOVE` / `NO_DUP_LINE` / `NO_DEL_LINE`（各自独立，误触哪个
+# 关哪个）。
+LINE_OPS = {
+    "insert_above": not settings.flag("NO_INSERT_ABOVE", False),
+    "dup": not settings.flag("NO_DUP_LINE", False),
+    "del": not settings.flag("NO_DEL_LINE", False),
+}
+
+
+def _insert_above_vk_ok(vk, ctrl_down, shift_down, alt_down, win_down):
+    """这一下是不是"Ctrl+Shift+Enter"（★v122，纯函数，无系统调用）。
+
+    ⚠️ 必须排在 `_is_newline_shortcut`（Shift+Enter，下方插行）**之前**判：
+    那条只看"Enter + Shift"，Ctrl+Shift+Enter 也会命中它，被它抢走就变成
+    "在下方插行" —— 差一个字，方向反了。
+    """
+    if vk != VK_RETURN or not ctrl_down or not shift_down:
+        return False
+    return not (alt_down or win_down)
+
+
+def _dup_del_vk_ok(vk, ctrl_down, shift_down, alt_down, win_down):
+    """这一下是不是"【单独】按着 Ctrl 的 D / K"（★v122，纯函数，无系统调用）。
+
+    返回 `"dup"` / `"del"` / `None`。修饰键门槛与前面几条同一取向：Shift / Alt /
+    Win 任一在按都不算 —— `Ctrl+Shift+D` / `Ctrl+Alt+K` 是别的东西，绝不抢。
+    """
+    if not ctrl_down or shift_down or alt_down or win_down:
+        return None
+    if vk == VK_D:
+        return "dup"
+    if vk == VK_K:
+        return "del"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1453,6 +1507,79 @@ def main():
             _log("newline: COM 未落成 -> 按键原样还给系统")
             send_vk(VK_RETURN)
 
+    def _line_op_here(vk):
+        """Ctrl+D / Ctrl+K 的统一入口（★v122）。
+
+        闸门 `_dup_del_key_ok` 已经判过一次"是哪一个"，但那是在钩子线程里、为了
+        决定要不要吞键；到了主线程只需要再看一眼 vk 就能分发 —— 一个整数比较，
+        比把闸门再跑一遍（四次 GetAsyncKeyState）划算。
+        """
+        if vk == VK_D:
+            _duplicate_line_here()
+        else:
+            _delete_line_here()
+
+    def _insert_line_above_here():
+        """Ctrl+Shift+Enter：在当前行【上方】插一行（★v122）。
+
+        与 `_new_line_here` 是镜像动作，兜底也照抄那一条：写不成时补一个**纯
+        回车**，至少让"插一行"这件事发生（位置会落到下方而不是上方，但绝不
+        出现"按了没反应"）。Ctrl+Shift+Enter 在 VBE 里本来没有绑定，所以还一
+        个纯回车不会覆盖掉任何原生功能。
+        """
+        try:
+            completer.hide()
+        except Exception:
+            pass
+        _ok = False
+        try:
+            _ok = backend.new_line_above()
+        except Exception:
+            _ok = False
+        if not _ok:
+            _log("insert-above: COM 未落成 -> 补一个纯回车")
+            send_vk(VK_RETURN)
+        state["cur_ctx"] = None       # 文本变了，轮询快照作废
+
+    def _duplicate_line_here():
+        """Ctrl+D：把光标这一行（有选区 = 选中的几行）复制一份到下方（★v122）。
+
+        写不成就把这一下 Ctrl+D **原样还回去** —— VBE 代码窗里 Ctrl+D 没有
+        绑定，还回去等于什么都没发生，但至少不会"我们的错误变成用户的损失"。
+        """
+        try:
+            completer.hide()
+        except Exception:
+            pass
+        _ok = False
+        try:
+            _ok = backend.duplicate_lines()
+        except Exception:
+            _ok = False
+        if not _ok:
+            _log("dup-line: COM 未落成 -> 按键原样还给系统")
+            send_vk(VK_D, ctrl=True)
+        state["cur_ctx"] = None       # 行数变了，快照必须作废
+
+    def _delete_line_here():
+        """Ctrl+K：删掉光标这一行（有选区 = 选中的几行）（★v122）。
+
+        兜底同 `_duplicate_line_here`：写不成把 Ctrl+K 原样还回去。
+        """
+        try:
+            completer.hide()
+        except Exception:
+            pass
+        _ok = False
+        try:
+            _ok = backend.delete_lines_here()
+        except Exception:
+            _ok = False
+        if not _ok:
+            _log("del-line: COM 未落成 -> 按键原样还给系统")
+            send_vk(VK_K, ctrl=True)
+        state["cur_ctx"] = None       # 行数变了，快照必须作废
+
     def _enter_indent_here():
         """回车自动缩进（v79）+ 自动补块收尾（v79b）：收起弹窗 -> 算出缩进、代出新行。
 
@@ -1922,6 +2049,70 @@ def main():
         except Exception:
             return False
 
+    def _insert_above_key_ok(vk):
+        """这一下 Ctrl+Shift+Enter 要不要由我们接管（★v122，跑在键盘钩子线程）。
+
+        与 `_comment_key_ok` 同一副骨架：钩子线程只读本地状态 / 纯 Win32，绝不碰
+        COM —— "本行是不是块收尾、缩进该多深"都要读模块文本，那只能在主线程算。
+
+        四道闸：开关 + 纯判据 + `pending_keys > 0`（**要写文本**的专属闸：输入法
+        正在组字 / 刚敲的字还没落进文档时，读到的是旧行文本，插进去就落在错位置）
+        + COM 退避中不接管 + 焦点在代码窗格。
+        """
+        try:
+            if not LINE_OPS["insert_above"]:
+                return False
+            if vk != VK_RETURN:
+                return False          # 先挡掉绝大多数按键，省几次系统调用
+            u32 = ctypes.windll.user32
+            if not _insert_above_vk_ok(
+                    vk,
+                    bool(u32.GetAsyncKeyState(VK_CONTROL) & 0x8000),
+                    _shift_down(),
+                    bool(u32.GetAsyncKeyState(VK_MENU) & 0x8000),
+                    bool(u32.GetAsyncKeyState(VK_LWIN) & 0x8000
+                         or u32.GetAsyncKeyState(VK_RWIN) & 0x8000)):
+                return False
+            if int(state.get("pending_keys") or 0) > 0:
+                return False
+            if com_backoff_remaining() > 0 or not in_vbe_code_area():
+                return False
+            return True
+        except Exception:
+            return False
+
+    def _dup_del_key_ok(vk):
+        """这一下 Ctrl+D / Ctrl+K 要不要由我们接管（★v122，骨架同上）。
+
+        返回 `"dup"` / `"del"` / `None` —— 两个动作共用一道闸，只有键不同。
+        四道闸与 `_insert_above_key_ok` 完全一致（同样要写文本，所以同样看
+        `pending_keys`）。
+        """
+        try:
+            if not (LINE_OPS["dup"] or LINE_OPS["del"]):
+                return None
+            if vk not in (VK_D, VK_K):
+                return None           # 先挡掉绝大多数按键，省几次系统调用
+            u32 = ctypes.windll.user32
+            kind = _dup_del_vk_ok(
+                vk,
+                bool(u32.GetAsyncKeyState(VK_CONTROL) & 0x8000),
+                _shift_down(),
+                bool(u32.GetAsyncKeyState(VK_MENU) & 0x8000),
+                bool(u32.GetAsyncKeyState(VK_LWIN) & 0x8000
+                     or u32.GetAsyncKeyState(VK_RWIN) & 0x8000))
+            if not kind:
+                return None
+            if not LINE_OPS[kind]:
+                return None           # 这一个动作被单独关掉了
+            if int(state.get("pending_keys") or 0) > 0:
+                return None
+            if com_backoff_remaining() > 0 or not in_vbe_code_area():
+                return None
+            return kind
+        except Exception:
+            return None
+
     def win32_filter(msg, data):
         """
         Windows 低层键盘钩子的事件过滤器（运行在钩子线程）。
@@ -1974,6 +2165,21 @@ def main():
                     # 读写见 _toggle_comment_here）。排在候选窗分支【之前】：
                     # 它要改文本，窗里那些候选的位置与前缀马上就不作数了。
                     action = (_toggle_comment_here, ())
+                    suppress = True
+                elif _dup_del_key_ok(vk):
+                    # ★v122：Ctrl+D 复制当前行 / Ctrl+K 删除整行。两条都要改文本，
+                    # 所以排在候选窗那条分支【之前】—— 窗里那些候选的行号/前缀
+                    # 马上就不作数了（动作里会先 completer.hide()）。
+                    # 排在"开窗类"（Ctrl+Q / 大纲 / 引用）之后：那些不动文本，
+                    # 用户先开着窗再按 Ctrl+D 也不该被这里抢走。
+                    action = (_line_op_here, (vk,))
+                    suppress = True
+                elif _insert_above_key_ok(vk):
+                    # ★v122：Ctrl+Shift+Enter = 在当前行【上方】插一行。
+                    # ⚠️ 必须排在下面 `_is_newline_shortcut` 之前：那条判据只看
+                    # "Enter + Shift"，Ctrl+Shift+Enter 也会命中它，被它抢走就
+                    # 变成"在下方插行"—— 差一个字，方向反了。
+                    action = (_insert_line_above_here, ())
                     suppress = True
                 elif _outline_key_ok(vk):
                     # ★v121：Ctrl+Shift+O = 过程大纲（判据 / 闸门见 _outline_key_ok）。

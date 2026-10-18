@@ -105,6 +105,12 @@ KNOWN = (
      "1 = 关，按键交还 VBE"),
     ("NO_USAGES", "0",
      "`Ctrl+Shift+F` 文本级查找引用（这个名词在本工程里出现在哪些行）。1 = 关"),
+    ("NO_INSERT_ABOVE", "0",
+     "`Ctrl+Shift+Enter` 在当前行上方插入新行。1 = 关，按键交还 VBE"),
+    ("NO_DUP_LINE", "0",
+     "`Ctrl+D` 复制当前行（有选区 = 选中的几行）到下方。1 = 关"),
+    ("NO_DEL_LINE", "0",
+     "`Ctrl+K` 删除当前行（有选区 = 选中的几行）。1 = 关"),
     # ---- 候选内容 ----
     ("VBA_BUILTINS", "1",
      "候选里含 VBA 内建函数与内建数据类型（`MsgBox` / `String` …）。0 = 不含"),

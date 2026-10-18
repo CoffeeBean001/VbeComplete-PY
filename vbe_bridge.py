@@ -778,6 +778,26 @@ def block_closer(line_text):
     return _BLOCK_CLOSERS.get(_block_kind(line_text))
 
 
+def is_block_closer(line_text):
+    """这一行本身是不是某个块的【收尾行】（`End If` / `Next i` / `Loop`…）。纯函数。
+
+    ★v122 新增。与 `block_closer` 是一对镜像、问的是**相反**的问题：
+      * `block_closer("For i = 1 To 3")` -> `"Next"`（块头 -> 它欠的收尾）；
+      * `is_block_closer("Next i")` -> True（这一行是不是收尾）。
+
+    只用来判一件事：在**收尾行上方**插一行时，新行落在块**内**（要比收尾深
+    一级）。`End Sub` 上方插行同理 —— 那是过程体的最后一行，不是模块级。
+
+    ⚠️ 别拿 `block_closer` 代替它：`block_closer("    Next i")` 返回 None
+    （`Next` 不是块头），看着像"不是收尾"，正好反了。v122 第一版就这么写的，
+    被 §108.2 当场照出来。
+    """
+    for _c in _BLOCK_CLOSERS.values():
+        if _is_closer_text(line_text, _c):
+            return True
+    return False
+
+
 def _indent_width(raw):
     """行首空白占几个字符位（Tab 按 4 列算）。纯函数。"""
     n = 0
@@ -5971,6 +5991,177 @@ class VbeBackend:
         finally:
             # 与 apply_completion 同理：写过代码（VBAProject 变脏），立刻放开
             # 手里的 COM 代理，别拖住 Excel 的退出/写回。
+            _release_vbe_proxy()
+
+    # ---- ★v122：三个"按行"的编辑动作（插行 / 复制行 / 删行） ----
+    #
+    # 用户口径（原话）："编辑手感可以帮我添加一下：1. Ctrl+Shift+Enter 在上方插入
+    # 新行；2. Shift+d 复制当前行到下方新行；3. Shift+k 删除整行。"
+    # 键位最后定成 Ctrl+D / Ctrl+K —— Shift+D / Shift+K 在代码窗里就是"输入大写
+    # D / 大写 K"，接管了用户在字符串和注释里就再也敲不出大写字母（VBE 的自动
+    # 大写只管关键字）。
+    #
+    # 三个动作的共同口径：
+    #   * **有选区就作用于选中的那几行**（与 IDEA / VS Code 一致），没选区就是
+    #     光标那一行；
+    #   * 每次只写一次（InsertLines / DeleteLines 各一次），绝不边读边写；
+    #   * 写不成返回 False，调用方把按键原样还回去；
+    #   * 落点列只在"第 1 列"和"照抄原列"两种没有歧义的地方选（铁律 15/16：
+    #     显示列 vs 字符列，中间换算必错）。
+
+    def _sel_block(self, cp, cm):
+        """取"这次要动的那几行"：有选区 = 整个选区，没选区 = 光标那一行。
+
+        返回 `(首行, 尾行, 起始显示列, 总行数)`，取不到返回 None。
+        `GetSelection` 的两个角点**不保证 sl <= el**（从下往上选就是反的），
+        所以这里一律先归一。
+        """
+        try:
+            sl, sc, el, ec = cp.GetSelection()
+            sl, el = int(sl), int(el)
+            if sl > el:
+                sl, el = el, sl
+            if sl <= 0:
+                return None
+            try:
+                n_lines = int(cm.CountOfLines)
+            except Exception:
+                n_lines = 0
+            if sl > n_lines:
+                return None
+            if el > n_lines:
+                el = n_lines
+            return sl, el, max(1, int(sc)), n_lines
+        except Exception:
+            return None
+
+    def new_line_above(self):
+        """在光标所在行的【上方】新起一行，光标落在新行的缩进之后（★v122）。
+
+        对应 IDEA 的 "Start New Line Before Current"（`Ctrl+Alt+Enter`）。
+
+        与 `new_line_below` 的分工：那条问的是"本行是不是块头"（是的话新行
+        深一级、还要补收尾）；这条问的是"本行是不是**块收尾**"——插在
+        `End If` / `Next` / `End Sub` 上方，等于插在**块内的最后一行**，所以
+        要深一级；其余情况新行与本行【同级】，缩进就是本行的行首空白。
+
+        刻意只做这一条智能：插在上方时用户看到的是"我上面多了一行"，只要
+        缩进和本行齐平就不会误判；再猜 `Else` / `#If` 该对齐到哪，反而容易
+        挪错（branch_align 那套是给"新起一行"用的，不是给"插到上方"用的）。
+
+        有选区时插在**选区最上面那一行**的上方 —— 用户眼里"上方"就是那个位置。
+        `InsertLines(anchor, …)` 正是"插在第 anchor 行之前"，原行整体下移。
+        """
+        try:
+            vbe = _get_vbe_cached()
+            if vbe is None:
+                return False
+            cp = vbe.ActiveCodePane
+            if cp is None:
+                return False
+            cm = cp.CodeModule
+            blk = self._sel_block(cp, cm)
+            if blk is None:
+                return False
+            anchor = blk[0]
+            line_text = str(cm.Lines(anchor, 1))
+            raw = line_text.rstrip("\r\n")
+            indent = _leading_ws(raw)
+            if str(raw).strip() and is_block_closer(raw):
+                # 本行是块收尾 -> 新行落在块内，深一级。同样要求"本行非空"：
+                # 空行不是任何收尾（is_block_closer 对空行本来就返回 False，这里
+                # 只是把意图写明，省得以后有人以为漏判了）。
+                above = self._lines_above(cm, anchor)
+                unit = _indent_unit_for(above + [line_text])
+                indent = indent + unit
+            cm.InsertLines(anchor, indent)
+            # 插入后新行就是 anchor 行；缩进末尾的列由 _indent_end_col 给
+            # （它按"缩进只有空白"的语义直接算，不需要问光标列）。
+            col = _indent_end_col(indent, _resolve_sem_info(cm, cp, anchor))
+            cp.SetSelection(anchor, col, anchor, col)
+            return True
+        except Exception:
+            return False
+        finally:
+            _release_vbe_proxy()
+
+    def duplicate_lines(self):
+        """把光标所在行（有选区 = 选中的那几行）**复制一份**插到下方（★v122）。
+
+        对应 IDEA 的 Duplicate Line（`Ctrl+D`）。
+
+        写入只有一次 `InsertLines`：`cm.Lines(sl, n)` 拿回来的原文本身就是
+        CRLF 连接的多行，直接喂回去即可（VBE 会按换行拆成多行），不需要自己
+        拼。光标落在**复制块的第一行、同一列** —— 整行复制意味着那一行的内容
+        逐字相同，所以"显示列"照抄就是同一个字符位置，没有列语义换算的坑。
+        """
+        try:
+            vbe = _get_vbe_cached()
+            if vbe is None:
+                return False
+            cp = vbe.ActiveCodePane
+            if cp is None:
+                return False
+            cm = cp.CodeModule
+            blk = self._sel_block(cp, cm)
+            if blk is None:
+                return False
+            sl, el, sc, _n = blk
+            count = el - sl + 1
+            txt = str(cm.Lines(sl, count))
+            cm.InsertLines(el + 1, txt)
+            new_line = el + 1
+            try:
+                cp.SetSelection(new_line, sc, new_line, sc)
+            except Exception:
+                pass        # 写已经成了，落光标失败不能再报 False（否则会多复制一份）
+            return True
+        except Exception:
+            return False
+        finally:
+            _release_vbe_proxy()
+
+    def delete_lines_here(self):
+        """删掉光标所在行（有选区 = 选中的那几行），光标落到原位置的行首（★v122）。
+
+        对应 VS Code 的 Delete Line（`Ctrl+Shift+K`）/ IDEA 的 `Ctrl+Y`。
+
+        落点选**被删块原来的那一行**（也就是删完之后"下面接上来的第一行"）的
+        **第 1 列**：第 1 列在任何列语义下都没有歧义（铁律 15）。删到文件末尾
+        时落到新的最后一行。
+
+        ⚠️ 把整个模块删空是允许的：VBE 的 `CountOfLines` 会变成 0，此时
+        `SetSelection(1, 1)` 会抛异常 —— 但删除本身已经成功了，所以落光标
+        单独 try 包住，绝不让它把返回值拉成 False（那会导致调用方把按键还回去、
+        用户又白删一次）。
+        """
+        try:
+            vbe = _get_vbe_cached()
+            if vbe is None:
+                return False
+            cp = vbe.ActiveCodePane
+            if cp is None:
+                return False
+            cm = cp.CodeModule
+            blk = self._sel_block(cp, cm)
+            if blk is None:
+                return False
+            sl, el = blk[0], blk[1]
+            cm.DeleteLines(sl, el - sl + 1)
+            try:
+                left = int(cm.CountOfLines)
+            except Exception:
+                left = 0
+            if left > 0:
+                target = sl if sl <= left else left
+                try:
+                    cp.SetSelection(target, 1, target, 1)
+                except Exception:
+                    pass
+            return True
+        except Exception:
+            return False
+        finally:
             _release_vbe_proxy()
 
     # ---- 退格删整行（v94：整行只有空白时，一次退格删掉整行） ----

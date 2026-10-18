@@ -19832,6 +19832,314 @@ def main():
 
 
     # ------------------------------------------------------------------
+    # 108. ★v122：三个"按行"的编辑动作
+    #      Ctrl+Shift+Enter 上方插行 / Ctrl+D 复制行 / Ctrl+K 删行
+    # ------------------------------------------------------------------
+    import main as _MB108
+    import settings as _ST108
+
+    print("\n=== 108. ★v122：Ctrl+Shift+Enter 上方插行 / Ctrl+D 复制行 / "
+          "Ctrl+K 删行 ===")
+
+    class _Mod108(object):
+        """够用的假 CodeModule：真读真写，并记下每次写操作的形状。
+
+        `writes` 用来钉"**只写一次**"这条：三个动作都必须是"确认完毕之后调一次
+        InsertLines / DeleteLines"，绝不能边读边写（那样撤销栈会碎成好几步，
+        而且中途失败会留下写了一半的代码）。
+        """
+
+        def __init__(self, lines):
+            self.lines = list(lines)
+            self.writes = []
+
+        def Lines(self, n, c=None):
+            if c is None:
+                c = max(1, len(self.lines) - n + 1)
+            return "\r\n".join(self.lines[n - 1:n - 1 + c])
+
+        @property
+        def CountOfLines(self):
+            return len(self.lines)
+
+        def InsertLines(self, n, text):
+            parts = str(text).split("\r\n")
+            self.lines[n - 1:n - 1] = parts
+            self.writes.append(("insert", n, len(parts)))
+
+        def DeleteLines(self, n, c):
+            self.writes.append(("delete", n, c,
+                                list(self.lines[n - 1:n - 1 + c])))
+            del self.lines[n - 1:n - 1 + c]
+
+    class _Pane108(object):
+        def __init__(self, mod, sel=(1, 1, 1, 1)):
+            self.CodeModule = mod
+            self.sel = sel
+            self.sets = []
+
+        def GetSelection(self):
+            return self.sel
+
+        def SetSelection(self, sl, sc, el, ec):
+            self.sets.append((sl, sc, el, ec))
+
+    class _Vbe108(object):
+        def __init__(self, pane):
+            self.ActiveCodePane = pane
+
+    def _be108(lines, sel):
+        """造一个"当前代码窗 = 这几行、选区 = sel"的后端。"""
+        _m108 = _Mod108(lines)
+        _p108 = _Pane108(_m108, sel)
+        VB106._get_vbe_cached = lambda: _Vbe108(_p108)
+        return VB106.VbeBackend(), _m108, _p108
+
+    _o_vbe108 = VB106._get_vbe_cached
+    try:
+        # ---- 108.1 普通行上方插行：新行与本行【同级】----
+        _be, _m, _p = _be108(["Sub Foo()", "    x = 1", "End Sub"], (2, 1, 2, 1))
+        _ok_a = _be.new_line_above()
+        check("108.1 Ctrl+Shift+Enter 在普通行上方插一行：新行与本行**同级**"
+              "（缩进照抄本行），原行整体下移一行，光标落在新行缩进之后；"
+              "★而且只写了一次 InsertLines（不是边读边写）",
+              [(_ok_a, list(_m.lines), (_p.sets[-1] if _p.sets else None),
+               list(_m.writes))],
+              expect_contain=[(True,
+                               ["Sub Foo()", "    ", "    x = 1", "End Sub"],
+                               (2, 5, 2, 5),
+                               [("insert", 2, 1)])])
+
+        # ---- 108.2 收尾行上方插行：新行落在块【内】，深一级 ----
+        _be, _m, _p = _be108(["Sub Foo()", "    For i = 1 To 3",
+                              "        x = 1", "    Next i", "End Sub"],
+                             (4, 1, 4, 1))
+        _ok_b = _be.new_line_above()
+        check("108.2 在**块收尾行**（`Next i`）上方插行时新行深一级 —— 插在收尾"
+              "上方等于插在块内的最后一行，和收尾齐平是错的；"
+              "★这条也是 `is_block_closer` 存在的理由（拿 `block_closer` 代它"
+              "会得到 None，判成\"不是收尾\"）",
+              [(_ok_b, list(_m.lines),
+               (_p.sets[-1] if _p.sets else None))],
+              expect_contain=[(True,
+                               ["Sub Foo()", "    For i = 1 To 3",
+                                "        x = 1", "        ", "    Next i",
+                                "End Sub"],
+                               (4, 9, 4, 9))])
+
+        # ---- 108.3 有选区时插在【选区最上面那一行】之前 ----
+        # 选区是反着选的（3 -> 2），GetSelection 的两个角点不保证有序
+        _be, _m, _p = _be108(["Sub Foo()", "    a = 1", "    b = 2", "End Sub"],
+                             (3, 1, 2, 1))
+        _ok_c = _be.new_line_above()
+        check("108.3 有选区时插在【选区最上面那一行】的上方（用户眼里的\"上方\""
+              "就是那儿）；选区从下往上选（角点 3 -> 2）也一样 —— "
+              "`_sel_block` 先把两个角点归一",
+              [(_ok_c, list(_m.lines),
+               (_m.writes[0] if _m.writes else None))],
+              expect_contain=[(True,
+                               ["Sub Foo()", "    ", "    a = 1", "    b = 2",
+                                "End Sub"],
+                               ("insert", 2, 1))])
+
+        # ---- 108.4 复制单行 ----
+        _be, _m, _p = _be108(["Sub Foo()", "    a = 1", "End Sub"], (2, 3, 2, 3))
+        _ok_d = _be.duplicate_lines()
+        check("108.4 Ctrl+D 复制光标那一行到下方：内容逐字相同，光标落到**复制块的"
+              "第一行同一列**（整行复制 ⇒ 显示列照抄就是同一个字符位置，"
+              "不需要列语义换算）；一次 InsertLines",
+              [(_ok_d, list(_m.lines),
+               (_p.sets[-1] if _p.sets else None), list(_m.writes))],
+              expect_contain=[(True,
+                               ["Sub Foo()", "    a = 1", "    a = 1", "End Sub"],
+                               (3, 3, 3, 3),
+                               [("insert", 3, 1)])])
+
+        # ---- 108.5 复制多行选区 ----
+        _be, _m, _p = _be108(["    a = 1", "    b = 2", "End Sub"], (1, 1, 2, 1))
+        _ok_e = _be.duplicate_lines()
+        check("108.5 Ctrl+D 有选区时复制**选中的那几行**（IDEA / VS Code 口径），"
+              "整块插在选区下方；`cm.Lines` 拿回来的 CRLF 多行原样喂回 "
+              "InsertLines 就会拆成对应的行数",
+              [(_ok_e, list(_m.lines), list(_m.writes))],
+              expect_contain=[(True,
+                               ["    a = 1", "    b = 2", "    a = 1",
+                                "    b = 2", "End Sub"],
+                               [("insert", 3, 2)])])
+
+        # ---- 108.6 删单行 + 落点 ----
+        _be, _m, _p = _be108(["Sub Foo()", "    a = 1", "    b = 2", "End Sub"],
+                             (2, 7, 2, 7))
+        _ok_f = _be.delete_lines_here()
+        check("108.6 Ctrl+K 删掉光标那一行，光标落到**原位置的第 1 列**"
+              "（第 1 列在任何列语义下都无歧义 —— 铁律 15）；"
+              "原第 3 行顶上来",
+              [(_ok_f, list(_m.lines),
+               (_p.sets[-1] if _p.sets else None))],
+              expect_contain=[(True,
+                               ["Sub Foo()", "    b = 2", "End Sub"],
+                               (2, 1, 2, 1))])
+
+        # ---- 108.7 删多行选区 ----
+        _be, _m, _p = _be108(["Sub Foo()", "    a = 1", "    b = 2", "End Sub"],
+                             (2, 1, 3, 1))
+        _ok_g = _be.delete_lines_here()
+        check("108.7 Ctrl+K 有选区时删掉**选中的那几行**，一次 DeleteLines",
+              [(_ok_g, list(_m.lines), list(_m.writes))],
+              expect_contain=[(True, ["Sub Foo()", "End Sub"],
+                               [("delete", 2, 2, ["    a = 1", "    b = 2"])])])
+
+        # ---- 108.8 删的是最后一行：落点不许超界 ----
+        _be, _m, _p = _be108(["Sub Foo()", "    a = 1"], (2, 1, 2, 1))
+        _ok_h = _be.delete_lines_here()
+        check("108.8 删的是**最后一行**时，落点退到新的最后一行"
+              "（不能 SetSelection 到一个已经不存在的行号）",
+              [(_ok_h, list(_m.lines),
+               (_p.sets[-1] if _p.sets else None))],
+              expect_contain=[(True, ["Sub Foo()"], (1, 1, 1, 1))])
+
+        # ---- 108.9 把模块删空：照样算成功 ----
+        _be, _m, _p = _be108(["    a = 1"], (1, 1, 1, 1))
+        _ok_i = _be.delete_lines_here()
+        check("108.9 把整个模块删空也照做（VBE 的 CountOfLines 会变成 0）："
+              "删除**算成功**、不抛异常，并且**不去** SetSelection(1, 1)"
+              "（那时行 1 已经不存在了）",
+              [(_ok_i, list(_m.lines), list(_p.sets))],
+              expect_contain=[(True, [], [])])
+
+        # ---- 108.10 空模块 / 越界：三个动作一律 False（不假装写成） ----
+        _bad108 = []
+        for _meth in ("new_line_above", "duplicate_lines", "delete_lines_here"):
+            _be, _m, _p = _be108([], (1, 1, 1, 1))
+            try:
+                _bad108.append(bool(getattr(_be, _meth)()))
+            except Exception:
+                _bad108.append("炸了")
+        check("108.10 模块是空的 / 行号越界时，三个动作都返回 False（调用方据此"
+              "把按键还回去），绝不假装写成",
+              [_bad108], expect_contain=[[False, False, False]])
+
+        # ---- 108.11 is_block_closer 判据表 ----
+        _cl108 = [(s, bool(VB106.is_block_closer(s))) for s in (
+            "    Next i", "End Sub", "    End If", "        Loop",
+            "Loop While x", "Wend", "    x = 1", "Sub Foo()", "",
+            "    Case 1", "    Else", "NextFoo", "Next '注释",
+        )]
+        _want108 = [
+            ("    Next i", True), ("End Sub", True), ("    End If", True),
+            ("        Loop", True), ("Loop While x", True), ("Wend", True),
+            ("    x = 1", False), ("Sub Foo()", False), ("", False),
+            ("    Case 1", False), ("    Else", False), ("NextFoo", False),
+            ("Next '注释", True),
+        ]
+        _bad_c108 = [(s, g, w) for ((s, g), (s2, w)) in zip(_cl108, _want108)
+                     if g != w or s != s2]
+        check("108.11 `is_block_closer`：11 种收尾全认（含 `Next i` / "
+              "`Loop While x` / 带注释的 `Next '注释`），普通行 / 块头 / 空行 / "
+              "`Case` / `Else` 都不认；`NextFoo` 不误判成 `Next`",
+              [_bad_c108], expect_contain=[[]])
+
+        # ---- 108.12 / 108.13 修饰键门槛（纯函数）----
+        _ins108 = [(vk, c, s, a, w, _MB108._insert_above_vk_ok(vk, c, s, a, w))
+                   for (vk, c, s, a, w) in (
+                       (_MB108.VK_RETURN, True, True, False, False),
+                       (_MB108.VK_RETURN, True, False, False, False),
+                       (_MB108.VK_RETURN, False, True, False, False),
+                       (_MB108.VK_RETURN, True, True, True, False),
+                       (_MB108.VK_RETURN, True, True, False, True),
+                       (_MB108.VK_D, True, True, False, False),
+                   )]
+        check("108.12 Ctrl+Shift+Enter 的门槛：Ctrl 和 Shift **都要按**，"
+              "Alt / Win 任一在按都不算；裸 Shift+Enter、裸 Enter、Ctrl+Enter "
+              "都**不**算（它们各有各的语义）",
+              [(_ins108,)], expect_contain=[([
+                  (_MB108.VK_RETURN, True, True, False, False, True),
+                  (_MB108.VK_RETURN, True, False, False, False, False),
+                  (_MB108.VK_RETURN, False, True, False, False, False),
+                  (_MB108.VK_RETURN, True, True, True, False, False),
+                  (_MB108.VK_RETURN, True, True, False, True, False),
+                  (_MB108.VK_D, True, True, False, False, False),
+              ],)])
+
+        _dd108 = [(vk, c, s, a, w, _MB108._dup_del_vk_ok(vk, c, s, a, w))
+                  for (vk, c, s, a, w) in (
+                      (_MB108.VK_D, True, False, False, False),
+                      (_MB108.VK_K, True, False, False, False),
+                      (_MB108.VK_D, True, True, False, False),
+                      (_MB108.VK_D, True, False, True, False),
+                      (_MB108.VK_K, True, False, False, True),
+                      (_MB108.VK_D, False, False, False, False),
+                      (_MB108.VK_D, True, False, False, False),
+                      (_MB108.VK_O, True, False, False, False),
+                  )]
+        check("108.13 Ctrl+D / Ctrl+K 的门槛：**单独**按着 Ctrl 才算"
+              "（Ctrl+Shift+D / Ctrl+Alt+D / Ctrl+Win+K 都是别的东西，绝不抢）；"
+              "其余字母键一律不认",
+              [(_dd108,)], expect_contain=[([
+                  (_MB108.VK_D, True, False, False, False, "dup"),
+                  (_MB108.VK_K, True, False, False, False, "del"),
+                  (_MB108.VK_D, True, True, False, False, None),
+                  (_MB108.VK_D, True, False, True, False, None),
+                  (_MB108.VK_K, True, False, False, True, None),
+                  (_MB108.VK_D, False, False, False, False, None),
+                  (_MB108.VK_D, True, False, False, False, "dup"),
+                  (_MB108.VK_O, True, False, False, False, None),
+              ],)])
+
+        # ---- 108.14 分支次序（源码位置）----
+        # ⚠️ 这条是**顺序**断言，不是"存在"断言：Ctrl+Shift+Enter 必须先于
+        # Shift+Enter 被问，否则被那条判据（只看 Enter + Shift）抢走，行为变成
+        # "在下方插行" —— 差一个字，方向反了。
+        _src108 = io.open(os.path.join(os.path.dirname(HERE), "main.py"),
+                          encoding="utf-8").read()
+        _i_ins108 = _src108.find("elif _insert_above_key_ok(vk):")
+        _i_shift108 = _src108.find(
+            "elif (_is_newline_shortcut(vk, _shift_down())")
+        _i_dd108 = _src108.find("elif _dup_del_key_ok(vk):")
+        _i_vis108 = _src108.find("elif completer.is_visible():")
+        check("108.14 分支次序：`_insert_above_key_ok` 排在 `_is_newline_shortcut` "
+              "**之前**（顺带在 `completer.is_visible()` 之前）；`_dup_del_key_ok` "
+              "也排在候选窗那条之前 —— 它们都要改文本，窗里那些候选的行号马上"
+              "就不作数了",
+              [(_i_ins108 > 0, _i_shift108 > 0, _i_dd108 > 0, _i_vis108 > 0,
+                _i_ins108 < _i_shift108, _i_ins108 < _i_vis108,
+                _i_dd108 < _i_vis108)],
+              expect_contain=[(True, True, True, True, True, True, True)])
+
+        # ---- 108.15 闸门里必须有 pending_keys（AST）----
+        # 三个动作都要**写文本**：输入法正在组字 / 刚敲的字还没落进文档时读到的是
+        # 旧行文本，一写就落在错位置。这条用 AST 查，注释里写一万遍也不算数。
+        _tree108 = _ast106.parse(_src108)
+
+        def _uses_pending108(fn_name):
+            for _n108 in _ast106.walk(_tree108):
+                if (isinstance(_n108, _ast106.FunctionDef)
+                        and _n108.name == fn_name):
+                    for _sub in _ast106.walk(_n108):
+                        if (isinstance(_sub, _ast106.Constant)
+                                and _sub.value == "pending_keys"):
+                            return True
+            return False
+
+        check("108.15 写文本类的闸门都看 `pending_keys`（AST）："
+              "`_insert_above_key_ok` 与 `_dup_del_key_ok` 各有一处 —— "
+              "输入法组字 / 刚敲的字还没落进文档时不接管，读到的行文本才是可信的",
+              [(_uses_pending108("_insert_above_key_ok"),
+                _uses_pending108("_dup_del_key_ok"))],
+              expect_contain=[(True, True)])
+
+        # ---- 108.16 三个开关都登记了 ----
+        _keys108 = [k for (k, _d, _s) in _ST108.KNOWN]
+        check("108.16 三个开关都进了 `settings.KNOWN`（各自独立，误触哪个关哪个）",
+              [(_keys108.count("NO_INSERT_ABOVE"),
+                _keys108.count("NO_DUP_LINE"),
+                _keys108.count("NO_DEL_LINE"), len(_keys108))],
+              expect_contain=[(1, 1, 1, 51)])
+    finally:
+        VB106._get_vbe_cached = _o_vbe108
+
+
+    # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原
     #     这不是在测产品代码，而是在测【测试网自己】：一节忘了还原，后面每一节
     #     都会悄悄跑在别人的假对象上，而**不会有任何一条用例变红**。
