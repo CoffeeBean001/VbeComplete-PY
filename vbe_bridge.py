@@ -2217,6 +2217,34 @@ def _components_of(proj):
         return []
 
 
+def _code_panes_by_module(vbe):
+    """`{模块名(小写): CodePane}` —— 只含**已经打开过代码窗**的模块。
+
+    ★v121 真机实测的两件事（这两条决定了跳转怎么落地）：
+
+      1. **`VBComponent` 没有 `CodePane` 属性** —— `comp.CodePane` 直接抛
+         `AttributeError: <unknown>.CodePane`。代码窗只能从 `vbe.CodePanes` 里找
+         （每个 pane 自带 `CodeModule` / `SetSelection` / `Show`）。
+      2. **`CodePanes` 只含打开过的代码窗**：本机 24 个组件、只有 6 个 pane。
+         没有 pane 的模块，COM 里没有任何"打开它"的接口（`Windows` 里也没有对应
+         条目）—— 所以"跳到没打开过的模块"做不到，只能如实告诉用户去双击一下。
+
+    拿不到（宿主不支持 / 还没进 VBE）时返回空 dict，调用方按"一个都跳不了"处理。
+    """
+    out = {}
+    try:
+        n = int(vbe.CodePanes.Count)
+    except Exception:
+        return out
+    for i in range(1, n + 1):
+        try:
+            pane = vbe.CodePanes.Item(i)
+            out[str(pane.CodeModule.Name or "").lower()] = pane
+        except Exception:
+            continue
+    return out
+
+
 # ★v118：组件列表缓存。`for comp in proj.VBComponents` 这一圈是纯 COM 枚举，
 # 而【真正的贵】不在于枚举本身，而在于每次枚举出来的都是**新的 pywin32 包装
 # 对象** —— 之后每读一次 `comp.Name` / `comp.Type` / `comp.CodeModule` 都要
@@ -5087,6 +5115,227 @@ class VbeBackend:
             # （VBAProject 变脏）就立刻放手，别让宿主退出被我们拽住。
             if wrote:
                 _release_vbe_proxy()
+
+    # ---- ★v121：过程大纲 / 查找引用 ----
+
+    def current_module_text(self):
+        """当前代码窗格的 `(模块名, 全文)`；取不到返回 `(None, "")`。
+
+        与 `snapshot()` 的分工：那个只读**当前一行**、每次轮询都跑；这个要**全文**
+        （大纲要的是准确行号），只在用户显式按键时跑一次，贵一点没关系。
+
+        刻意不做列语义探测、也不动光标（那会临时移动光标，是 v93 起就避开的手法）。
+        ⚠️ VBE 的 `Lines()` 回来的是 CRLF，这里统一成 `\\n` —— 否则 `split("\\n")`
+        每行尾巴都留个 `\\r`，行号虽然还对，但拿去做正则/界面显示都会带上脏字符。
+        """
+        try:
+            vbe = _get_vbe_cached()
+            if vbe is None:
+                return (None, "")
+            cp = vbe.ActiveCodePane
+            if cp is None:
+                return (None, "")
+            cm = cp.CodeModule
+            try:
+                mod = str(cm.Name or "")
+            except Exception:
+                mod = ""
+            try:
+                n = int(cm.CountOfLines)
+            except Exception:
+                n = 0
+            if n <= 0:
+                return (mod, "")
+            text = str(cm.Lines(1, n))
+            return (mod, text.replace("\r\n", "\n").replace("\r", "\n"))
+        except Exception:
+            _log("outline: 读模块全文失败")
+            return (None, "")
+
+    def list_procedures_here(self):
+        """`(模块名, [(名字, 种类, 行号, 是否 Private, 过程头原文), ...])`。
+
+        判据全在纯函数 `parser.list_procedures`（与补全那边认的是同一批正则），
+        这里只负责把当前模块的文本拿过来，并顺手带上每一行**原文** —— 大纲窗
+        选中某一项时把它显示在下面，用户不用跳过去就知道签名长什么样。
+        """
+        mod, code = self.current_module_text()
+        if not code:
+            return (mod, [])
+        try:
+            procs = vba_parser.list_procedures(code)
+        except Exception:
+            return (mod, [])
+        lines = code.split("\n")
+        out = []
+        for row in procs:
+            name, kind, line, priv = row
+            text = ""
+            if 1 <= line <= len(lines):
+                text = lines[line - 1].strip()
+            out.append((name, kind, line, priv, text))
+        return (mod, out)
+
+    def word_at_caret(self):
+        """`(模块名, 光标处（或紧邻左边）的那个名字)`；不在名字上返回 `(模块名, "")`。
+
+        用 `get_context()` 换算列（它已经把**显示列**换成**字符列**了 —— 行内含
+        全角字符时这一步自己做必然偏，铁律 15/16），再交给 `parser.ident_at_caret`
+        取整词。光标停在词尾（`DoWork|`）也算命中，那是查找引用最常见的姿势。
+        """
+        try:
+            ctx = self.get_context()
+        except Exception:
+            ctx = None
+        if not ctx:
+            return (None, "")
+        mod = ctx.get("module_name")
+        word = ""
+        try:
+            word = vba_parser.ident_at_caret(
+                ctx.get("line_text") or "", 1, ctx.get("caret_col") or 0)
+        except Exception:
+            word = ""
+        return (mod, word or "")
+
+    def find_references(self, name, max_hits=400):
+        """在【当前工程】的所有模块里做**文本级**查找。
+
+        返回 `(当前模块名, [(模块名, 行号, 列号, 该行原文, 是否声明处,
+        能不能跳过去), ...], 被扫描的模块数)`；当前模块的命中排在最前。
+
+        最后一列的"能不能跳过去"= 那个模块**有没有打开代码窗**（`vbe.CodePanes`
+        里有它）。没有的话 COM 里没有任何接口能打开它（见
+        `_code_panes_by_module` 的说明），界面据此提前标出来，别让用户回车了才发现
+        跳不动。
+
+        刻意说"文本级"：不解析类型、不区分同名变量在不同过程里的作用域 —— 那需要
+        一张真实的符号表，VBE 只给我们纯文本。界面与文档里都照这个口径写死，
+        绝不假装是"查找引用（语义）"。
+
+        一次性操作直接读 `comp.CodeModule`（不走 `_cm_cache`）：那是补全热路径的
+        缓存，键是模块名，塞进这里的临时读取没有收益，反而多一份要维护的不一致。
+        """
+        name = str(name or "").strip()
+        if not name:
+            return (None, [], 0)
+        mod0 = None
+        hits = []
+        scanned = 0
+        try:
+            vbe = _get_vbe_cached()
+            if vbe is None:
+                return (None, [], 0)
+            panes = _code_panes_by_module(vbe)
+            try:
+                cp = vbe.ActiveCodePane
+                if cp is not None:
+                    mod0 = str(cp.CodeModule.Name or "")
+            except Exception:
+                mod0 = None
+            comps = _collect_components(vbe, caret_mod=mod0)
+            for comp in comps:
+                try:
+                    cm = comp.CodeModule
+                    n = int(cm.CountOfLines)
+                except Exception:
+                    continue
+                if n <= 0:
+                    continue
+                try:
+                    mname = str(comp.Name or "")
+                except Exception:
+                    mname = ""
+                try:
+                    text = str(cm.Lines(1, n))
+                except Exception:
+                    continue
+                scanned += 1
+                text = text.replace("\r\n", "\n").replace("\r", "\n")
+                try:
+                    found = vba_parser.find_occurrences(
+                        text, name, limit=(max_hits - len(hits)) or 1)
+                except Exception:
+                    found = []
+                jumpable = str(mname).lower() in panes
+                for (ln, col, line, decl) in found:
+                    hits.append((mname, ln, col, line, decl, jumpable))
+                if len(hits) >= max_hits:
+                    break
+            # 当前模块排最前（用户八成是从这里出发的），其余保持扫描顺序
+            if mod0:
+                low = str(mod0).lower()
+                hits.sort(key=lambda h: 0 if str(h[0]).lower() == low else 1)
+            _log("refs: 查 %r -> %d 处 / %d 个模块（%d 个开着代码窗）"
+                 % (name, len(hits), scanned, len(panes)))
+            return (mod0, hits, scanned)
+        except Exception:
+            _log("refs: 查找引用失败")
+            return (mod0, hits, scanned)
+
+    def goto_location(self, module_name, line_no, expect=None):
+        """把光标跳到 `(模块, 行)`，成功返回 True。
+
+        三处刻意：
+
+          1. **落点一律第 1 列**。`SetSelection` 收的是**显示列**，行内含全角字符
+             时自己去换算必然偏（铁律 15/16）；而第 1 列没有任何歧义。
+          2. **锚点复核**：目标行必须非空白；给了 `expect`（过程名 / 查找的那个
+             名字）时还必须在那一行里出现。扫描到大纲列出、到用户按下回车之间，
+             文件完全可能被改过 —— 行号一旦失真，宁可这一次不跳，也绝不把光标
+             扔到一段不相干的代码上（v21 的老规矩）。
+          3. 不写任何字节，也不调 `_release_vbe_proxy()`（没动过代码，VBAProject
+             还是干净的）。
+
+        ⚠️ 只能跳**已经打开过代码窗**的模块：`VBComponent` 上没有 `CodePane` 属性，
+        而没打开过的模块在 COM 里没有打开它的办法（见 `_code_panes_by_module`）。
+        """
+        want = str(module_name or "").strip()
+        if not want:
+            return False
+        try:
+            line = int(line_no)
+        except Exception:
+            return False
+        if line <= 0:
+            return False
+        try:
+            vbe = _get_vbe_cached()
+            if vbe is None:
+                return False
+            low = want.lower()
+            cp = _code_panes_by_module(vbe).get(low)
+            if cp is None:
+                _log("goto: 模块 %r 没有打开的代码窗（CodePanes 里没有）" % want)
+                return False
+            cm = cp.CodeModule
+            try:
+                n = int(cm.CountOfLines)
+            except Exception:
+                n = 0
+            if n <= 0:
+                return False
+            if line > n:
+                line = n
+            try:
+                text = str(cm.Lines(line, 1)).rstrip("\r\n")
+            except Exception:
+                return False
+            if not text.strip():
+                _log("goto: 目标行是空白 line=%d（行号可能已失真）" % line)
+                return False
+            if expect:
+                if str(expect).lower() not in text.lower():
+                    _log("goto: 锚点复核不过 line=%d text=%r expect=%r"
+                         % (line, text, expect))
+                    return False
+            cp.Show()
+            cp.SetSelection(line, 1, line, 1)
+            _log("goto: %s:%d ok" % (want, line))
+            return True
+        except Exception:
+            _log("goto: 跳转异常 %r:%r" % (want, line_no))
+            return False
 
     def focus_vbe(self):
         """把焦点还给 VBE 主窗（片段窗关掉之后用）。成功与否只影响手感。"""

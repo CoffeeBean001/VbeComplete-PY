@@ -100,6 +100,11 @@ KNOWN = (
      "`Ctrl+Q` 代码片段窗。1 = 关，按键交还 VBE"),
     ("NO_COMMENT", "0",
      "`Ctrl+/` 批量注释 / 取消注释。1 = 关，按键交还 VBE"),
+    ("NO_OUTLINE", "0",
+     "`Ctrl+Shift+O` 过程大纲（列出本模块的 Sub / Function / Property，回车跳过去）。"
+     "1 = 关，按键交还 VBE"),
+    ("NO_USAGES", "0",
+     "`Ctrl+Shift+F` 文本级查找引用（这个名词在本工程里出现在哪些行）。1 = 关"),
     # ---- 候选内容 ----
     ("VBA_BUILTINS", "1",
      "候选里含 VBA 内建函数与内建数据类型（`MsgBox` / `String` …）。0 = 不含"),

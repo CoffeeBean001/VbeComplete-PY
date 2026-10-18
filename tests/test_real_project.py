@@ -18445,12 +18445,18 @@ def main():
         if _ctx100:
             _cur100 = str(_ctx100.get("module_name") or "").lower()
             _cached100 = _cur100 not in _bk100._mod_cache
+        # ⚠️ 真机断言的前提是"VBE 里开着一个代码窗"。用户把代码窗关掉时
+        # `get_context()` 返回 None，这条就**无从判定**（整工具那时也不工作）——
+        # 显式按"空缺"通过，别让它变成一条看运气变红的用例。
+        _vac100 = _ctx100 is None
         check("100.5 光标所在的那个模块【不进模块缓存】（每轮重读重解析）："
               "带 caret 的解析结果与光标位置绑定，缓存会串味；"
-              "其它模块才复用（这条同时守住\"刚声明的变量立刻能提示\"）",
-              [(_cur100, _cached100,
-                _ctx100 is None or _cached100 is True)],
-              expect_contain=[(_cur100, True, True)])
+              "其它模块才复用（这条同时守住\"刚声明的变量立刻能提示\"）"
+              "（没有打开的代码窗时判为空缺）",
+              [(True if _vac100 else _cached100,
+                _vac100 or _cached100 is True,
+                _cur100,)],
+              expect_contain=[(True, True, _cur100)])
 
         # ---- 100.6 引用清单的时间缓存确实生效 ----
         # 读一次 References 要 ~22ms（每个 Item 都是新包装对象），原来每轮
@@ -19304,6 +19310,387 @@ def main():
           "在多数布局上是 `?`，Win 组合是系统键）",
           [(_vk103, MN103.COMMENT_TOGGLE)],
           expect_contain=[((True, False, False, False, False, False), True)])
+
+    # ------------------------------------------------------------------
+    # 104. ★v121：过程大纲（Ctrl+Shift+O）—— 纯函数 list_procedures
+    #
+    #   用户口径（原话）："那你先帮我处理第0档的那个吧，我们先一步步来。"
+    #   第 0 档第一条 = 过程大纲 + 跳转。这一节只测**纯函数**（不碰 COM）：
+    #   "哪些行算过程头"必须与补全那边（extract_proc_kinds / extract_records）
+    #   认完全一致 —— 否则会出现"补全里有这个名字、大纲里却找不到"。
+    # ------------------------------------------------------------------
+    print("\n=== 104. ★v121：过程大纲（list_procedures）===")
+    import parser as PR104
+
+    _code104 = "\n".join([
+        "Option Explicit",                       # 1
+        "",                                      # 2
+        "Private Sub DoWork(ByVal n As Long)",    # 3
+        "    Dim x As Long",                     # 4
+        "    x = n + 1",                         # 5
+        "End Sub",                               # 6
+        "",                                      # 7
+        "Public Function GetName(i As Long) As String",  # 8
+        "    GetName = \"a\"",                   # 9
+        "End Function",                          # 10
+        "",                                      # 11
+        "Property Get Item(i As Long) As Long",   # 12
+        "    Item = i",                          # 13
+        "End Property",                          # 14
+        "",                                      # 15
+        "Property Let Item(i As Long, v As Long)",  # 16
+        "End Property",                          # 17
+        "",                                      # 18
+        "Property Set Item(o As Object)",         # 19
+        "End Property",                          # 20
+        "",                                      # 21
+        "' Sub Fake()",                          # 22 注释里的，不能列
+        "Private Declare PtrSafe Function gApi Lib \"k\" (ByVal v As Long) As Long",  # 23
+        "Public Event Changed(ByVal s As String)",  # 24
+        "Sub NoArgs",                            # 25
+        "End Sub",                               # 26
+        "Function Bare As Long",                 # 27 无括号但有返回类型
+        "End Function",                          # 28
+    ])
+    _procs104 = PR104.list_procedures(_code104)
+    check("104.1 过程头全认：Sub / Function / Property Get|Let|Set / Declare，"
+          "行号是**物理行号**；`Private` 标出来；注释里的 `' Sub Fake` "
+          "**不列**；`End Sub` 不列；`Function Bare As Long`（无括号）也认；"
+          "`Event` 刻意不收（它不在补全池里）",
+          [(_procs104,)],
+          expect_contain=[([
+              ("DoWork", "Sub", 3, True),
+              ("GetName", "Function", 8, False),
+              ("Item", "Property Get", 12, False),
+              ("Item", "Property Let", 16, False),
+              ("Item", "Property Set", 19, False),
+              ("gApi", "Declare Function", 23, True),
+              ("NoArgs", "Sub", 25, False),
+              ("Bare", "Function", 27, False),
+          ],)])
+
+    # ---- 104.2 与补全那边认的必须是同一批行 ----
+    _kinds104 = PR104.extract_proc_kinds(_code104)
+    _names104 = set(_kinds104.keys())
+    _outline104 = set(n.lower() for (n, _k, _l, _p) in _procs104)
+    check("104.2 大纲列出的名字集合 == `extract_proc_kinds` 认的名字集合"
+          "（同一批正则；两份分叉的话表现为\"补全能提示、大纲里找不到\"）",
+          [(_names104, _outline104)],
+          expect_contain=[({"dowork", "getname", "item", "gapi", "noargs",
+                            "bare"},
+                           {"dowork", "getname", "item", "gapi", "noargs",
+                            "bare"})])
+
+    # ---- 104.3 行号能直接拿去读那一行 ----
+    _lines104 = _code104.split("\n")
+    _ok104 = all(str(_lines104[ln - 1]).strip().lower().find(nm.lower()) >= 0
+                 for (nm, _k, ln, _p) in _procs104)
+    check("104.3 每个行号 `lines[行号-1]` 里都真有那个名字（行号是"
+          "`CodeModule.Lines(n, 1)` 认的那种物理行号，不做任何行合并）",
+          [(_ok104, len(_procs104))], expect_contain=[(True, 8)])
+
+    # ------------------------------------------------------------------
+    # 105. ★v121：文本级查找引用 —— 纯函数 find_occurrences
+    #
+    #   三个会误报的来源，逐条钉住：整词（`num` 不命中 `numArr`）、大小写
+    #   （VBA 不区分）、字符串 / 注释里的同名文本不算。
+    # ------------------------------------------------------------------
+    print("\n=== 105. ★v121：文本级查找引用（find_occurrences）===")
+    _code105 = "\n".join([
+        "Private num As Long",                    # 1  声明
+        "Sub A()",                               # 2
+        "    num = num + 1",                     # 3  两处
+        "    Dim numArr(3) As Long",             # 4  numArr 不算
+        "    Debug.Print \"num\"",                # 5  字符串里的不算
+        "    ' num = 5",                         # 6  注释里的不算
+        "    Num = 9",                           # 7  大小写不同，算
+        "End Sub",                               # 8
+    ])
+    _hits105 = PR104.find_occurrences(_code105, "num")
+    check("105.1 整词 + 大小写不敏感 + 字符串/注释不算；列号 1 起、指到词首；"
+          "带出该行原文",
+          [([(ln, col, decl) for (ln, col, _t, decl) in _hits105],)],
+          expect_contain=[([(1, 9, True), (3, 5, False), (3, 11, False),
+                            (7, 5, False)],)])
+
+    check("105.2 该行原文与源码逐字一致（界面直接拿它显示，截断在 UI 侧做）",
+          [([t for (_l, _c, t, _d) in _hits105],)],
+          expect_contain=[(["Private num As Long", "    num = num + 1",
+                            "    num = num + 1", "    Num = 9"],)])
+
+    # ---- 105.3 声明处标记：Dim / 形参 / 过程名都算 ----
+    _hits105b = PR104.find_occurrences(
+        "Sub Foo(ByVal target As Long)\n    target = 1\nEnd Sub", "target")
+    _decl105 = [(ln, d) for (ln, _c, _t, d) in _hits105b]
+    check("105.3 \"是否声明处\"用的是 `_decl_line_names`（同一份声明判据）："
+          "形参表里的算声明、过程体里的赋值算使用",
+          [(_decl105,)], expect_contain=[([(1, True), (2, False)],)])
+
+    # ---- 105.4 limit 生效（大工程里防撑爆）----
+    _many105 = "\n".join(["x = 1"] * 50)
+    check("105.4 `limit` 生效：50 处里只收请求的 7 处（大工程里防止把内存和"
+          "界面撑爆）",
+          [(len(PR104.find_occurrences(_many105, "x", limit=7)),)],
+          expect_contain=[(7,)])
+
+    # ---- 105.5 空名字 / 空代码不炸 ----
+    check("105.5 空名字 / 空代码返回空列表（绝不在按键路径上抛异常）",
+          [(PR104.find_occurrences("", "x"), PR104.find_occurrences("x = 1", ""),
+            PR104.find_occurrences(None, None))],
+          expect_contain=[([], [], [])])
+
+    # ------------------------------------------------------------------
+    # 106. ★v121：后端 + 窗的接线（假 VBE / 假 tk 不动）
+    #   两条硬要求：
+    #     (a) `goto_location` 落光标前必须**复核锚点**（行号失真就不跳）；
+    #     (b) `JumpWindow._build()` 必须把 Toplevel 记到 `self.win` ——
+    #         漏了这行窗口根本不会出现，而所有异常都被 except 吞掉，表现为
+    #         "按了快捷键什么都没发生"（这一版真的漏过，是真机前唯一抓到的机会）。
+    # ------------------------------------------------------------------
+    print("\n=== 106. ★v121：大纲 / 引用的后端接线 ===")
+    import ast as _ast106
+    import vbe_bridge as VB106
+
+    class _Mod106(object):
+        def __init__(self, name, lines):
+            self.name = name
+            self.lines = list(lines)
+
+        def Lines(self, n, c=None):
+            # 真 VBE 的 `Lines(n, c)` 返回 c 行、行间是 CRLF —— 假对象也照这个
+            # 形状给，顺便让 `current_module_text` 的 CRLF 归一真的被测到。
+            if c is None:
+                c = max(1, len(self.lines) - n + 1)
+            return "\r\n".join(self.lines[n - 1:n - 1 + c])
+
+        @property
+        def CountOfLines(self):
+            return len(self.lines)
+
+        @property
+        def Name(self):
+            return self.name
+
+    class _Pane106(object):
+        def __init__(self, mod):
+            self.CodeModule = mod
+            self.sel = None
+            self.shown = 0
+
+        def GetSelection(self):
+            return (1, 1, 1, 1)
+
+        def SetSelection(self, sl, sc, el, ec):
+            self.sel = (sl, sc, el, ec)
+
+        def Show(self):
+            self.shown += 1
+
+    class _Comp106(object):
+        def __init__(self, mod):
+            self.Name = mod.Name
+            self.CodeModule = mod
+
+    class _Panes106(object):
+        """`vbe.CodePanes`：**只有这里面的模块才能跳过去**。
+
+        真机实测两条（决定了跳转怎么落地）：`VBComponent` 上根本没有 `CodePane`
+        属性（24 个组件只有 6 个打开的 pane），而没打开过的模块在 COM 里没有任何
+        接口能把它打开。
+        """
+        def __init__(self, panes):
+            self._p = list(panes)
+
+        @property
+        def Count(self):
+            return len(self._p)
+
+        def Item(self, i):
+            return self._p[i - 1]
+
+    class _Proj106(object):
+        def __init__(self, comps):
+            self.VBComponents = list(comps)
+            self.Name = "VBAProject"
+
+    class _Vbe106(object):
+        def __init__(self, comps, panes):
+            self.VBProjects = [_Proj106(comps)]
+            self.ActiveVBProject = self.VBProjects[0]
+            self.CodePanes = _Panes106(panes)
+            self.ActiveCodePane = panes[0] if panes else None
+
+    _mod1_106 = _Mod106("模块1", ["Option Explicit", "",
+                                  "Sub DoWork()", "    Call GetName(1)",
+                                  "End Sub"])
+    _mod2_106 = _Mod106("模块2", ["Function GetName(n As Long) As String",
+                                  "    GetName = \"x\"", "End Function"])
+    # 模块3：有命中，但**没有打开的代码窗** -> 跳不过去
+    _mod3_106 = _Mod106("模块3", ["Sub Other()", "    x = GetName(2)",
+                                  "End Sub"])
+    _pane1_106 = _Pane106(_mod1_106)
+    _pane2_106 = _Pane106(_mod2_106)
+    _vbe106 = _Vbe106([_Comp106(_mod1_106), _Comp106(_mod2_106),
+                       _Comp106(_mod3_106)], [_pane1_106, _pane2_106])
+
+    _o_vbe106 = VB106._get_vbe_cached
+    _o_cache106 = dict(VB106._comp_list_cache)
+    VB106._get_vbe_cached = lambda: _vbe106
+    VB106._comp_list_cache["comps"] = None
+    VB106._comp_list_cache["count"] = -1
+    VB106._comp_list_cache["ts"] = 0.0
+    try:
+        _be106 = VB106.VbeBackend()
+        _mod0_106, _hits106, _n106 = _be106.find_references("GetName")
+        _got_goto = _be106.goto_location("模块2", 1, expect="GetName")
+        _sel106 = _pane2_106.sel
+        _shown106 = _pane2_106.shown
+        _bad_blank = _be106.goto_location("模块1", 2, expect=None)
+        _bad_expect = _be106.goto_location("模块1", 3, expect="Nope")
+        _bad_mod = _be106.goto_location("不存在的模块", 1)
+        _no_pane = _be106.goto_location("模块3", 2, expect="GetName")
+        _here_mod, _here_procs = _be106.list_procedures_here()
+        _cur_mod, _cur_code = _be106.current_module_text()
+    finally:
+        VB106._get_vbe_cached = _o_vbe106
+        VB106._comp_list_cache.update(_o_cache106)
+
+    check("106.1 `find_references` 扫遍活动工程：四处命中（模块1 调用；模块2 "
+          "声明 + 赋值；模块3 调用），当前模块排最前，并回报扫了几个模块；"
+          "**没有打开代码窗的模块标 `jumpable=False`**（COM 里打不开它）",
+          [(_n106, len(_hits106),
+            [(h[0], h[1], h[5]) for h in _hits106], _hits106[0][0])],
+          expect_contain=[(3, 4, [("模块1", 4, True), ("模块2", 1, True),
+                                  ("模块2", 2, True), ("模块3", 2, False)],
+                           "模块1")])
+
+    check("106.2 `goto_location` 真的切了代码窗并落光标到**第 1 列**"
+          "（`SetSelection(行, 1, 行, 1)` —— 显示列有歧义，第 1 列没有）",
+          [(_got_goto, _sel106, _shown106)],
+          expect_contain=[(True, (1, 1, 1, 1), 1)])
+
+    check("106.3 锚点复核：空白行不跳、目标行里没有 expect 不跳、模块名对不上"
+          "不跳、**没有打开的代码窗也不跳**（宁可这一次不跳，绝不把光标扔到"
+          "不相干的代码上）",
+          [(_bad_blank, _bad_expect, _bad_mod, _no_pane)],
+          expect_contain=[(False, False, False, False)])
+
+    check("106.4 `list_procedures_here` 带上过程头原文（大纲窗选中时显示签名）、"
+          "`current_module_text` 把 CRLF 归一成 LF",
+          [(_here_mod, _here_procs, _cur_mod, "\r" not in _cur_code)],
+          expect_contain=[("模块1",
+                           [("DoWork", "Sub", 3, False, "Sub DoWork()")],
+                           "模块1", True)])
+
+    # ---- 106.5 窗的骨架：`self.win = w` 一行都不能少 ----
+    import jump_ui as JU106
+    _src106 = None
+    try:
+        import io as _io106
+        _src106 = _io106.open(JU106.__file__, "r", encoding="utf-8").read()
+    except Exception:
+        _src106 = ""
+    _tree106 = _ast106.parse(_src106) if _src106 else None
+    _assigns_win = False
+    if _tree106 is not None:
+        for node in _ast106.walk(_tree106):
+            if (isinstance(node, _ast106.FunctionDef)
+                    and node.name == "_build"):
+                for st in node.body:
+                    if isinstance(st, _ast106.Assign):
+                        for tg in st.targets:
+                            if (isinstance(tg, _ast106.Attribute)
+                                    and tg.attr == "win"
+                                    and isinstance(tg.value, _ast106.Name)
+                                    and tg.value.id == "self"):
+                                _assigns_win = True
+    check("106.5 `JumpWindow._build()` 里真的有 `self.win = w`"
+          "（漏掉这一行窗口不会出现，而 `show_items` 里每一句都包在 except "
+          "里 —— 表现为\"按了快捷键什么都没发生\"，真机上极难查）",
+          [(_assigns_win,)], expect_contain=[(True,)])
+
+    # ---- 106.6 钩子接线（AST）：分支位置 + 吞键 + 判据里没有 COM ----
+    import main as MN106
+    _srcm106 = ""
+    try:
+        import io as _io106b
+        _srcm106 = _io106b.open(MN106.__file__, "r", encoding="utf-8").read()
+    except Exception:
+        _srcm106 = ""
+    _treem106 = _ast106.parse(_srcm106) if _srcm106 else None
+
+    def _func_src106(name):
+        if _treem106 is None:
+            return ""
+        for node in _ast106.walk(_treem106):
+            if isinstance(node, _ast106.FunctionDef) and node.name == name:
+                return _ast106.dump(node)
+        return ""
+
+    def _func_node106(name):
+        if _treem106 is None:
+            return None
+        for node in _ast106.walk(_treem106):
+            if isinstance(node, _ast106.FunctionDef) and node.name == name:
+                return node
+        return None
+
+    # 分支位置：Ctrl+Shift+O / F 那两条必须排在"候选窗是否可见"之前 ——
+    # 它们是纯开窗动作，与候选窗无关；排在后面等于"候选窗开着就叫不出来"。
+    _wf106 = _func_node106("win32_filter")
+    _jump_lines = []
+    _vis_lines = []
+    if _wf106 is not None:
+        for nd in _ast106.walk(_wf106):
+            if isinstance(nd, _ast106.Name) and nd.id in (
+                    "_open_outline", "_open_usages"):
+                _jump_lines.append(nd.lineno)
+            if isinstance(nd, _ast106.Attribute) and nd.attr == "is_visible":
+                _vis_lines.append(nd.lineno)
+    _order_ok = bool(_jump_lines and _vis_lines
+                     and max(_jump_lines) < min(_vis_lines))
+
+    _ol_src = _func_src106("_open_outline")
+    _us_src = _func_src106("_open_usages")
+    _ol_gate = _func_src106("_outline_key_ok")
+    _us_gate = _func_src106("_usages_key_ok")
+    _pure_ol = _func_src106("_outline_vk_ok")
+    _pure_us = _func_src106("_usages_vk_ok")
+    check("106.6 钩子接线：两条都派发到 `_open_outline` / `_open_usages` 且"
+          "**排在 `completer.is_visible()` 之前**（纯开窗动作，候选窗开着也要能"
+          "叫出来）；两条闸门与两条纯判据里**没有任何 COM 调用**（钩子线程没有 "
+          "COM 单元 —— 这条用 AST 查，不受注释影响）",
+          [(_order_ok,
+            "show_items" in _ol_src, "show_items" in _us_src,
+            "Backend" not in _ol_gate and "_get_vbe" not in _ol_gate,
+            "Backend" not in _us_gate and "_get_vbe" not in _us_gate,
+            "Backend" not in _pure_ol, "Backend" not in _pure_us)],
+          expect_contain=[(True, True, True, True, True, True, True)])
+
+    # ---- 106.7 修饰键门槛：必须 Ctrl+Shift 同时按、Alt/Win 不许按 ----
+    _vk106 = tuple(
+        MN106._outline_vk_ok(vk, c, s, a, w) for (vk, c, s, a, w) in (
+            (0x4F, True, True, False, False),    # 正是我们
+            (0x4F, True, False, False, False),   # 只有 Ctrl -> 那是别的
+            (0x4F, False, True, False, False),   # 只有 Shift
+            (0x4F, True, True, True, False),     # 加 Alt
+            (0x4F, True, True, False, True),     # 加 Win
+            (0x46, True, True, False, False),    # Ctrl+Shift+F 不归大纲
+        ))
+    _vk106b = tuple(
+        MN106._usages_vk_ok(vk, c, s, a, w) for (vk, c, s, a, w) in (
+            (0x46, True, True, False, False),
+            (0x46, True, False, False, False),
+            (0x46, True, True, True, False),
+            (0x4F, True, True, False, False),
+        ))
+    check("106.7 修饰键门槛：两条都是 **Ctrl+Shift 同时按**才算，Alt / Win 任一"
+          "在按都不算（Win 组合是系统键，Alt 会开菜单）；两个键互不串门",
+          [(_vk106, _vk106b,
+            MN106.OUTLINE_POPUP, MN106.USAGES_POPUP)],
+          expect_contain=[((True, False, False, False, False, False),
+                           (True, False, False, False),
+                           True, True)])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原
