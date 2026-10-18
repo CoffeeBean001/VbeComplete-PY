@@ -216,6 +216,36 @@
   keeps the "do not take over while COM is backing off" check (swallowing the key and then failing to
   open the window feels like nothing happened). `VBECOMPLETE_NO_OUTLINE=1` / `VBECOMPLETE_NO_USAGES=1`.
 
+- **v122 — three line-wise editing keys (`Ctrl+Shift+Enter` / `Ctrl+D` / `Ctrl+K`).**
+  All three follow the same rule: **the selected lines when there is a selection, otherwise the
+  caret's line** (the IDEA / VS Code convention). They *do* write code, so they reuse the skeleton of
+  the v94 backspace-delete-line work: the hook thread only decides, the main thread writes, and a
+  failed write hands the key back to the system.
+
+  `Ctrl+Shift+Enter` inserts a line **above**, at the current line's indent — except when that line is
+  a block **closer** (`End If` / `Next i` / `End Sub`), where the new line belongs *inside* the block
+  and goes one level deeper. `Ctrl+D` duplicates the line **below**, the caret following to the copy
+  at the same column. `Ctrl+K` deletes the whole line, caret to column 1.
+
+  On the key choice: `Shift+D` / `Shift+K` were the original request, but those keys are how you type
+  an uppercase `D` / `K` — and the VBE's auto-capitalisation only covers keywords, so `"Debug"` inside
+  a string literal would become impossible to type. Taking an *input* capability away to gain a
+  convenience is a bad trade, hence `Ctrl+D` / `Ctrl+K` (IDEA's Duplicate Line key; neither is bound in
+  the VBE code pane).
+
+  Choices worth knowing: every action writes **exactly once** (`InsertLines` / `DeleteLines`), because
+  reading while writing fragments the undo stack and can leave half-written code; `new_line_above`
+  only asks "is this line a closer?" and guesses nothing further (`branch_align` is designed for
+  "start a new line *after* this one", not for inserting above); a new pure predicate
+  **`is_block_closer`** had to be added, because `block_closer("    Next i")` returns `None` — it maps
+  *header → owed closer*, so using it here silently inverts the answer; the caret only lands where
+  there is no column ambiguity (column 1 when deleting, the original column when duplicating, since a
+  whole-line copy puts the same character at the same display column); and deleting the entire module
+  is allowed (`CountOfLines` becomes 0, so the caret placement sits in its own `try` and never turns a
+  successful delete into a `False`). The hook gate adds `pending_keys > 0` to the usual checks: these
+  three write text, so a half-composed IME word would leave the line text stale.
+  `VBECOMPLETE_NO_INSERT_ABOVE=1` / `VBECOMPLETE_NO_DUP_LINE=1` / `VBECOMPLETE_NO_DEL_LINE=1`.
+
 **Coexistence**
 
 - After `object.`, VbeComplete steps aside and lets the VBE's own, type-aware member list take over.
@@ -251,6 +281,9 @@ semantic infrastructure.
 | Toggle line comment (`Ctrl+/`) | ✅ |
 | File structure outline (`Ctrl+Shift+O`) | ✅ (single click jumps; the window stays open) |
 | Find usages (`Ctrl+Shift+F`) — textual only, no scope resolution | ⚠️ partial |
+| Duplicate line (`Ctrl+D`) | ✅ |
+| Delete line (`Ctrl+K`) | ✅ |
+| Start a new line above (`Ctrl+Shift+Enter`) | ✅ (deeper indent when above a block closer) |
 | Trailing space for keywords; `()` after functions | ✅ |
 | No completion while declaring a new name | ✅ |
 | Type-aware member completion | Delegated to the VBE's native member list |
@@ -299,6 +332,9 @@ different ini file (portable installs and tests).
 | `VBECOMPLETE_NO_COMMENT` | off | `1` disables `Ctrl+/` comment toggling; the key stays with the VBE. |
 | `VBECOMPLETE_NO_OUTLINE` | off | `1` disables the `Ctrl+Shift+O` module outline. |
 | `VBECOMPLETE_NO_USAGES` | off | `1` disables `Ctrl+Shift+F` find references. |
+| `VBECOMPLETE_NO_INSERT_ABOVE` | off | `1` disables `Ctrl+Shift+Enter` (insert a line above). |
+| `VBECOMPLETE_NO_DUP_LINE` | off | `1` disables `Ctrl+D` (duplicate the line). |
+| `VBECOMPLETE_NO_DEL_LINE` | off | `1` disables `Ctrl+K` (delete the line). |
 | `VBECOMPLETE_SETTINGS` | `<project folder>\settings.ini` | Which ini file to read (portable installs / tests). |
 | `VBECOMPLETE_SNIPPET_DB` | `<project folder>\snippets.db` | Where the snippet database lives (portable installs / tests point it elsewhere). |
 | `VBECOMPLETE_NO_MOD_CACHE` | off | `1` goes back to re-parsing every module on each refresh (v117 behaviour). Only useful for A/B timing; the per-module cache is what keeps a refresh at ~27 ms instead of ~224 ms. |
@@ -320,7 +356,7 @@ different ini file (portable installs and tests).
 | `settings.py` | The configuration centre (v120): `settings.ini` parsing, the three-layer lookup, the `KNOWN` table and the commented-out template. Imports nothing from the project — `log.py` depends on it, not the other way round. `py -3 settings.py` dumps every value with its source. |
 | `settings.example.ini` | The template that `settings.py` generates, checked in so you can read it without running anything (every line commented out). |
 | `log.py` | Optional diagnostic log (off by default, zero overhead) |
-| `tests/` | Regression suite (`test_real_project.py`, 1100 checks) and the sample project it runs against. Five one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand), and `probe_outline.py` verifies v121 on the same setup (list procedures, find references, jump and read `GetSelection()` back, confirm a module without an open code pane is refused; it also **opens the real window and injects a real left-button release** to check that a single click jumps and that the window stays open — **without writing a single byte**). |
+| `tests/` | Regression suite (`test_real_project.py`, 1116 checks) and the sample project it runs against. Six one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand), and `probe_outline.py` verifies v121 on the same setup (list procedures, find references, jump and read `GetSelection()` back, confirm a module without an open code pane is refused; it also **opens the real window and injects a real left-button release** to check that a single click jumps and that the window stays open — **without writing a single byte**). `probe_lineops.py` verifies v122 on the same setup (`Ctrl+Shift+Enter` above, `Ctrl+D`, `Ctrl+K`): it appends **one temporary procedure to the end of a module**, deletes it afterwards, and byte-compares the module with the backup taken beforehand. |
 
 ## Credits
 

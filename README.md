@@ -53,6 +53,9 @@ autostart on login · `run_tests.bat` runs the offline regression suite.
 | `Ctrl+/` | **Toggle line comment** (IDEA-style): on every line of the selection, or the caret's line when there is none — removes the comment when all of them already have one, otherwise adds it |
 | `Ctrl+Shift+O` | **Outline of this module**: every `Sub` / `Function` / `Property` / `Declare` in it — fuzzy search, **click** (or `Enter`) to jump |
 | `Ctrl+Shift+F` | **Find references** (text level): with the caret inside a name, lists every occurrence of it in the active project — fuzzy search, **click** (or `Enter`) to jump |
+| `Ctrl+Shift+Enter` | Insert a new line **above** the current one (same indent; one level deeper when the current line is a block **closer** such as `End If` / `Next`) |
+| `Ctrl+D` | **Duplicate the current line** below (the selected lines, when there is a selection); the caret follows to the same column |
+| `Ctrl+K` | **Delete the whole line** (the selected lines, when there is a selection); the caret lands at column 1 |
 
 On accept a `Sub` gets a trailing space, a `Function` gets `()` with the caret inside **and the
 VBE's own parameter info pops up** (so you can see the signature while filling in the arguments),
@@ -90,6 +93,20 @@ name are listed together, and it cannot tell a `Call` from an assignment; it ans
 characters appear". ② Hits inside **strings and comments do not count**. ③ COM can only jump into
 code panes that **have already been opened**; modules that were never opened are marked in the list —
 double-click that module in the VBE once and press the key again.
+
+**Three line-wise editing keys (`Ctrl+Shift+Enter` / `Ctrl+D` / `Ctrl+K`)** all work the same way:
+**the selected lines when there is a selection, otherwise the caret's line** — the IDEA / VS Code
+convention.
+
+- `Ctrl+Shift+Enter` inserts a line **above**. The indent matches the current line — except when that
+  line is a block **closer** (`End If` / `Next i` / `End Sub`), where the new line belongs *inside*
+  the block and is indented one level deeper.
+- `Ctrl+D` duplicates the line **below**, with the caret following to the copy at the same column.
+- `Ctrl+K` deletes the whole line, caret to column 1. Deleting the entire module is allowed.
+
+⚠️ On the key choice: `Shift+D` / `Shift+K` were the original request, but those keys are how you
+**type an uppercase `D` / `K`** — VBE's auto-capitalisation only applies to keywords, not to string
+contents like `"Debug"`. Hence `Ctrl+D` / `Ctrl+K`, neither of which the VBE code pane binds.
 
 **Turning features off: `settings.ini`** — created in the **project folder** on first start, with
 **every line commented out** (so it changes nothing by itself). Delete the `;` in front of a line,
