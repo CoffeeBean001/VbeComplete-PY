@@ -186,7 +186,7 @@ def send_char(ch):
                          (0, ord(ch), KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)))
 
 
-def send_vk(vk, ctrl=False):
+def send_vk(vk, ctrl=False, shift=False):
     """把一个【虚拟键】原样"还给"系统（keydown+keyup）。
 
     只用于兜底：Shift+↑/↓（跳出候选列表并移动光标）那一下已经被我们吞了，
@@ -194,16 +194,20 @@ def send_vk(vk, ctrl=False):
     真的发生 —— 绝不能"吞掉按键却什么都没发生"（v57 的老规矩）。
     注入的事件带 LLKHF_INJECTED，钩子会放行，不会自己截自己。
 
-    ★v110：`ctrl=True` 时先按下 Ctrl、发完这个键再反序松开（Ctrl+↑ / Ctrl+↓
-    的兜底重发用）。修饰键必须【反序】释放，否则宿主可能看到"Ctrl 还按着"
-    的残留状态。
+    修饰键（`ctrl` / `shift`，可同时）先按顺序按下、发完这个键再**反序**松开
+    （v110 定的规矩；v126c 加了 `shift` —— Ctrl+Shift+↑/↓ 的兜底重发用）。
+    反序很重要，否则宿主可能看到"Ctrl / Shift 还按着"的残留状态。
     """
+    mods = []
     if ctrl:
-        seq = ((VK_CONTROL, 0, 0), (vk, 0, 0),
-               (vk, 0, KEYEVENTF_KEYUP), (VK_CONTROL, 0, KEYEVENTF_KEYUP))
-    else:
-        seq = ((vk, 0, 0), (vk, 0, KEYEVENTF_KEYUP))
-    return _send_inputs(seq)
+        mods.append(VK_CONTROL)
+    if shift:
+        mods.append(VK_SHIFT)
+    seq = [(m, 0, 0) for m in mods]
+    seq.append((vk, 0, 0))
+    seq.append((vk, 0, KEYEVENTF_KEYUP))
+    seq.extend((m, 0, KEYEVENTF_KEYUP) for m in reversed(mods))
+    return _send_inputs(tuple(seq))
 
 
 def send_quick_info():
@@ -260,18 +264,19 @@ def _is_line_nav_shortcut(vk, shift_down):
     return vk in NAV_VKS and bool(shift_down)
 
 
-# ★v110：Ctrl+↑ / Ctrl+↓ 用的两个虚拟键（抽出来给纯判据和钩子共用一份）。
+# ★v110：Ctrl+Shift+↑ / Ctrl+Shift+↓ 用的两个虚拟键（抽出来给纯判据和钩子共用一份）。
 CTRL_NAV_VKS = (VK_UP, VK_DOWN)
 
 
 def _ctrl_nav_vk_ok(vk, ctrl_down, shift_down, alt_down, win_down):
-    """这一下是不是"【单独】按着 Ctrl 的 ↑/↓"（★v110，纯函数，无系统调用）。
+    """这一下是不是"按着 Ctrl **和** Shift 的 ↑/↓"（★v110/v126c，纯函数，无系统调用）。
 
     修饰键门槛一道都不能少：
-      * 必须按着 Ctrl —— 不然就是普通 ↑/↓（那是候选列表的选词键）；
-      * Shift / Alt / Win 任一在按都【不算】：Ctrl+Shift+↑ 在别的编辑器里是
-        "往上扩选"、Win+↑ 是系统的窗口最大化，都不是我们这个功能。尤其 Win：
-        低层钩子看得见它，吞了用户的窗口最大化可是要出事儿的。
+      * 必须同时按着 Ctrl 与 Shift —— 用户 2026-10-18 要求把这两个跳转键
+        从 `Ctrl+↑/↓` 改成 `Ctrl+Shift+↑/↓`（原文："原来的ctrl+↑和CTRL+下进行的
+        光标定位，快捷键改成CTRL+shift+↑和CTRL+shift+↓"）。少一个都不算：
+        没有 Shift 就是原来的 `Ctrl+↑/↓`，没有 Ctrl 就是"扩选"。
+      * Alt / Win 任一在按都【不算】：Win+↑ 是系统的窗口最大化，吞了要出事。
 
     真正的"要不要接管"还有两道闸（输入法组字 / COM 退避 / 焦点不在代码窗格），
     那两道要读运行期状态，由 main() 里的 _ctrl_nav_key_ok 负责 —— 与
@@ -279,9 +284,9 @@ def _ctrl_nav_vk_ok(vk, ctrl_down, shift_down, alt_down, win_down):
     """
     if vk not in CTRL_NAV_VKS:
         return False
-    if not ctrl_down:
+    if not ctrl_down or not shift_down:
         return False
-    if shift_down or alt_down or win_down:
+    if alt_down or win_down:
         return False
     return True
 
@@ -740,20 +745,24 @@ CONFIRM_VKS = (VK_TAB,)
 #   set VBECOMPLETE_NO_SHIFT_NAV=1
 SHIFT_NAV_JUMP = not settings.flag("NO_SHIFT_NAV", False)
 
-# ★v110：Ctrl+↑ / Ctrl+↓ = 在【当前过程】内跳转（用户 2026-10-15 提的两条）。
-#   Ctrl+↑：跳到本过程最后一个 Dim 语句下面的空白行（没有就照 Dim 行的缩进
+# ★v110：Ctrl+Shift+↑ / Ctrl+Shift+↓ = 在【当前过程】内跳转（用户 2026-10-15 提的两条）。
+#   Ctrl+Shift+↑：跳到本过程最后一个 Dim 语句下面的空白行（没有就照 Dim 行的缩进
 #           补一行），光标落在上面；
-#   Ctrl+↓：跳到本过程 End Sub / End Function / End Property 行上面的空白行
+#   Ctrl+Shift+↓：跳到本过程 End Sub / End Function / End Property 行上面的空白行
 #           （没有就照收尾行的缩进补一行）。
 # 用户口径（原话）："当我按 ctrl+↑，光标会自动定位到当前过程中最后一个 dim
 # 关键字行，如果此行的下一行不是空行，就自动在此行下方新增一行，光标移动到
 # 下方空白行；如果此行的下一行是空白行，就不用新增行……ctrl+↓ 同理，定位到
 # end sub 或 end function 行。"
 #
+# ★v126c（用户 2026-10-18）：键位从 `Ctrl+↑/↓` 改成 `Ctrl+Shift+↑/↓`（原话：
+# "原来的ctrl+↑和CTRL+下进行的光标定位，快捷键改成CTRL+shift+↑和CTRL+shift+↓"）。
+# 光是修饰键门槛多一道 Shift，判据/落点/后端一个字没动。
+#
 # 判据与写入的实现在 vbe_bridge（纯函数 ctrl_nav_jump_plan + 后端方法
 # ctrl_nav_jump），这里只负责"这一下按键要不要接管"（键盘钩子线程，只读本地
 # 状态、不碰 COM —— 与 _bs_delete_pair_key_ok 同一副骨架）。
-# 想关掉：`set VBECOMPLETE_NO_CTRL_NAV=1`（Ctrl+↑/↓ 原样交给 VBE，而 VBE
+# 想关掉：`set VBECOMPLETE_NO_CTRL_NAV=1`（Ctrl+Shift+↑/↓ 原样交给 VBE，而 VBE
 # 原生这两个组合什么都不做）。
 CTRL_NAV_JUMP = not settings.flag("NO_CTRL_NAV", False)
 
@@ -1777,8 +1786,8 @@ def main():
             send_vk(VK_UP if delta < 0 else VK_DOWN)
 
     def _ctrl_nav_jump_here(direction):
-        """Ctrl+↑（direction<0）/ Ctrl+↓（direction>0）：跳到当前过程里
-        声明区末尾 / 过程末尾的空白行（★v110）。
+        """Ctrl+Shift+↑（direction<0）/ Ctrl+Shift+↓（direction>0）：跳到当前过程里
+        声明区末尾 / 过程末尾的空白行（★v110；键位在 v126c 加了 Shift）。
 
         用户口径（原话）："当我按 ctrl+↑，光标会自动定位到当前过程中最后一个
         dim 关键字行，如果此行的下一行不是空行，就自动在此行下方新增一行，
@@ -1788,8 +1797,8 @@ def main():
         顺序与 _move_caret_here 一致：先收窗（光标要换行了，列表留着没意义），
         再用 COM 落光标。COM 没落成（VBE 正忙 / 代理失效 / 判据不成立，比如
         光标在模块声明区、或本过程一个 Dim 都没有）就把这一下按键原样还给
-        系统 —— 绝不"吞掉按键却什么都没发生"。VBE 原生 Ctrl+↑/↓ 什么都不做，
-        所以还回去也只是"什么都不会发生"，不会和原生行为打架。
+        系统 —— 绝不"吞掉按键却什么都没发生"。VBE 原生 Ctrl+Shift+↑/↓ 什么都
+        不做，所以还回去也只是"什么都不会发生"，不会和原生行为打架。
 
         ★改过代码文本 + 移过光标，必须当场作废快照（state["cur_ctx"] = None）：
         快照是轮询刷的，不作废的话随后一次轮询会拿旧行文本去比对，平白多弹
@@ -1799,9 +1808,9 @@ def main():
         缩进**（照抄"尾行上方最后一条非空行"的行首空白）。缩进补不出来（开关
         关着）不影响本函数的成败判定 —— 光标落好就算成功。
 
-        ★v110c（用户改口径）：Ctrl+↑ 改成"光标落到本过程最后一个 Dim 行的
+        ★v110c（用户改口径）：Ctrl+Shift+↑ 改成"光标落到本过程最后一个 Dim 行的
         行尾"，后端不再插行、也不补缩进（写入方式 `"eol"`）；判据与落光标仍与
-        Ctrl+↓ 共用同一条路径，本函数不用改。
+        Ctrl+Shift+↓ 共用同一条路径，本函数不用改。
         """
         try:
             completer.hide()
@@ -1815,7 +1824,10 @@ def main():
         state["cur_ctx"] = None
         if not _ok:
             _log("ctrlnav: 未接管 -> 按键原样还给系统 (direction=%d)" % direction)
-            send_vk(VK_UP if direction < 0 else VK_DOWN, ctrl=True)
+            # ★v126c：还回去的必须是**用户按的那一组**（Ctrl+Shift+↑/↓），
+            # 少发一个 Shift 就变成 VBE 原生 Ctrl+↑/↓ —— 那是"跳到上一个过程"，
+            # 与用户按的不是一回事。
+            send_vk(VK_UP if direction < 0 else VK_DOWN, ctrl=True, shift=True)
 
     def _auto_pair_here(ch):
         """自动配对（`(` -> `()`、`"` -> `""`、右半边已存在则跨过去）。
@@ -1991,7 +2003,7 @@ def main():
             return False
 
     def _ctrl_nav_key_ok(vk):
-        """这一下 Ctrl+↑ / Ctrl+↓ 要不要由我们接管（★v110，跑在键盘钩子线程）。
+        """这一下 Ctrl+Shift+↑ / Ctrl+Shift+↓ 要不要由我们接管（★v110/v126c，跑在键盘钩子线程）。
 
         与 v94 / v99 同一副骨架：钩子线程只读【本地状态】、绝不碰 COM。但有一
         处根本不同 —— 这里【不读快照、也不做任何代码判据】。"当前过程的最后
@@ -2311,15 +2323,17 @@ def main():
                     _log("autopair: 钩子接管 vk=0x%X -> %r"
                          % (vk, _ime_ch))
                 elif _ctrl_nav_key_ok(vk):
-                    # ★v110：Ctrl+↑ / Ctrl+↓ = 在当前过程内跳转（跳到声明区
-                    # 末尾 / 过程末尾的空白行）。判据见 _ctrl_nav_key_ok，写入
-                    # 见 _ctrl_nav_jump_here。
+                    # ★v110：Ctrl+Shift+↑ / Ctrl+Shift+↓ = 在当前过程内跳转（跳到
+                    # 声明区末尾 / 过程末尾的空白行）。判据见 _ctrl_nav_key_ok，
+                    # 写入见 _ctrl_nav_jump_here。★v126c 键位加了 Shift（用户口径）。
                     #
                     # ⚠️ 刻意排在下面 `completer.is_visible()` 那条【之前】：
-                    # 候选窗开着时 ↑/↓ 的既有分支不分辨修饰键，会把 Ctrl+↑
+                    # 候选窗开着时 ↑/↓ 的既有分支不分辨修饰键，会把 Ctrl+Shift+↑
                     # 当成"在列表里选词"吞掉 —— 而用户正一边打字（列表正开着）
                     # 一边想跳去声明区，那时被列表抢走最难受。与 v90b 的 Tab
                     # 同一条理：这个键是用户要的，不是列表要的。
+                    # （也正因为它排在那条之前，Ctrl+Shift+↑ 不会被下面的
+                    #  `_is_line_nav_shortcut`（只认 Shift）当成"扩选"抢走。）
                     action = (_ctrl_nav_jump_here,
                               (-1 if vk == VK_UP else 1,))
                     suppress = True

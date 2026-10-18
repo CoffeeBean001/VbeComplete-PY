@@ -103,9 +103,9 @@ KNOWN = (
      "0 = 旧行为（内容变就弹）"),
     # ---- 快捷键 ----
     ("NO_CTRL_NAV", "0",
-     "`Ctrl+↑` / `Ctrl+↓` 跳转（最后一个 Dim / 收尾区）。1 = 关，按键交还 VBE"),
+     "`Ctrl+Shift+↑` / `Ctrl+Shift+↓` 跳转（最后一个 Dim / 收尾区）。1 = 关，按键交还 VBE"),
     ("NO_CTRL_NAV_TAB", "0",
-     "`Ctrl+↓` 保留跳转但不补缩进。1 = 不补"),
+     "`Ctrl+Shift+↓` 保留跳转但不补缩进。1 = 不补"),
     ("NO_SHIFT_NAV", "0",
      "`Shift+↑/↓` 跳出候选列表并上下移一行。1 = 关"),
     ("NO_SNIPPETS", "0",

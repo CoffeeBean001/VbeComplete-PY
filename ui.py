@@ -25,7 +25,10 @@ NAME_CHARS = 30                # 列表宽度【固定】容纳这么多字符�
 ELLIPSIS = "..."               # 超长名字的省略号（仿 IDEA：放不下的字符用 ... 代替）
 
 # ---- 配色 ----
-COLOR_BG = "#FFFFF0"        # 未选中行底色（沿用原来的淡黄）
+# ★v126c（用户口径 2026-10-18）："提示词列表框的背景色，改成白色，提示词滚动条
+# 颜色改成淡灰色，跟 vbe 的那个提示词颜色一样。" —— 原来是淡黄底 + 米色滚动条，
+# 与 VBE 自己的成员列表（白底 / 系统浅灰滚动条）摆在一起明显是两个东西。
+COLOR_BG = "#FFFFFF"        # 未选中行底色：白（与 VBE 自己的成员列表一致）
 COLOR_FG = "#202020"        # 未选中行文字
 COLOR_HIT = "#C00000"       # 命中字符：红（用户要求"更醒目"）
 COLOR_SEL_BG = "#2A5CAA"    # 选中行底色
@@ -34,14 +37,14 @@ COLOR_SEL_HIT = "#FFD24A"   # 选中行命中字符：暖黄
 #                              不用红色是因为红字压在深蓝底上对比度太差、反而看不清，
 #                              换成暖黄后在任何背景下都跳出来。
 COLOR_HOVER_BG = "#EAF1FB"  # 鼠标悬停行底色（浅蓝，与选中的深蓝区分）
-COLOR_DETAIL_BG = "#F4F3EC" # 详情行（完整名字）底色
+COLOR_DETAIL_BG = "#F7F7F7" # 详情行（完整名字）底色（原来偏米色，白底下像没刷干净）
 COLOR_DETAIL_FG = "#333333" # 详情行文字
-COLOR_DETAIL_SEP = "#D9D5C6"  # 详情行与列表之间的分隔线
+COLOR_DETAIL_SEP = "#E0E0E0"  # 详情行与列表之间的分隔线
 
 SCROLL_W = 7                # 纵向滚动条宽度（只在候选数超过一屏时出现）
 SCROLL_PAD = 2              # 滚动条与名字之间的留白
-COLOR_SCROLL_TRACK = "#E8E4D0"
-COLOR_SCROLL_THUMB = "#B0A98C"
+COLOR_SCROLL_TRACK = "#F0F0F0"   # 滚动条槽：淡灰（VBE 那套系统灰）
+COLOR_SCROLL_THUMB = "#C8C8C8"   # 滚动条滑块：比槽深一档的淡灰
 
 PAD_X = 6                   # 行内左右留白
 

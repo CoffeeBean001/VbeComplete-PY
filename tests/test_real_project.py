@@ -16945,7 +16945,7 @@ def main():
         check("第 92 节异常: %s" % _e92, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
-    # 93. ★v110：Ctrl+↑ / Ctrl+↓ 跳到声明区末尾 / 过程末尾的空白行
+    # 93. ★v110：Ctrl+Shift+↑ / Ctrl+Shift+↓ 跳到声明区末尾 / 过程末尾的空白行
     #     用户口径（原话）："当我按 ctrl+↑，光标会自动定位到当前过程中最后一个
     #     dim 关键字行，如果此行的下一行不是空行，就自动在此行下方新增一行，
     #     光标移动到下方空白行；如果此行的下一行是空白行，就不用新增行，光标
@@ -16957,7 +16957,8 @@ def main():
     #     【此刻真读到的】模块文本重算（vbe_bridge.ctrl_nav_jump_plan +
     #     VbeBackend.ctrl_nav_jump），写不成就把按键原样还给系统。
     # ------------------------------------------------------------------
-    print("\n=== 93. ★v110/v110c：Ctrl+↑ 落到最后一个 Dim 行行尾 / Ctrl+↓ 跳到过程末尾 ===")
+    print("\n=== 93. ★v110/v110c/v126c：Ctrl+Shift+↑ 落到最后一个 Dim 行行尾 / "
+          "Ctrl+Shift+↓ 跳到过程末尾 ===")
     try:
         import main as _MN93
         import ast as _ast93
@@ -17157,25 +17158,29 @@ def main():
               [_g93b], expect_contain=[_w93b])
 
         # ---- 93.3 修饰键门槛（模块级纯函数）----
+        # ★v126c：键位从 `Ctrl+↑/↓` 改成 `Ctrl+Shift+↑/↓`（用户口径），所以
+        # 判据翻了个面：**必须同时按着 Ctrl 和 Shift**，单按 Ctrl 不再算。
         _U, _D = _MN93.VK_UP, _MN93.VK_DOWN
         _g93c = (
-            _MN93._ctrl_nav_vk_ok(_U, True, False, False, False),
-            _MN93._ctrl_nav_vk_ok(_D, True, False, False, False),
-            _MN93._ctrl_nav_vk_ok(_U, False, False, False, False),   # 普通 ↑
-            _MN93._ctrl_nav_vk_ok(_D, False, False, False, False),
+            _MN93._ctrl_nav_vk_ok(_D, True, True, False, False),     # Ctrl+Shift+↓
             _MN93._ctrl_nav_vk_ok(_U, True, True, False, False),     # Ctrl+Shift+↑
-            _MN93._ctrl_nav_vk_ok(_U, True, False, True, False),     # Ctrl+Alt+↑
-            _MN93._ctrl_nav_vk_ok(_U, True, False, False, True),     # Win+↑
-            _MN93._ctrl_nav_vk_ok(_MN93.VK_RETURN, True, False, False, False),
-            _MN93._ctrl_nav_vk_ok(_MN93.VK_TAB, True, False, False, False),
-            _MN93._ctrl_nav_vk_ok(_MN93.VK_LEFT, True, False, False, False),
+            _MN93._ctrl_nav_vk_ok(_U, True, False, False, False),    # 单按 Ctrl
+            _MN93._ctrl_nav_vk_ok(_D, True, False, False, False),
+            _MN93._ctrl_nav_vk_ok(_U, False, True, False, False),    # 单按 Shift
+            _MN93._ctrl_nav_vk_ok(_U, False, False, False, False),   # 普通 ↑
+            _MN93._ctrl_nav_vk_ok(_U, True, True, True, False),      # Ctrl+Shift+Alt+↑
+            _MN93._ctrl_nav_vk_ok(_U, True, True, False, True),      # Ctrl+Shift+Win+↑
+            _MN93._ctrl_nav_vk_ok(_MN93.VK_RETURN, True, True, False, False),
+            _MN93._ctrl_nav_vk_ok(_MN93.VK_TAB, True, True, False, False),
+            _MN93._ctrl_nav_vk_ok(_MN93.VK_LEFT, True, True, False, False),
         )
-        check("93.3 `main._ctrl_nav_vk_ok`（纯函数）：只有「单独按着 Ctrl 的 "
-              "↑/↓」算数；Ctrl 没按 / Shift+Alt+Win 任一在按 / 别的键，一律 False "
-              "—— Win 那道尤其不能少（Win+↑ 是系统的窗口最大化，吞了要出事）",
+        check("93.3 `main._ctrl_nav_vk_ok`（纯函数）：只有「**同时**按着 Ctrl 和 Shift "
+              "的 ↑/↓」算数（★v126c 把键位从 Ctrl+↑/↓ 改成 Ctrl+Shift+↑/↓，"
+              "单按 Ctrl / 单按 Shift / 两个都不按 / Alt+Win 任一在按 / 别的键，"
+              "一律 False —— Win 那道尤其不能少（Win+↑ 是系统的窗口最大化，吞了要出事）",
               [_g93c],
               expect_contain=[(True, True, False, False, False, False,
-                               False, False, False, False)])
+                               False, False, False, False, False)])
 
         # ---- 93.4 send_vk(ctrl=True)：修饰键必须反序松开 ----
         _cap93 = []
@@ -17192,17 +17197,23 @@ def main():
             _rc_c93 = _MN93.send_vk(_U, ctrl=True)
             _seq_c93 = list(_cap93)
             _cap93.clear()
+            _rc_cs93 = _MN93.send_vk(_D, ctrl=True, shift=True)
+            _seq_cs93 = list(_cap93)
+            _cap93.clear()
             _rc_p93 = _MN93.send_vk(_D)          # 老调用方式：两个参数
             _seq_p93 = list(_cap93)
         finally:
             _ct93.windll.user32.SendInput = _old_si93
-        check("93.4 `main.send_vk(vk, ctrl=True)`：兜底重发 Ctrl+↑/↓ 用。"
-              "序列必须是 Ctrl↓ → 键↓ → 键↑ → Ctrl↑（修饰键【反序】松开，"
-              "否则宿主可能看到\"Ctrl 还按着\"的残留）；不传 ctrl 时老行为"
-              "不变（就两个事件）",
-              [(_rc_c93, _seq_c93, _rc_p93, _seq_p93)],
+        check("93.4 `main.send_vk` 的三档：①`ctrl=True` 兜底重发 Ctrl+↑/↓；"
+              "②★v126c `ctrl=True, shift=True` 兜底重发 Ctrl+Shift+↑/↓ —— "
+              "修饰键按【按下顺序】逐个按下、发完这个键再【反序】松开"
+              "（Ctrl↓ Shift↓ 键↓ 键↑ Shift↑ Ctrl↑）；③不传修饰键时老行为不变",
+              [(_rc_c93, _seq_c93, _rc_cs93, _seq_cs93, _rc_p93, _seq_p93)],
               expect_contain=[(True,
                                [(0x11, 0), (0x26, 0), (0x26, 2), (0x11, 2)],
+                               True,
+                               [(0x11, 0), (0x10, 0), (0x28, 0), (0x28, 2),
+                                (0x10, 2), (0x11, 2)],
                                True, [(0x28, 0), (0x28, 2)])])
 
         # ---- 93.5 结构护栏（AST；源码字符串会被注释喂饱，见 v108 教训）----
@@ -17247,20 +17258,22 @@ def main():
                                 and "NO_CTRL_NAV" in _d93
                                 and "Constant(value=False)" in _d93):
                             _env_ok93 = True
-        check("93.5 结构护栏（AST）：（a）Ctrl+↑/↓ 分支必须排在 `completer."
+        check("93.5 结构护栏（AST）：（a）Ctrl+Shift+↑/↓ 分支必须排在 `completer."
               "is_visible()` 【之前】—— 候选窗开着时 ↑/↓ 那条分支不分辨修饰键，"
               "晚一步就被列表抢走（用户正一边打字一边想跳去声明区）；（b）该分支"
               "确实吞键并派发 _ctrl_nav_jump_here；（c）动作里作废快照 "
               "state[\"cur_ctx\"]（改过文本+移过光标）且兜底是 send_vk(..., "
-              "ctrl=True)；（d）后端 ctrl_nav_jump 调的是纯函数 ctrl_nav_jump_plan"
-              "（同一份实现）；（e）开关默认开、且走配置中心"
+              "ctrl=True, shift=True) —— ★v126c：少发一个 Shift 就变成 VBE 原生的"
+              "\"跳到上一个过程\"；（d）后端 ctrl_nav_jump 调的是纯函数 "
+              "ctrl_nav_jump_plan（同一份实现）；（e）开关默认开、且走配置中心"
               "（`not settings.flag(\"NO_CTRL_NAV\", False)`）",
               [(_ln_ctrl93 < _ln_popup93, _branch_ok93,
                 "value='cur_ctx'" in _act_d93,
                 "arg='ctrl'" in _act_d93,
+                "arg='shift'" in _act_d93,
                 "id='ctrl_nav_jump_plan'" in _be_d93,
                 _env_ok93 and _MN93.CTRL_NAV_JUMP is True)],
-              expect_contain=[(True, True, True, True, True, True)])
+              expect_contain=[(True, True, True, True, True, True, True)])
 
         # ---- 93.6 逃生门：VBECOMPLETE_NO_CTRL_NAV=1 -> 默认值必须是 False ----
         _old_env93 = os.environ.get("VBECOMPLETE_NO_CTRL_NAV")
@@ -17281,7 +17294,7 @@ def main():
             else:
                 os.environ["VBECOMPLETE_NO_CTRL_NAV"] = _old_env93
         check("93.6 逃生门：`set VBECOMPLETE_NO_CTRL_NAV=1` 之后重新加载的 "
-              "main 里 CTRL_NAV_JUMP 必须是 False（ Ctrl+↑/↓ 原样交给 VBE）；"
+              "main 里 CTRL_NAV_JUMP 必须是 False（ Ctrl+Shift+↑/↓ 原样交给 VBE）；"
               "当前实例默认是 True",
               [(_fresh_ctrl93, _MN93.CTRL_NAV_JUMP)],
               expect_contain=[(False, True)])
@@ -17290,7 +17303,7 @@ def main():
         _tp93.print_exc()
         check("第 93 节异常: %s" % _e93, [True], expect_contain=[False])
 
-    print("\n=== 94. ★v110b/2：Ctrl+↓ 落点直接写成过程体层级缩进 ===")
+    print("\n=== 94. ★v110b/2：Ctrl+Shift+↓ 落点直接写成过程体层级缩进 ===")
     try:
         import ast as _ast94
         VB94 = VB
@@ -17324,10 +17337,10 @@ def main():
             (2, "eol", None),
             None,
         )
-        check("94.1 `ctrl_nav_jump_plan` 的**过程体缩进**：Ctrl+↓ 的落点缩进 = "
+        check("94.1 `ctrl_nav_jump_plan` 的**过程体缩进**：Ctrl+Shift+↓ 的落点缩进 = "
               "尾行上方最后一条非空行的行首空白 —— 一级过程体、多级嵌套"
               "（抄 `End If` 那一级）、空过程（顶格）都对；用户自己摆过缩进的"
-              "空白行一律不动（绝不加深）；★v110c 的 Ctrl+↑ 一个字节都不写"
+              "空白行一律不动（绝不加深）；★v110c 的 Ctrl+Shift+↑ 一个字节都不写"
               "（写入方式 \"eol\"，只落 Dim 行行尾）",
               [_g94], expect_contain=[_w94])
 
@@ -21655,6 +21668,67 @@ def main():
         import traceback as _tp114
         _tp114.print_exc()
         check("第 114 节异常: %s" % _e114, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
+    # 115. ★v126c：候选窗配色 —— 白底 + 淡灰滚动条（跟 VBE 自己那个提示列表一样）
+    #     用户口径（原话）："提示词列表框的背景色，改成白色，提示词滚动条颜色改成
+    #     淡灰色，跟vbe的那个提示词颜色一样。"
+    # ------------------------------------------------------------------
+    print("\n=== 115. ★v126c：候选窗白底 + 淡灰滚动条 ===")
+    try:
+        import ui as _ui115
+        _uisrc115 = io.open(os.path.join(ROOT, "ui.py"),
+                            encoding="utf-8").read()
+
+        def _rgb115(s):
+            """'#RRGGBB' -> (r, g, b)；解析不了返回 None。"""
+            _t = str(s or "").strip().lstrip("#")
+            if len(_t) != 6:
+                return None
+            try:
+                return (int(_t[0:2], 16), int(_t[2:4], 16), int(_t[4:6], 16))
+            except Exception:
+                return None
+
+        _bg115 = _rgb115(_ui115.COLOR_BG)
+        _tr115 = _rgb115(_ui115.COLOR_SCROLL_TRACK)
+        _th115 = _rgb115(_ui115.COLOR_SCROLL_THUMB)
+        _dt115 = _rgb115(_ui115.COLOR_DETAIL_BG)
+
+        def _is_gray115(c):
+            return c is not None and c[0] == c[1] == c[2]
+
+        check("115.1 列表底色是**纯白** `#FFFFFF`；滚动条的槽与滑块都是**灰阶**"
+              "（R=G=B，跟 VBE 那套系统灰一个路数），且层次是 白底 > 槽 > 滑块 ——"
+              "滑块比槽深一档才看得见；详情行底色也必须是灰阶（原来偏米色，"
+              "压在纯白列表下面像没刷干净）",
+              [(_bg115 == (255, 255, 255),
+                _is_gray115(_tr115), _is_gray115(_th115),
+                _is_gray115(_dt115),
+                bool(_bg115 and _tr115 and _th115
+                     and _bg115[0] > _tr115[0] > _th115[0]),
+                # 淡灰：不许淡到看不见，也不许深到抢戏（滑块 150~215）
+                bool(_th115 and 150 <= _th115[0] <= 215))],
+              expect_contain=[(True, True, True, True, True, True)])
+
+        check("115.2 旧的米色系一个都不许回来（它们是「淡黄底 + 米色滚动条」那一版"
+              "留下的）：`#FFFFF0` 底 / `#E8E4D0` 槽 / `#B0A98C` 滑块 / "
+              "`#F4F3EC` 详情底 / `#D9D5C6` 分隔线 —— 源码里出现任何一个都算没改净",
+              [([_c for _c in ("#FFFFF0", "#E8E4D0", "#B0A98C",
+                               "#F4F3EC", "#D9D5C6") if _c in _uisrc115],)],
+              expect_contain=[([],)])
+
+        check("115.3 源码护栏：滚动条**画的时候**真的用的是这两个常量"
+              "（改常量却忘了接线 = 白改），窗口底用的是 COLOR_BG —— "
+              "同一条语义只能有一份实现，别再冒出硬编码的 `#F0F0F0` 之类",
+              [(_uisrc115.count("fill=COLOR_SCROLL_TRACK"),
+                _uisrc115.count("fill=COLOR_SCROLL_THUMB"),
+                "bg=COLOR_BG" in _uisrc115)],
+              expect_contain=[(1, 1, True)])
+    except Exception as _e115:
+        import traceback as _tp115
+        _tp115.print_exc()
+        check("第 115 节异常: %s" % _e115, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原

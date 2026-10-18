@@ -47,8 +47,8 @@ autostart on login · `run_tests.bat` runs the offline regression suite.
 | `Enter` *(at end of line)* | New line with smart indentation, plus an automatic block closer |
 | `Shift+Enter` | Start a new line below, leaving the current one intact |
 | `Backspace` | Delete a whitespace-only line, or both halves of an empty pair |
-| `Ctrl+↑` | Put the caret at the **end of the last `Dim` line** of the procedure (no line is inserted) |
-| `Ctrl+↓` | Jump to the blank line above `End Sub` / `End Function` (inserting one if needed) and write it at the procedure's indent level |
+| `Ctrl+Shift+↑` | Put the caret at the **end of the last `Dim` line** of the procedure (no line is inserted) |
+| `Ctrl+Shift+↓` | Jump to the blank line above `End Sub` / `End Function` (inserting one if needed) and write it at the procedure's indent level |
 | `Ctrl+Q` | Open the **snippet window** at the caret: title list on the left (fuzzy search box), code on the right; add / edit / delete, and insert the snippet at the caret |
 | `Ctrl+/` | **Toggle line comment** (IDEA-style): on every line of the selection, or the caret's line when there is none — removes the comment when all of them already have one, otherwise adds it |
 | `Ctrl+Shift+O` | **Outline of this module**: every `Sub` / `Function` / `Property` / `Declare` in it — fuzzy search, **click** (or `Enter`) to jump |

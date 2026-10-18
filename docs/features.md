@@ -71,15 +71,19 @@
   block you just opened (`End Sub`, `Next i`, …).
 - `Shift+Enter` starts a new line below without splitting the current one — the same indentation
   logic as `Enter`, at any column.
-- **`Ctrl+↑` / `Ctrl+↓` jump inside a procedure.** `Ctrl+↑` puts the caret at the **end of the
-  last `Dim` line** of the current procedure — no new line is inserted. `Ctrl+↓` moves the caret to
+- **`Ctrl+Shift+↑` / `Ctrl+Shift+↓` jump inside a procedure.** `Ctrl+Shift+↑` puts the caret at the **end of the
+  last `Dim` line** of the current procedure — no new line is inserted. `Ctrl+Shift+↓` moves the caret to
   the line *above* `End Sub` / `End Function` / `End Property`; if that line is not blank yet, a
   blank line is inserted first, and it is written at the procedure's indent level (copied from the
   last non-blank line above), so the caret drops straight where you can keep typing; a line that
-  already carries indentation is left untouched. VBE's own `Ctrl+↑` / `Ctrl+↓` do nothing in a code
+  already carries indentation is left untouched. VBE's own `Ctrl+Shift+↑` / `Ctrl+Shift+↓` do nothing in a code
   pane, so the key is handed back to the system untouched when the move cannot be made (no procedure,
-  no `Dim`, or a read-only module for `Ctrl+↓`). Use `VBECOMPLETE_NO_CTRL_NAV=1` to disable, or
-  `VBECOMPLETE_NO_CTRL_NAV_TAB=1` to keep the `Ctrl+↓` jump but never add the indent.
+  no `Dim`, or a read-only module for `Ctrl+Shift+↓`). Use `VBECOMPLETE_NO_CTRL_NAV=1` to disable, or
+  `VBECOMPLETE_NO_CTRL_NAV_TAB=1` to keep the `Ctrl+Shift+↓` jump but never add the indent.
+  (v126c moved these from `Ctrl+↑` / `Ctrl+↓` to `Ctrl+Shift+↑` / `Ctrl+Shift+↓`; only the modifier
+  gate changed — the plan, the landing spot and both backend methods are the same code. The fallback
+  `send_vk` re-sends the full combination, because dropping Shift would replay VBE's own
+  *previous procedure* jump instead of the key the user pressed.)
 - **v115 — snippet library (`Ctrl+Q`).** A window opens at the caret: title list on the left,
   code box on the right. Clicking a title shows its code; **Insert at caret** writes it into the
   editor, closes the window and gives focus back to the VBE. The store is SQLite with **two
@@ -315,6 +319,13 @@
   explicitly excluded (`LLKHF_INJECTED`), so nothing can self-trigger.
   `VBECOMPLETE_REQUIRE_KEY_TRIGGER=0` restores the old behaviour.
 
+- **v126c — the list looks like the VBE's own.** The candidate list is now plain **white** and its
+  scrollbar is **light grey** (`COLOR_SCROLL_TRACK` / `COLOR_SCROLL_THUMB` in `ui.py`); it used to be
+  cream with a beige scrollbar, which read as a foreign window next to the VBE's own member list. The
+  detail strip moved from beige `#F4F3EC` to light grey `#F7F7F7` for the same reason. All of these are
+  constants at the top of `ui.py`. (Same version moved the intra-procedure jumps to
+  `Ctrl+Shift+↑` / `Ctrl+Shift+↓`, see above.)
+
 **Coexistence**
 
 - After `object.`, VbeComplete steps aside and lets the VBE's own, type-aware member list take over.
@@ -402,8 +413,8 @@ different ini file (portable installs and tests).
 | `VBECOMPLETE_NO_IME_PUNCT` | off | `1` always pairs with half-width `()` / `""`, even when the IME is in Chinese-punctuation / full-width mode. |
 | `VBECOMPLETE_NO_BS_DELLINE` / `VBECOMPLETE_NO_BS_DELPAIR` | off | `1` disables the two `Backspace` helpers. |
 | `VBECOMPLETE_NO_ENTER_INDENT` / `VBECOMPLETE_NO_AUTOCLOSE` | off | `1` disables `Enter`-time indentation / automatic block closers. |
-| `VBECOMPLETE_NO_CTRL_NAV` | off | `1` disables the `Ctrl+↑` / `Ctrl+↓` jumps; the keys stay with the VBE. |
-| `VBECOMPLETE_NO_CTRL_NAV_TAB` | off | `1` keeps the `Ctrl+↓` jump but never adds the procedure-level indent to the landing line. |
+| `VBECOMPLETE_NO_CTRL_NAV` | off | `1` disables the `Ctrl+Shift+↑` / `Ctrl+Shift+↓` jumps; the keys stay with the VBE. |
+| `VBECOMPLETE_NO_CTRL_NAV_TAB` | off | `1` keeps the `Ctrl+Shift+↓` jump but never adds the procedure-level indent to the landing line. |
 | `VBECOMPLETE_NO_SNIPPETS` | off | `1` disables the `Ctrl+Q` snippet window; the key stays with the VBE. |
 | `VBECOMPLETE_NO_COMMENT` | off | `1` disables `Ctrl+/` comment toggling; the key stays with the VBE. |
 | `VBECOMPLETE_NO_OUTLINE` | off | `1` disables the `Ctrl+Shift+O` module outline. |
