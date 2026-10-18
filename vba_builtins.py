@@ -312,6 +312,22 @@ ACTIVE_BUILTIN_LOWER = frozenset(
 # 词库状态（`load_active()` 之后才有意义，给自检 / 排错 / 测试看）
 WORDBANK_INFO = {"loaded": False, "path": "", "counts": {}, "error": "未尝试加载"}
 
+# ★v125：内建函数的【形参签名】—— {小写函数名: 括号内原文}。
+#   与 ACTIVE_FUNCTIONS 同源（同一个库、同一次加载），但**不作为候选池使用**：
+#   它只在"补完括号那一瞬间"被查一次（冷路径）。
+#   查不到 = 没有签名；空串 = 真·无参函数（`Now()`）——两者必须能分开。
+#   来源优先级：词库 signatures 表 > `vba_signatures.py` 种子。
+ACTIVE_SIGNATURES = {}
+
+
+def _seed_signatures():
+    """`vba_signatures.py` 里的种子（惰性导入，顶层仍然零 import）。"""
+    try:
+        import vba_signatures
+        return {str(n).lower(): str(s or "") for n, s in vba_signatures.SIGNATURES}
+    except Exception:
+        return {}
+
 
 def seed_rows():
     """种子行：首次建库时写进 SQLite 的那批。-> [(name, kind, is_b, en, ws, note)]
@@ -342,7 +358,9 @@ def load_active(force=False):
     """
     global ACTIVE_FUNCTIONS, ACTIVE_CONSTANTS, ACTIVE_TYPE_NAMES, ACTIVE_KEYWORDS
     global ACTIVE_FUNCTION_LOWER, ACTIVE_TYPE_LOWER, ACTIVE_KEYWORD_LOWER
-    global ACTIVE_KEYWORD_SPACE, ACTIVE_BUILTIN_LOWER
+    global ACTIVE_KEYWORD_SPACE, ACTIVE_BUILTIN_LOWER, ACTIVE_SIGNATURES
+    # 先把签名按种子铺好 —— 后面无论走哪条分支，它至少是可用的（v125）
+    ACTIVE_SIGNATURES = _seed_signatures()
     try:
         import wordbank
     except Exception as e:                           # pragma: no cover
@@ -387,8 +405,18 @@ def load_active(force=False):
     ACTIVE_KEYWORD_SPACE = frozenset(space)
     ACTIVE_BUILTIN_LOWER = frozenset(
         r[0].lower() for r in snap.rows if r[2])
+    # ★v125：签名以**库为准**，库里没有的才用种子兜底。
+    # 为什么方向是"库覆盖种子"而不是反过来：用户改签名（比如把 `MsgBox` 的
+    # 五个参数缩成两个）就是想让自己的版本生效；而种子只是"没得选时的默认"。
+    _sigs = _seed_signatures()
+    try:
+        _sigs.update(dict(getattr(snap, "sigs", None) or {}))
+    except Exception:
+        pass
+    ACTIVE_SIGNATURES = _sigs
     WORDBANK_INFO.update({"loaded": True, "path": snap.path,
-                          "counts": dict(snap.counts), "error": ""})
+                          "counts": dict(snap.counts), "error": "",
+                          "sigs": len(ACTIVE_SIGNATURES)})
     return True
 
 
@@ -396,7 +424,8 @@ def reset_active():
     """退回种子（`NO_WORDBANK=1` 或测试用）。"""
     global ACTIVE_FUNCTIONS, ACTIVE_CONSTANTS, ACTIVE_TYPE_NAMES, ACTIVE_KEYWORDS
     global ACTIVE_FUNCTION_LOWER, ACTIVE_TYPE_LOWER, ACTIVE_KEYWORD_LOWER
-    global ACTIVE_KEYWORD_SPACE, ACTIVE_BUILTIN_LOWER
+    global ACTIVE_KEYWORD_SPACE, ACTIVE_BUILTIN_LOWER, ACTIVE_SIGNATURES
+    ACTIVE_SIGNATURES = _seed_signatures()
     ACTIVE_FUNCTIONS = BUILTIN_FUNCTIONS
     ACTIVE_CONSTANTS = BUILTIN_CONSTANTS
     ACTIVE_TYPE_NAMES = BUILTIN_TYPE_NAMES

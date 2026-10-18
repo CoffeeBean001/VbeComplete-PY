@@ -1073,10 +1073,43 @@ PERSIST_RECENT = not _settings.flag("NO_RECENT_PERSIST", False)
 VIEW_ROWS = 15
 
 
+# ★v125：内建签名表的兜底缓存。
+# `vba_builtins.ACTIVE_SIGNATURES` 只在 `load_active()` 之后才有内容；而签名
+# 查询是**冷路径**（补完括号才查一次），没必要为了它让 `vba_builtins` 在顶层
+# 多 import 一个模块。所以：词库加载过就用词库那份；没加载过就用种子文件，
+# 并且把种子表缓存下来（132 条，重建一次几微秒，但也没必要每次重建）。
+_SIG_SEED_CACHE = {"table": None}
+
+
+def builtin_signature_table():
+    """{小写函数名: 形参表原文} —— 词库快照优先，退回 `vba_signatures` 种子。"""
+    try:
+        import vba_builtins as _vb
+        tbl = getattr(_vb, "ACTIVE_SIGNATURES", None) or {}
+    except Exception:
+        tbl = {}
+    if tbl:
+        return tbl
+    cached = _SIG_SEED_CACHE.get("table")
+    if cached is not None:
+        return cached
+    try:
+        import vba_signatures as _vs
+        table = {str(n).lower(): str(s or "") for n, s in _vs.SIGNATURES}
+    except Exception:
+        table = {}
+    _SIG_SEED_CACHE["table"] = table
+    return table
+
+
 class Completer:
-    def __init__(self, backend, ui, view_rows=VIEW_ROWS):
+    def __init__(self, backend, ui, view_rows=VIEW_ROWS, on_signature=None):
         self.backend = backend
         self.ui = ui
+        # ★v125：补完 `()` 之后弹形参签名条的回调：on_signature(名字, 形参表, 返回类型)。
+        # 由 main 注入（它才知道 UI 那个窗）；不注入 = 这个功能整个不启用，
+        # 引擎其余行为一个字节都不变（旧式/测试后端、离线用例照旧）。
+        self.on_signature = on_signature
         self.visible = False
         self.matches = []
         self.selected = 0
@@ -1619,6 +1652,62 @@ class Completer:
             return _vb.ACTIVE_TYPE_LOWER
         except Exception:
             return frozenset()
+
+    def _signature_of(self, name):
+        """查一个名字的形参签名 -> (形参表原文, 返回类型)；查不到返回 None。★v125
+
+        查找顺序：**工程里声明过的过程优先**（用户自己的代码最权威 —— 他可能
+        昨天刚给函数加了两个参数），然后才是语言自带的函数（词库 signatures 表，
+        见 `vba_builtins.ACTIVE_SIGNATURES`）。
+
+        ⚠️ "查不到"和"签名是空"必须分开：`Now()` 是"有空签名"（显示成 `Now()`），
+        而一个解析不出来的名字是"不知道"—— 后者**不弹**，绝不猜一个出来。
+        """
+        low = str(name or "").lower()
+        if not low:
+            return None
+        hook = getattr(self.backend, "get_proc_signatures", None)
+        if callable(hook):
+            try:
+                d = hook() or {}
+                if low in d:
+                    p, r = d[low]
+                    return ("" if p is None else str(p), str(r or ""))
+            except Exception:
+                pass
+        try:
+            sigs = builtin_signature_table()
+            if low in sigs:
+                return (str(sigs[low] or ""), "")
+        except Exception:
+            pass
+        return None
+
+    def _maybe_show_signature(self, name):
+        """补完括号后弹签名条；条件不成立就什么都不做。-> 是否弹了。★v125
+
+        三道闸门缺一不可，全部朝"宁可不弹"的方向：
+          ① main 注入了 `on_signature` 回调（没 UI 就纯逻辑，方便测试）；
+          ② 后端**真的**补出了那对括号（`_last_parens_added`）；
+          ③ 这个名字确实查得到签名。
+        任何异常一律吞掉：签名提示是锦上添花，绝不能让它影响"词已经写进去了"
+        这个既成事实（同 v103b 补空格、v107c 参数信息那条规矩）。
+        """
+        if not callable(getattr(self, "on_signature", None)):
+            return False
+        try:
+            if not bool(getattr(self.backend, "_last_parens_added", False)):
+                return False
+        except Exception:
+            return False
+        try:
+            sig = self._signature_of(name)
+            if sig is None:
+                return False
+            self.on_signature(str(name), sig[0], sig[1])
+            return True
+        except Exception:
+            return False
 
     def _proc_kinds(self):
         """后端给出的"过程名 -> sub / function / property"（小写键）。可选接口。★v103c。
@@ -3008,6 +3097,11 @@ class Completer:
                 # 旧式 / 测试后端的 apply_completion 只有 4 个位置参数。
                 self.backend.apply_completion(
                     ctx["line_no"], ctx["word_start_col"], end_col, chosen)
+            # ★v125：**真的补出了那对 `()`** 才弹形参签名条。
+            # 后端把"补没补"记在 `_last_parens_added` 上（判据的位置闸门
+            # `_is_call_site` / `_in_call_stmt` 在后端，前端不许重算一遍 ——
+            # 铁律 21）。用户自己敲的 `(` 不补括号，这里自然也不弹。
+            self._maybe_show_signature(chosen)
         except Exception:
             # 插入失败也要保证状态复位，否则弹窗会卡住不再触发
             pass

@@ -31,14 +31,21 @@
   `As`. Positions that really are just a new name (`Dim x…`, `Private Sub F…`) stay silent. The type
   position after `As` / `New` is unaffected (there you *are* referring to an existing type, so type
   names are still offered).
-- **Parameter info on accept (off by default).** Accepting a `Function` inserts `()` with the caret
-  inside. Older versions then tried to pop the VBE's own parameter-info window; on real machines
-  that is impossible from the outside — both `Ctrl+Shift+I` and the VBE menu command
-  (`CommandBars`, Id 2532) leave `PopupTipWndClass` invisible and **beep** (measured with the
-  WASAPI peak meter: 0.346 vs 0.000 for a plain line write). So nothing is triggered by default
-  and accepting a completion is silent. The VBE's own *Tools ▸ Options ▸ Editor ▸ Auto List
-  Parameter Info* still works when you type the first argument. Opt in with
-  `VBECOMPLETE_PARAM_INFO=1` (it will beep); `VBECOMPLETE_NO_PARAM_INFO=1` always wins.
+- **Parameter info on accept (our own tip).** Accepting a `Function` inserts `()` with the caret
+  inside, and **VbeComplete draws its own one-line signature tip** just under the caret:
+  `getDetailShts(`**`ByVal str As String`**`, Optional mode As Long) As Worksheet` — the first
+  argument (the one you are about to type) is highlighted, the return type is greyed. Where the
+  signature comes from:
+  - **Your own procedures** — parsed from the project source with the same regexes that decide
+    Sub/Function/Property, so all modules are covered (line continuations `_` included).
+  - **VBA built-ins** — from the `signatures` table of `wordbank.db` (seeded from
+    `vba_signatures.py`, ~130 functions). You can edit it: `py -3 wordbank.py set-sig Left "string,
+    length"`, or with any SQLite GUI; restart to take effect.
+  The tip never takes focus (so you can keep typing), disappears after ~2.4 s, and goes away on the
+  first keystroke. Why not the VBE's own window: measured on a real machine, it cannot be raised
+  from outside at all — both `Ctrl+Shift+I` and the menu command leave `PopupTipWndClass` invisible,
+  the latter beeping every time. Opt out with `VBECOMPLETE_NO_SIG_TIP=1`. (`VBECOMPLETE_PARAM_INFO=1`
+  still tries the VBE's own command, but it beeps.)
 - **Unicode identifiers.** Names such as `Dim 用户名 As String` are fully supported.
 - **Non-intrusive.** Suggestions appear only inside a VBE *code pane* — never in the Properties
   window, the Project explorer or the form designer.
@@ -362,6 +369,7 @@ different ini file (portable installs and tests).
 | `VBECOMPLETE_LOG` | off | `1` writes a diagnostic log to `VbeComplete.log` (`VBECOMPLETE_LOG_FILE` relocates it). |
 | `VBECOMPLETE_AUTO_PAREN` | on | `0` disables inserting `()` after procedures and functions. |
 | `VBECOMPLETE_AUTO_SPACE` | on | `0` disables the automatic trailing space after keywords. |
+| `VBECOMPLETE_NO_SIG_TIP` | off | `1` disables the built-in signature tip drawn after `()` is inserted. |
 | `VBECOMPLETE_PARAM_INFO` | off | `1` makes VbeComplete try the VBE's parameter-info menu command after inserting `()`. Off by default: on real machines that command cannot resolve a signature in this context and only beeps. |
 | `VBECOMPLETE_NO_PARAM_INFO` | off | `1` forces parameter info off (wins over `VBECOMPLETE_PARAM_INFO`). |
 | `VBECOMPLETE_PARAM_INFO_KEY` | off | `1` falls back to synthesising `Ctrl+Shift+I` when the host has no `CommandBars` — that path beeps too, so it is off by default. |

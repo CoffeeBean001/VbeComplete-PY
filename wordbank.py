@@ -49,6 +49,24 @@ Python 元组。想加一个自己常用的宿主 API、想把 `vbKey*` 那批�
   wants_space  仅对 keyword 有意义。NULL = 按默认排除法；1 = 一定补空格；0 = 一定不补
   note         纯备注，程序不读
 
+    signatures(name, sig)          ← ★v125
+        PRIMARY KEY (name)
+
+`sig` 是**括号里面那段原文**（`string, length`），不存函数名 —— 名字就是主键，
+  存两遍只会分叉。可选参数按 VBA 文档写成 `[length]`。空串 = 真·无参函数
+  （`Now()`），与"这个名字没有签名"（查不到行）是两件事。
+
+★ **为什么签名跟词库同一个文件、而不是"拆成两个库"**（用户提议过）：
+  用户要的是"名字与签名分开放、各自能改"—— 那用**两张表**就实现了；
+  拆成两个 .db 的话，启动要开两个连接、两套 ensure/load/CLI、两处排错，
+  而收益只是"文件能单独拷走"。代价与收益不成比例。表级拆分已经满足
+  "改签名不碰名字、改名字不碰签名"。
+
+  ⚠️ 老用户的库是 v123 建的、**没有 signatures 表**。`ensure()` 在库已存在时
+  会**只补建这张缺失的表**、并仅在**表为空**时灌种子 —— `words` 表一个字节不碰
+  （"绝不覆盖用户手改"那条铁律守的是数据，不是表结构）。建表失败（别的进程
+  锁着库）就静默跳过，签名功能退回"只有工程内解析出来的签名"，程序照常跑。
+
 ## 命令行
 
 不用装任何 GUI 工具也能改（改完重启 VbeComplete 生效）：
@@ -62,6 +80,9 @@ Python 元组。想加一个自己常用的宿主 API、想把 `vbKey*` 那批�
     py -3 wordbank.py reset --yes        重建（先自动备份成 wordbank.db.bak-<时间>）
     py -3 wordbank.py export 词库.csv
     py -3 wordbank.py import 词库.csv    合并（同名同 kind 覆盖）
+    py -3 wordbank.py signatures [过滤]  列签名（★v125）
+    py -3 wordbank.py set-sig Name "a, [b]"
+                                         改一条签名；传 "" 表示无参函数（★v125）
 """
 
 import csv
@@ -122,6 +143,11 @@ CREATE TABLE IF NOT EXISTS words (
     note        TEXT,
     PRIMARY KEY (name, kind)
 );
+CREATE TABLE IF NOT EXISTS signatures (
+    name TEXT NOT NULL,
+    sig  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (name)
+);
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -141,15 +167,48 @@ def _connect_rw(path):
     return sqlite3.connect(path, timeout=5)
 
 
-def ensure(rows, path=None):
-    """库不存在就按 `rows` 建；存在就**一个字节都不碰**。-> (是否新建, 路径)
+def _fill_signatures(con, sigs):
+    """在一个**已打开**的连接上补建 `signatures` 表、并在表为空时灌种子。
+
+    返回灌进去的条数（0 = 本来就有数据 / 没给种子）。
+
+    ⚠️ 只在**表为空**时灌：用户改过签名就把这张表当他的地盘，我们一个字节不碰
+    （与 `words` 表同一条规矩）。`INSERT OR IGNORE` 只是兜底 —— 空表里不会有
+    冲突，但万一并发写进来一条，也不会炸。
+    """
+    con.execute("CREATE TABLE IF NOT EXISTS signatures ("
+                " name TEXT NOT NULL, sig TEXT NOT NULL DEFAULT '',"
+                " PRIMARY KEY (name))")
+    n = con.execute("SELECT COUNT(*) FROM signatures").fetchone()[0]
+    if n or not sigs:
+        return 0
+    con.executemany(
+        "INSERT OR IGNORE INTO signatures (name, sig) VALUES (?, ?)", sigs)
+    con.commit()
+    return len(sigs)
+
+
+def ensure(rows, path=None, sigs=None):
+    """库不存在就按 `rows` 建；存在则**只补建缺失的 `signatures` 表**。
 
     `rows` 是 `[(name, kind, is_builtin, enabled, wants_space, note), ...]`。
-    ★ 本模块**不知道**这些行从哪来（不 import `vba_builtins`）—— 调用方传进来，
-    这样 wordbank 可以独立测试，也不会和 vba_builtins 形成循环 import。
+    `sigs` 是 `[(name, sig), ...]`（★v125，可省略 —— 省略就不管签名）。
+    ★ 本模块**不知道**这些行从哪来（不 import `vba_builtins` / `vba_signatures`）——
+    调用方传进来，这样 wordbank 可以独立测试，也不会形成循环 import。
     """
     p = path or db_path()
     if os.path.exists(p):
+        # ★v125：老库（v123 建的）没有 signatures 表 —— 补建。任何失败都静默：
+        # 签名是增强功能，没有资格让启动失败（尤其"用户正用 DB Browser 开着库"）。
+        if sigs:
+            try:
+                con = _connect_rw(p)
+                try:
+                    _fill_signatures(con, sigs)
+                finally:
+                    con.close()
+            except Exception as e:
+                _say("补建 signatures 表失败（不影响补全）: %s" % e)
         return (False, p)
     d = os.path.dirname(os.path.abspath(p))
     try:
@@ -166,6 +225,8 @@ def ensure(rows, path=None):
                 "INSERT OR REPLACE INTO words"
                 " (name, kind, is_builtin, enabled, wants_space, note)"
                 " VALUES (?, ?, ?, ?, ?, ?)", rows)
+            if sigs:
+                _fill_signatures(con, sigs)
             con.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)",
                         (str(SCHEMA_VERSION),))
             con.execute("INSERT OR REPLACE INTO meta VALUES ('created_at', ?)",
@@ -191,13 +252,18 @@ class Snapshot(object):
 
     `rows` 保留原始行（含 wants_space 的 None 三态），因为"NULL 是什么意思"
     是 VBA 语义，得由 `vba_builtins` 决定，不是本模块的事。
+
+    ★v125：`sigs` 是 `{小写函数名: 括号内原文}`。查不到 = 没有签名；
+    空串 = 真·无参函数（`Now()`）—— 这两种必须能分开，所以用 dict 而不是
+    "空串即没有"。
     """
 
-    __slots__ = ("rows", "path", "counts")
+    __slots__ = ("rows", "path", "counts", "sigs")
 
-    def __init__(self, rows, path):
+    def __init__(self, rows, path, sigs=None):
         self.rows = rows
         self.path = path
+        self.sigs = dict(sigs or {})
         self.counts = {}
         for r in rows:
             self.counts[r[1]] = self.counts.get(r[1], 0) + 1
@@ -207,8 +273,16 @@ class Snapshot(object):
         return [(r[0], r[2], r[4]) for r in self.rows
                 if r[1] == kind and r[3]]
 
+    def signature(self, name):
+        """按名字查形参表原文；**没有**这条签名返回 None（不是空串）。"""
+        try:
+            return self.sigs.get(str(name).lower())
+        except Exception:
+            return None
+
     def __repr__(self):
-        return "<Snapshot %s %r>" % (self.path, self.counts)
+        return "<Snapshot %s %r sigs=%d>" % (self.path, self.counts,
+                                             len(self.sigs))
 
 
 def _ro_uri(path):
@@ -262,6 +336,16 @@ def load(path=None):
         except Exception as e:
             _say("words 表读不出来: %s" % e)
             return None
+        # ★v125：签名表是可选的 —— v123 建的库没有它，读不到就当"没有签名"，
+        # 绝不能让整库退回种子（那会丢掉用户对 words 的手改）。
+        sigs = {}
+        try:
+            for sname, ssig in con.execute("SELECT name, sig FROM signatures"):
+                k = str(sname or "").strip().lower()
+                if k:
+                    sigs[k] = "" if ssig is None else str(ssig)
+        except Exception:
+            sigs = {}
     finally:
         try:
             con.close()
@@ -286,7 +370,7 @@ def load(path=None):
         _say("库是空的（一条可用的词都没有）")
         return None
     _say("")
-    return Snapshot(rows, p)
+    return Snapshot(rows, p, sigs)
 
 
 # ---------------------------------------------------------------------------
@@ -434,9 +518,53 @@ def _cmd_reset(path, yes):
                 pass
         os.remove(path)
     import vba_builtins
-    created, p = ensure(vba_builtins.seed_rows(), path)
+    import vba_signatures
+    created, p = ensure(vba_builtins.seed_rows(), path,
+                        sigs=vba_signatures.seed_rows())
     print("已重建：%s（%s）" % (p, "新建" if created else "失败"))
     return 0 if created else 1
+
+
+def _cmd_signatures(path, flt=None):
+    """列出签名（可按名字子串过滤）。★v125"""
+    con = _open_rw(path)
+    try:
+        try:
+            rows = con.execute(
+                "SELECT name, sig FROM signatures"
+                " ORDER BY name COLLATE NOCASE").fetchall()
+        except Exception:
+            raise SystemExit("这个库还没有 signatures 表（v123 建的老库）。"
+                             "先启动一次 VbeComplete 会自动补建，"
+                             "或 `py -3 wordbank.py reset --yes` 重建。")
+    finally:
+        con.close()
+    if flt:
+        f = flt.lower()
+        rows = [r for r in rows if f in str(r[0]).lower()]
+    if not rows:
+        print("（没有匹配的签名）")
+        return 0
+    for name, sig in rows:
+        print("%-14s(%s)" % (name, "" if sig is None else sig))
+    print("---- 共 %d 条 ----" % len(rows))
+    return 0
+
+
+def _cmd_set_sig(path, name, sig):
+    """改一条签名；`sig` 传 "" = 无参函数。★v125"""
+    con = _open_rw(path)
+    try:
+        con.execute("CREATE TABLE IF NOT EXISTS signatures ("
+                    " name TEXT NOT NULL, sig TEXT NOT NULL DEFAULT '',"
+                    " PRIMARY KEY (name))")
+        con.execute("INSERT OR REPLACE INTO signatures (name, sig) VALUES (?, ?)",
+                    (str(name), "" if sig is None else str(sig)))
+        con.commit()
+    finally:
+        con.close()
+    print("%s(%s)  已写入" % (name, "" if sig is None else sig))
+    return 0
 
 
 _CSV_HEADER = ("name", "kind", "is_builtin", "enabled", "wants_space", "note")
@@ -522,6 +650,15 @@ def main(argv):
         return _cmd_export(path, rest[0] if rest else "wordbank.csv")
     if cmd == "import":
         return _cmd_import(path, rest[0] if rest else "wordbank.csv")
+    # ★v125：签名（形参提示）
+    if cmd in ("signatures", "sigs", "sig"):
+        return _cmd_signatures(path, rest[0] if rest else None)
+    if cmd in ("set-sig", "setsig"):
+        if len(rest) < 1:
+            raise SystemExit('用法：set-sig <名字> "<形参表>"  例如：'
+                             'set-sig Left "string, length"')
+        return _cmd_set_sig(path, rest[0],
+                            rest[1] if len(rest) > 1 else "")
     raise SystemExit(__doc__.split("## 命令行")[1])
 
 

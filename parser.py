@@ -344,6 +344,123 @@ def extract_proc_kinds(code):
     return out
 
 
+# ---------------------------------------------------------------------------
+# ★v125：过程 / 函数的【形参签名】—— 给"补完括号后弹签名条"用
+# ---------------------------------------------------------------------------
+# 返回类型：`) As Long` / `) As Worksheet` / `) As Scripting.Dictionary`
+_RE_SIG_RET = re.compile(
+    r"\s*As\s+(?:New\s+)?(" + _IDENT + r"(?:\s*\.\s*" + _IDENT + r")?)", re.I)
+
+
+def _paren_body(text, i):
+    """从 `text[i] == '('` 开始，返回 (括号内原文, 右括号下标)；不配对返回 (None, -1)。
+
+    ⚠️ 必须**跳过字符串字面量**：`Optional s As String = "),("` 里的括号不算数。
+    VBA 的字符串用 `""` 转义，这里按"连续两个引号算一个字面量里的引号"处理 ——
+    对我们唯一的用途（切出形参表原文）足够：即使判断偏了，最坏是这一条签名
+    解析不出来、退回"没有签名"，不会写坏任何代码。
+    """
+    depth = 0
+    in_str = False
+    n = len(text)
+    j = i
+    while j < n:
+        ch = text[j]
+        if in_str:
+            if ch == '"':
+                if j + 1 < n and text[j + 1] == '"':
+                    j += 2
+                    continue
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return (text[i + 1:j], j)
+        j += 1
+    return (None, -1)
+
+
+_RE_LINE_CONT = re.compile(r"\s_$")
+
+
+def _logical_lines(code):
+    """把以 `_` 续行的物理行拼成逻辑行（只给过程头解析用）。★v125
+
+    为什么需要：VBA 里形参一多就会写成
+
+        Public Function Calc(ByVal x As Long, Optional ByVal s As String, _
+                             Optional y As Double) As Long
+
+    按物理行解析只能看到半个括号 —— 那条签名就永远查不到。而续行符的判据
+    必须是"**空白 + 下划线结尾**"：`Sub Foo_` 这种名字本身以 `_` 结尾的过程头
+    不能被当成续行（否则会把它下面的代码吞进来）。
+    """
+    out = []
+    buf = ""
+    for raw in str(code or "").split("\n"):
+        s = raw.rstrip("\r")
+        joined = (buf + s.lstrip()) if buf else s
+        if _RE_LINE_CONT.search(s):
+            buf = joined[:-1]                 # 去掉续行符本身
+            continue
+        out.append(joined)
+        buf = ""
+    if buf:
+        out.append(buf)
+    return out
+
+
+def extract_proc_signatures(code):
+    """从模块源码里提取 {小写过程名: (形参表原文 或 None, 返回类型 或 "")}。★v125
+
+    * `形参表原文` = 括号**里面**那段（`ByVal x As Long, Optional s As String`），
+      已经 strip；`None` 表示**这个声明根本没写括号**（`Sub Foo` / `Function Foo`）。
+      两种在显示上都要拼成 `名字(原文)`，所以调用方通常直接把 None 当空串用。
+    * `返回类型` = `) As Long` 里的 `Long`；Sub / Property Let/Set 没有，空串。
+    * 查不到这个名字 = 返回的 dict 里没有它（与"有签名但为空"是两件事）。
+
+    ⚠️ 与 `extract_proc_kinds` / `extract_records` 用**同一批**过程头正则
+    （_RE_SUB / _RE_PROP / _RE_DECLARE）—— 三处必须永远认同"哪些行算过程头"，
+    否则会出现"能提示这个名字、却查不到它长什么样"。
+
+    续行（`Sub Foo( _` 换行）**会**拼起来再解析（见 `_logical_lines`）；
+    真解析不出来就"查不到这条签名"，签名条不弹，绝不猜。
+    """
+    out = {}
+    for line in _logical_lines(code):
+        if not line.strip():
+            continue
+        m = (_RE_SUB.match(line) or _RE_PROP.match(line)
+             or _RE_DECLARE.match(line))
+        if not m:
+            continue
+        try:
+            name = str(m.group(1))
+        except Exception:
+            continue
+        low = name.lower()
+        if not low or low in out:
+            continue                      # 同名多次声明（重载不存在，取第一条）
+        params = None
+        ret = ""
+        # 从【名字之后】找第一个 `(`：普通过程头里它就是形参表；`Declare`
+        # 那种中间还夹着 `Lib "kernel32"`，第一个 `(` 仍然是形参表。
+        i = line.find("(", m.end(1))
+        if i >= 0:
+            body, close_i = _paren_body(line, i)
+            if body is not None:
+                params = body.strip()
+                rm = _RE_SIG_RET.match(line[close_i + 1:])
+                if rm:
+                    ret = re.sub(r"\s+", "", rm.group(1))
+        out[low] = (params, ret)
+    return out
+
+
 def extract_records(code, module=None, is_std_module=True, caret=None):
     """
     返回 (records, proc_names)：
