@@ -27,6 +27,11 @@ VbeComplete 主入口（修复版）
   - Esc     取消；鼠标单击/双击候选也可确认；
   - ← / →   移动光标即收起列表（与"鼠标点到别处"同义），按键照常放行；
   - Ctrl+Space  手动触发。
+  - Ctrl+Q  ★v115 代码片段窗：弹出在你光标处，左边是标题列表（可用搜索框模糊
+    搜）、右边是代码文本框；可新增 / 保存修改 / 删除，点「插入到光标处」就把
+    这段代码插到 VBE 当前光标处（光标落在片段末尾），窗子自己收起并把焦点
+    交回 VBE。库是 SQLite（`%APPDATA%\\VbeComplete\\snippets.db`，
+    两列：标题 / 代码）。想关掉：设 VBECOMPLETE_NO_SNIPPETS=1。
   - 自动配对：敲 `(` 自动补 `)`、敲 `"` 自动补另一个 `"`，光标停在**中间**；
     光标右边已经有那个右半边时（打完 `"abc` 再按 `"`）就只是【跨过去】，
     不会补出 `""` 双份。注释里不做，有选区时不做。
@@ -73,8 +78,10 @@ except ImportError:
 
 import engine
 import vbe_bridge
+import snippets
+import snippet_ui
 from vbe_bridge import VbeBackend, com_backoff_remaining
-from ui import Popup, MAX_VISIBLE_ROWS
+from ui import Popup, MAX_VISIBLE_ROWS, caret_screen_rect
 from log import log as _log, log_boot as _log_boot
 from log import LOG_ENABLED as _LOG_ENABLED
 
@@ -99,6 +106,7 @@ VK_PROCESSKEY = 0xE5   # IME 组字过程中的按键（vkCode=229），不携�
 VK_CONTROL = 0x11
 VK_MENU = 0x12         # Alt
 VK_I = 0x49            # v107c：Ctrl+Shift+I = VBE 的「参数信息 / 快速信息」
+VK_Q = 0x51            # v115：Ctrl+Q = 代码片段窗
 VK_LWIN = 0x5B         # v110：左 Win 键。Win+↑ 是系统快捷键（窗口最大化），
 VK_RWIN = 0x5C         #       绝不接管 —— 见 _ctrl_nav_key_ok 的修饰键门槛
 
@@ -267,6 +275,46 @@ def _ctrl_nav_vk_ok(vk, ctrl_down, shift_down, alt_down, win_down):
     `_is_newline_shortcut` 同一分工：纯判据放模块级，状态采集放钩子侧。
     """
     if vk not in CTRL_NAV_VKS:
+        return False
+    if not ctrl_down:
+        return False
+    if shift_down or alt_down or win_down:
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# ★v115：Ctrl+Q = 代码片段窗
+#
+# 用户口径（原话，2026-10-18）：
+#   "我想加个代码片段存储的功能……按键CTRL+q调出此功能，ui弹出界面起点在vbe里的
+#    光标处。有文本框，文本框里展示代码片段。有列表框，列表框是所有代码片段标题。
+#    对于列表框的标题，可以通过模糊匹配来搜索。点击列表框的标题，文本框里展示
+#    相应标题的代码片段。有新增，删除代码片段功能。点击按钮，可以将选中代码片段
+#    插入到vbe中的光标处。"
+#
+# 分工（与其他"接管一次按键"的功能同一副骨架）：
+#   * 钩子线程只判"这一下该不该由我们接管"（纯函数 `_snippet_vk_ok` + 两道
+#     读运行期状态的闸），绝不碰 COM；
+#   * 开窗、读库、写回 VBE 全在主线程；
+#   * 开不了窗不算"吞键"（Ctrl+Q 在 VBE 里本来什么也不做），但插入失败**必须
+#     在窗里明说**，绝不静默。
+#
+# 想关掉：`set VBECOMPLETE_NO_SNIPPETS=1`（Ctrl+Q 原样交给 VBE）。
+try:
+    SNIPPET_POPUP = (os.environ.get("VBECOMPLETE_NO_SNIPPETS",
+                                    "0").strip() != "1")
+except Exception:
+    SNIPPET_POPUP = True
+
+
+def _snippet_vk_ok(vk, ctrl_down, shift_down, alt_down, win_down):
+    """这一下是不是"【单独】按着 Ctrl 的 Q"（★v115，纯函数，无系统调用）。
+
+    修饰键门槛与 `_ctrl_nav_vk_ok` 同一取向：Shift / Alt / Win 任一在按都不算
+    —— Ctrl+Shift+Q / Ctrl+Alt+Q 是别的东西，绝不抢。
+    """
+    if vk != VK_Q:
         return False
     if not ctrl_down:
         return False
@@ -1022,6 +1070,9 @@ def main():
         popup = Popup(root)
         # 滚动窗口行数以 UI 为准（两边必须是同一个数，否则窗口会露出半行）
         completer = engine.Completer(backend, popup, view_rows=MAX_VISIBLE_ROWS)
+        # ★v115：代码片段窗。数据库**惰性打开**（第一次 Ctrl+Q 才建库文件）——
+        # 不用这个功能的人不该被塞一个空数据库。
+        snippet_win = snippet_ui.SnippetWindow(root, snippets.SnippetStore())
     except Exception:
         raise
 
@@ -1088,6 +1139,56 @@ def main():
         # v72：轮询（自动）路径弹出来的候选窗 —— VBE 的成员列表一冒出来就该让位
         state["popup_manual"] = False
         completer.trigger(True)
+
+    # ---- ★v115：代码片段窗 ----
+    def _snippet_insert(code):
+        """片段窗里点「插入到光标处」的回调（主线程）：
+
+        真正的写入在 vbe_bridge.insert_snippet（整行拼接 + 逐行 InsertLines），
+        失败返回 False，由窗里明说"插入失败"，不静默。
+        """
+        try:
+            ok = backend.insert_snippet(code)
+        except Exception:
+            ok = False
+        _log("snippet: 插入结果=%r (片段 %d 字符)" % (ok, len(code or "")))
+        return ok
+
+    def _snippet_back_to_vbe():
+        """片段窗插入完关掉之后，把焦点还给 VBE（失败只影响手感）。"""
+        try:
+            backend.focus_vbe()
+        except Exception:
+            pass
+
+    if snippet_win is not None:
+        snippet_win.on_insert = _snippet_insert
+        snippet_win.on_closed = _snippet_back_to_vbe
+
+    def _open_snippets():
+        """Ctrl+Q：开 / 关代码片段窗（主线程）。
+
+        位置取【开窗之前】的光标屏幕坐标 —— 窗一显示前台就变了，
+        `caret_screen_rect()` 读的是前台窗口的 caret，晚了就取不到 VBE 的了。
+        """
+        if snippet_win is None:
+            return
+        try:
+            if snippet_win.is_open():
+                snippet_win.close()
+                return
+            try:
+                completer.hide()
+            except Exception:
+                pass
+            rect = None
+            try:
+                rect = caret_screen_rect()
+            except Exception:
+                rect = None
+            snippet_win.open_at_caret(rect)
+        except Exception:
+            _log("snippet: 开窗失败（详见异常）")
 
     def post_trigger():
         """把"内容变了，重整候选"排进主线程队列，并做【合并】。
@@ -1470,6 +1571,34 @@ def main():
         except Exception:
             return False
 
+    def _snippet_key_ok(vk):
+        """这一下 Ctrl+Q 要不要由我们接管（★v115，跑在键盘钩子线程）。
+
+        与 `_ctrl_nav_key_ok` 同一副骨架：钩子线程只读本地状态 / 纯 Win32，
+        绝不碰 COM —— 开窗与读库都在主线程（见 _open_snippets）。
+
+        闸门：开关打开 + 纯函数判据（单独 Ctrl+Q）+ 焦点在代码窗格。
+        刻意**不**看 COM 退避：开窗不需要 COM（这一步只是把界面摆出来），
+        用户想先翻片段、等会儿再插入，也该打得开。
+        """
+        try:
+            if not SNIPPET_POPUP:
+                return False
+            if vk != VK_Q:
+                return False          # 先挡掉绝大多数按键，省几次系统调用
+            u32 = ctypes.windll.user32
+            if not _snippet_vk_ok(
+                    vk,
+                    bool(u32.GetAsyncKeyState(VK_CONTROL) & 0x8000),
+                    _shift_down(),
+                    bool(u32.GetAsyncKeyState(VK_MENU) & 0x8000),
+                    bool(u32.GetAsyncKeyState(VK_LWIN) & 0x8000
+                         or u32.GetAsyncKeyState(VK_RWIN) & 0x8000)):
+                return False
+            return bool(in_vbe_code_area())
+        except Exception:
+            return False
+
     def win32_filter(msg, data):
         """
         Windows 低层键盘钩子的事件过滤器（运行在钩子线程）。
@@ -1510,7 +1639,14 @@ def main():
                 if _is_text_key(vk) and not _mod_down() and in_vbe_code_area():
                     state["pending_keys"] = min(
                         99, int(state.get("pending_keys") or 0) + 1)
-                if (_is_newline_shortcut(vk, _shift_down())
+                if _snippet_key_ok(vk):
+                    # ★v115：Ctrl+Q = 代码片段窗（开关 / 判据见 _snippet_key_ok）。
+                    # 排在所有"改写文本"的分支之前：它是纯粹的开/关界面动作，
+                    # 与候选窗是否可见无关（开着候选也照样能叫出来）。
+                    # Ctrl+Q 在 VBE 里本来什么也不做，吞掉它不会让用户失去功能。
+                    action = (_open_snippets, ())
+                    suppress = True
+                elif (_is_newline_shortcut(vk, _shift_down())
                         and com_backoff_remaining() <= 0
                         and in_vbe_code_area()):
                     action = (_new_line_here, ())

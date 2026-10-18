@@ -18004,6 +18004,232 @@ def main():
         check("第 98 节异常: %s" % _e98, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
+    # 99. ★v115：代码片段库（SQLite 两列）+ Ctrl+Q 片段窗
+    #     用户口径：数据库两列（标题 / 代码）、Ctrl+Q 在光标处弹窗、
+    #     标题模糊搜索、增删改、点按钮插到光标处。
+    # ------------------------------------------------------------------
+    print("\n=== 99. ★v115：代码片段库 / Ctrl+Q 片段窗 ===")
+    try:
+        import ast as _ast99
+        import shutil as _sh99
+        import tempfile as _tf99
+        import snippets as SN99
+        import snippet_ui as SUI99        # noqa: F401  （99.5 的分层护栏用）
+        import vbe_bridge as VB99
+
+        # ---- 99.1 标题模糊匹配（纯函数）----
+        _rows99 = [("GetCode", "x = 1"), ("GetTitleByCode", "y = 2"),
+                   ("数据处理", "z = 3"), ("SortArray", "w = 4")]
+        _g99 = (
+            [(t, h) for (t, _c, h) in SN99.search(_rows99, "code")],
+            [(t, h) for (t, _c, h) in SN99.search(_rows99, "gc")],
+            [(t, h) for (t, _c, h) in SN99.search(_rows99, "数据")],
+            [(t, h) for (t, _c, h) in SN99.search(_rows99, "数据 理")],
+            [t for (t, _c, _h) in SN99.search(_rows99, "zzz")],
+            [t for (t, _c, _h) in SN99.search(_rows99, "")],
+            SN99.match("GetCode", "GetCode"),
+            SN99.match("code", "GetTitleByCode"),
+            SN99.match("Code", "getcode"),
+            SN99.match("   ", "GetCode"),
+        )
+        _w99 = (
+            [("GetCode", [3, 4, 5, 6]),            # 连续子串（位置靠后）
+             ("GetTitleByCode", [10, 11, 12, 13])],
+            [("GetCode", [0, 3]),                  # 子序列（驼峰）gc
+             ("GetTitleByCode", [0, 10])],         # 短标题在前
+            [("数据处理", [0, 1])],                 # 中文按字匹配
+            [("数据处理", [0, 1, 3])],              # 多词 AND
+            [],                                    # 没命中 -> 空
+            ["GetCode", "GetTitleByCode", "数据处理", "SortArray"],  # 空词 = 全给
+            (128, [0, 1, 2, 3, 4, 5, 6]),          # 整词相等
+            (76, [10, 11, 12, 13]),                # 子串
+            (76, [3, 4, 5, 6]),                    # 大小写不敏感
+            (0, []),                               # 纯空白 = 全部命中、无高亮
+        )
+        check("99.1 标题模糊匹配 `snippets.search` / `match`："
+              "连续子串 > 子序列；多个词是 AND；中文按字匹配；"
+              "空词返回全部；大小写不敏感；排序按\"分数高 -> 标题短\"",
+              [_g99], expect_contain=[_w99])
+
+        # ---- 99.2 存储：SQLite 两列（标题 / 代码）----
+        _d99 = _tf99.mkdtemp()
+        try:
+            # 目录不存在时自己建（%APPDATA%\VbeComplete 首次使用时同理）
+            _p99 = os.path.join(_d99, "new", "snippets.db")
+            _st99 = SN99.SnippetStore(_p99)
+            _r99 = (
+                _st99.add("GetCode", "x = 1"),      # 新增
+                _st99.add("GetCode", "dup"),        # 同标题 -> False（不覆盖）
+                _st99.get("GetCode"),               # 仍是第一次的代码
+                _st99.update("GetCode", "x = 2"),   # 改代码
+                _st99.rename("GetCode", "GetCode2"),  # 改标题
+                _st99.add("排序", "Sub S()\nEnd Sub"),
+                _st99.rename("排序", "GetCode2"),    # 撞名 -> False
+                [r[1] for r in _st99._conn().execute(
+                    "PRAGMA table_info(snippets)")],  # 列清单
+                _st99.all(),
+                _st99.delete("排序"),
+                _st99.all(),
+                os.path.isfile(_p99),
+            )
+            _st99.close()
+            _w99b = (True, False, "x = 1", True, True, True, False,
+                     ["title", "code"],
+                     [("GetCode2", "x = 2"), ("排序", "Sub S()\nEnd Sub")],
+                     True,
+                     [("GetCode2", "x = 2")],
+                     True)
+            check("99.2 `SnippetStore`：库文件自动建（含目录）；表**只有两列**"
+                  " title / code；同标题新增被拒（不静默覆盖）；改代码 / 改标题 /"
+                  " 删除都生效；改标题撞名不动数据",
+                  [_r99], expect_contain=[_w99b])
+        finally:
+            _sh99.rmtree(_d99, ignore_errors=True)
+
+        # ---- 99.3 光标落点判据（纯函数）----
+        _g99c = (
+            VB99._snippet_tail_pos("x = 1", ""),
+            VB99._snippet_tail_pos("foo(1, 2)", ")"),
+            VB99._snippet_tail_pos("abc  , d", "  , d"),
+            VB99._snippet_tail_pos("abc= 1", ", d"),   # 找不到尾部 -> 行尾
+            VB99._snippet_tail_pos("x = 1  ", "  "),
+            VB99._snippet_tail_pos("", "x"),
+        )
+        check("99.3 `_snippet_tail_pos`：光标落在\"片段最后一个字符之后\"——"
+              "尾部原文在行里的起点（行尾就是它 -> 长度相减；VBE 重排过 -> "
+              "按 strip 后最后一次出现找回；都找不到 -> 行尾）",
+              [_g99c], expect_contain=[(5, 8, 3, 6, 5, 0)])
+
+        # ---- 99.4 插入（假 VBE）----
+        class _Mod99(object):
+            def __init__(self, lines):
+                self.lines = list(lines)
+
+            def Lines(self, n, c):
+                return "\r\n".join(self.lines[n - 1:n - 1 + c])
+
+            @property
+            def CountOfLines(self):
+                return len(self.lines)
+
+            def ReplaceLine(self, n, t):
+                self.lines[n - 1] = t
+
+            def InsertLines(self, n, t):
+                for k, ln in enumerate(t.split("\n")):
+                    self.lines.insert(n - 1 + k, ln)
+
+            def DeleteLines(self, n, c):
+                del self.lines[n - 1:n - 1 + c]
+
+        class _Pane99(object):
+            def __init__(self, mod, sl, sc, el, ec):
+                self.CodeModule = mod
+                self.sel = [sl, sc, el, ec]
+
+            def GetSelection(self):
+                return tuple(self.sel)
+
+            def SetSelection(self, sl, sc, el, ec):
+                self.sel = [sl, sc, el, ec]
+
+        class _Vbe99(object):
+            def __init__(self, pane):
+                self.ActiveCodePane = pane
+
+        def _run99(lines, sl, sc, el, ec, text, sem=("char", 4, False)):
+            mod = _Mod99(lines)
+            pane = _Pane99(mod, sl, sc, el, ec)
+            _o_vbe = VB99._get_vbe_cached
+            _o_sem = VB99._sem_cache.get("info")
+            VB99._sem_cache["info"] = sem
+            VB99._get_vbe_cached = lambda: _Vbe99(pane)
+            try:
+                ok = VB99.VbeBackend().insert_snippet(text)
+            finally:
+                VB99._get_vbe_cached = _o_vbe
+                VB99._sem_cache["info"] = _o_sem
+            return bool(ok), mod.lines, (pane.sel[0], pane.sel[1])
+
+        _g99d = (
+            # 行尾插入：整行接上，光标落片段末尾
+            _run99(["x = "], 1, 5, 1, 5, 'MsgBox "hi"'),
+            # 行中间插入：后半行接在片段末尾
+            _run99(["foo("], 1, 5, 1, 5, "1, 2"),
+            # 多行片段、光标在模块末尾那个"虚拟空行"上（要先插行才写得进去）
+            _run99(["x = ab"], 2, 1, 2, 1,
+                   "Sub Test()\n    x = 1\nEnd Sub"),
+            # 多行选区：片段替换选区（旧行要删干净）
+            _run99(["a = 1", "b = 2", "c = 3"], 2, 1, 3, 6, "NEW"),
+            # 多行片段插在行中间：首行接前半、末行接后半
+            _run99(["x = ab"], 1, 6, 1, 6, "1\n2\n3"),
+            # CRLF 也要按两行插
+            _run99(["x = "], 1, 5, 1, 5, "a\r\nb"),
+            # 空片段 -> 不动文本
+            _run99(["x = ab"], 1, 6, 1, 6, "   "),
+        )
+        _w99d = (
+            (True, ['x = MsgBox "hi"'], (1, 16)),
+            (True, ["foo(1, 2"], (1, 9)),
+            (True, ["x = ab", "Sub Test()", "    x = 1", "End Sub"], (4, 8)),
+            (True, ["a = 1", "NEW"], (2, 4)),
+            (True, ["x = a1", "2", "3b"], (3, 2)),
+            (True, ["x = a", "b"], (2, 2)),
+            (False, ["x = ab"], (1, 6)),
+        )
+        check("99.4 `VbeBackend.insert_snippet`（集成）：片段原样插到光标处 ——"
+              "行尾 / 行中间都行（后半行接在片段末行后面）；多行片段逐行插入；"
+              "光标在\"虚拟空行\"上时先建行；多行选区是替换语义（旧行删干净）；"
+              "CRLF 归一；空片段不动文本并返回 False",
+              [_g99d], expect_contain=[_w99d])
+
+        # ---- 99.5 分层护栏 + 快捷键判据 ----
+        def _imports99(path):
+            with io.open(os.path.join(ROOT, path), encoding="utf-8") as f:
+                tree = _ast99.parse(f.read())
+            out = set()
+            for node in _ast99.walk(tree):
+                if isinstance(node, _ast99.Import):
+                    for a in node.names:
+                        out.add((a.name or "").split(".")[0])
+                elif isinstance(node, _ast99.ImportFrom):
+                    if node.module:
+                        out.add(node.module.split(".")[0])
+            return out
+
+        _ui_imp = _imports99("snippet_ui.py")
+        _sn_imp = _imports99("snippets.py")
+        _a99 = (not ({"vbe_bridge", "sqlite3", "win32com"} & _ui_imp),   # 窗不碰 COM/库
+                "tkinter" not in _sn_imp)                                 # 数据层不碰界面
+        # 写入实现只有一处：窗里不许自己动 CodeModule
+        with io.open(os.path.join(ROOT, "snippet_ui.py"), encoding="utf-8") as f:
+            _src99 = f.read()
+        _b99 = ("ReplaceLine" not in _src99 and "InsertLines" not in _src99)
+        _c99 = bool(getattr(VB99.VbeBackend, "insert_snippet", None)) and \
+            bool(getattr(VB99.VbeBackend, "focus_vbe", None))
+        _d99v = None
+        if M is not None:
+            _d99v = (M.VK_Q,
+                     M._snippet_vk_ok(0x51, True, False, False, False),
+                     M._snippet_vk_ok(0x51, True, True, False, False),
+                     M._snippet_vk_ok(0x51, True, False, True, False),
+                     M._snippet_vk_ok(0x51, True, False, False, True),
+                     M._snippet_vk_ok(0x51, False, False, False, False),
+                     M._snippet_vk_ok(0x49, True, False, False, False))
+        check("99.5 结构护栏（AST）：(a) `snippet_ui` 不 import COM/`sqlite3`、"
+              "`snippets` 不 import tkinter（数据层 / 界面层 / COM 三层不串味）；"
+              "(b) 窗里没有 `ReplaceLine`/`InsertLines` —— 写入只有 "
+              "`VbeBackend.insert_snippet` 一处实现；(c) Ctrl+Q 判据只认"
+              "**单独** Ctrl（带 Shift/Alt/Win 一律不抢）",
+              [(_a99, _b99, _c99, _d99v)],
+              expect_contain=[((True, True), True, True,
+                               (0x51, True, False, False, False, False, False))])
+    except Exception as _e99:
+        import traceback as _tp99
+        _tp99.print_exc()
+        check("第 99 节异常: %s" % _e99, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原
     #     这不是在测产品代码，而是在测【测试网自己】：一节忘了还原，后面每一节
     #     都会悄悄跑在别人的假对象上，而**不会有任何一条用例变红**。

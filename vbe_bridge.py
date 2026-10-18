@@ -3274,6 +3274,35 @@ def _locate_by_prefix(after, written, col0):
         return None
 
 
+def _snippet_tail_pos(actual, tail):
+    """★v115：片段插进整行之后，光标该停的位置（0-based）= "尾部原文"的起点。
+
+    `insert_snippet` 的落点模型是**整行拼接**：`前半 + 片段首行` … `片段末行 + 后半`。
+    写完之后 VBE 可能重排过最后那一行（补空格 / 改大小写），所以不能拿
+    `len(片段末行)` 当答案，只能反过来找"后半原文"在行里的位置：
+
+      1) 行尾就是 `tail`  -> 长度相减（最常见：后半为空 => 落行尾）；
+      2) 否则找 `tail.strip()` 最后一次出现（VBE 可能吞了/加了两侧空白）；
+      3) 都找不到 -> 退到行尾。
+
+    纯函数，便于单测（§99.4）。
+    """
+    try:
+        actual = actual or ""
+        if not tail:
+            return len(actual)
+        if actual.endswith(tail):
+            return len(actual) - len(tail)
+        t = tail.strip()
+        if t:
+            p = actual.rfind(t)
+            if p >= 0:
+                return p
+        return len(actual)
+    except Exception:
+        return 0
+
+
 def _pair_insertion(line_text, col0, open_ch, close_ch):
     """算出自动配对后的 (新行文本, 光标字符下标 0-based, 是否插了完整一对)。
 
@@ -4724,6 +4753,135 @@ class VbeBackend:
             # 与 insert_pair 同理：写过代码（VBAProject 变脏），立刻放手。
             # （没写时也走一下，release 只是丢缓存引用，无副作用。）
             _release_vbe_proxy()
+
+    # ---- v115：代码片段 ----
+    def insert_snippet(self, text):
+        """★v115：把一段（可能多行的）代码片段插到**光标处**。返回是否写成。
+
+        用户口径（原话）："点击按钮，可以将选中代码片段插入到vbe中的光标处。"
+
+        落点模型 —— 整行拼接，**片段原样插入、不替用户重排缩进**（片段就是
+        用户自己存的排版）：
+            前半行 + 片段第 1 行
+            片段第 2..n-1 行
+            片段最后 1 行 + 后半行
+        于是"光标在行中间"也能插（后半行会被接在片段末尾那一行后面），
+        "有选区"则是替换语义（单行 / 多行选区都支持）。
+
+        ⚠️ 为什么不用 `InsertLines` 一次性灌多行：VBE 对含 `\\r\\n` 的字符串
+        怎么拆行没有文档保证（有的宿主按 `\\r\\n`、有的按 `\\n`）。这里逐行
+        `InsertLines`，行号可控、下标可算 —— 多行选区删除的行号也才推得准。
+
+        ⚠️ `ReplaceLine` 会把**行尾空格 trim 掉**（v103b 实测），而 `InsertLines`
+        不会。所以片段末行带尾随空格时，只有"片段是单行且要替换当前行"这一
+        条路会被吃掉尾部空白 —— 可忽略（VBE 存的就是 trim 过的代码行）。
+
+        失败一律返回 False，由调用方提示（绝不静默）。
+        """
+        wrote = False
+        try:
+            text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+            if not text.strip():
+                return False
+            vbe = _get_vbe_cached()
+            if vbe is None:
+                return False
+            cp = vbe.ActiveCodePane
+            if cp is None:
+                return False
+            cm = cp.CodeModule
+            sl, sc, el, ec = cp.GetSelection()
+            if sl < 1 or el < sl:
+                return False
+            try:
+                n_lines = int(cm.CountOfLines)
+            except Exception:
+                n_lines = None
+
+            def _line(no):
+                if n_lines is not None and no > n_lines:
+                    return ""          # 模块末尾那个"虚拟空行"
+                return cm.Lines(no, 1) or ""
+
+            first = _line(sl)
+            last = first if el == sl else _line(el)
+            # 起点：VBE 的列是显示列（全角 2 格 / Tab 展开），必须换回字符下标
+            col_s, sem, tabw, wide2 = _caret_char_col(cm, cp, sl, first, sc)
+            i = max(0, min(col_s - 1, len(first)))
+            if el == sl:
+                col_e = ec
+            else:
+                col_e, _s2, _t2, _w2 = _caret_char_col(cm, cp, el, last, ec)
+            j = max(i, min(col_e - 1, len(last)))
+            head, tail = first[:i], last[j:]
+
+            block = text.split("\n")
+            if len(block) == 1:
+                out = [head + block[0] + tail]
+            else:
+                out = [head + block[0]]
+                out.extend(block[1:-1])
+                out.append(block[-1] + tail)
+
+            if not self._write_line(cm, sl, out[0]):
+                return False
+            wrote = True
+            k = len(out) - 1
+            for d, ln in enumerate(out[1:]):
+                cm.InsertLines(sl + 1 + d, ln)
+            # 多行选区：把被替换掉的旧行收掉（插进来的 k 行把它们挤下去了）
+            drop = el - sl
+            if drop > 0:
+                cm.DeleteLines(sl + 1 + k, drop)
+
+            # 摆光标：落在片段最后一个字符之后（= 尾部原文的起点）
+            line_no = sl + k
+            try:
+                actual = cm.Lines(line_no, 1) or ""
+            except Exception:
+                actual = out[-1]
+            pos = _snippet_tail_pos(actual, tail)
+            if sem == "disp":
+                col = _disp_width(actual, tabw, wide2, upto=pos) + 1
+            else:
+                col = pos + 1
+            cp.SetSelection(line_no, col, line_no, col)
+            _log("snippet: 插入 %d 行 -> 行=%d 光标列=%d (前=%r 后=%r)"
+                 % (len(block), line_no, col,
+                    (head or "")[-20:], (tail or "")[:20]))
+            return True
+        except Exception:
+            return False
+        finally:
+            # 与 apply_completion / insert_pair 同理：写过代码（VBAProject
+            # 变脏）就立刻放手，别让宿主退出被我们拽住。
+            if wrote:
+                _release_vbe_proxy()
+
+    def focus_vbe(self):
+        """把焦点还给 VBE 主窗（片段窗关掉之后用）。成功与否只影响手感。"""
+        try:
+            vbe = _get_vbe_cached()
+            if vbe is not None:
+                try:
+                    vbe.MainWindow.SetFocus()
+                    return True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            import ctypes
+            u32 = ctypes.windll.user32
+            u32.FindWindowW.restype = ctypes.c_void_p
+            u32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+            hwnd = u32.FindWindowW("wndclass_desked_gsk", None)
+            if hwnd:
+                u32.SetForegroundWindow(ctypes.c_void_p(hwnd))
+                return True
+        except Exception:
+            pass
+        return False
 
     # ---- 当前光标上下文 ----
     def get_context(self):

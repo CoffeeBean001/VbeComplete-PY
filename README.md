@@ -49,6 +49,7 @@ autostart on login · `run_tests.bat` runs the offline regression suite.
 | `Backspace` | Delete a whitespace-only line, or both halves of an empty pair |
 | `Ctrl+↑` | Put the caret at the **end of the last `Dim` line** of the procedure (no line is inserted) |
 | `Ctrl+↓` | Jump to the blank line above `End Sub` / `End Function` (inserting one if needed) and write it at the procedure's indent level |
+| `Ctrl+Q` | Open the **snippet window** at the caret: title list on the left (fuzzy search box), code on the right; add / edit / delete, and insert the snippet at the caret |
 
 On accept a `Sub` gets a trailing space, a `Function` gets `()` with the caret inside **and the
 VBE's own parameter info pops up** (so you can see the signature while filling in the arguments),
@@ -57,7 +58,13 @@ a comment); with a Chinese IME in full-width / Chinese-punctuation mode the Chin
 is inserted instead of being converted to ASCII. A `(` only auto-closes when nothing but whitespace
 is to its right — **except inside a call's argument list or a procedure's parameter list, where it
 always closes** (`foo(bar` + `(` -> `foo(bar())`) — and typing `"` or `(` over a selection wraps it
-(`abc` -> `"abc"` / `(abc)`). Suggested: your variables, constants and
+(`abc` -> `"abc"` / `(abc)`). **Snippet library (`Ctrl+Q`)**: a SQLite database with **two columns**
+(title / code) at `%APPDATA%\VbeComplete\snippets.db` (created on first use). The window opens at
+your caret; the title list is **fuzzy searchable** — a contiguous substring ranks first, but initials
+work too (`gc` finds `GetCode`), and space-separated terms must all match. Inserting writes the
+snippet **verbatim** at the caret (your own indentation is kept), leaves the caret after it, closes
+the window and gives focus back to the VBE. Turn it off with `set VBECOMPLETE_NO_SNIPPETS=1`.
+Suggested: your variables, constants and
 procedures, plus modules, forms
 and control names, keywords and built-in functions / types (≈260) — enums (`vb*` / `xl*` / `mso*`)
 are excluded. While you *declare* a new name (`Dim …`, `Sub …`) no existing symbol is offered,

@@ -77,6 +77,18 @@
   pane, so the key is handed back to the system untouched when the move cannot be made (no procedure,
   no `Dim`, or a read-only module for `Ctrl+↓`). Use `VBECOMPLETE_NO_CTRL_NAV=1` to disable, or
   `VBECOMPLETE_NO_CTRL_NAV_TAB=1` to keep the `Ctrl+↓` jump but never add the indent.
+- **v115 — snippet library (`Ctrl+Q`).** A window opens at the caret: title list on the left,
+  code box on the right. Clicking a title shows its code; **Insert at caret** writes it into the
+  editor, closes the window and gives focus back to the VBE. The store is SQLite with **two
+  columns** — `title TEXT PRIMARY KEY, code TEXT NOT NULL` — at
+  `%APPDATA%\VbeComplete\snippets.db` (created on first use; `VBECOMPLETE_SNIPPET_DB` overrides).
+  Titles are **fuzzy searchable**: exact title > prefix > contiguous substring > subsequence
+  (`gc` finds `GetCode`), space-separated terms are ANDed. Chinese is matched by **character**
+  (`数据` finds `数据处理`), not by pinyin initials — that would need a whole pinyin table.
+  Insertion is line-splicing: `head + first line`, the middle lines, `last line + tail`, so it
+  works mid-line too, and a selection is replaced (single- or multi-line). The snippet is written
+  **verbatim** — your indentation is kept — and the caret lands right after it. Turn it off with
+  `VBECOMPLETE_NO_SNIPPETS=1`.
 
 **Coexistence**
 
@@ -144,6 +156,8 @@ Behaviour is tuned through environment variables (set them before launching):
 | `VBECOMPLETE_NO_ENTER_INDENT` / `VBECOMPLETE_NO_AUTOCLOSE` | off | `1` disables `Enter`-time indentation / automatic block closers. |
 | `VBECOMPLETE_NO_CTRL_NAV` | off | `1` disables the `Ctrl+↑` / `Ctrl+↓` jumps; the keys stay with the VBE. |
 | `VBECOMPLETE_NO_CTRL_NAV_TAB` | off | `1` keeps the `Ctrl+↓` jump but never adds the procedure-level indent to the landing line. |
+| `VBECOMPLETE_NO_SNIPPETS` | off | `1` disables the `Ctrl+Q` snippet window; the key stays with the VBE. |
+| `VBECOMPLETE_SNIPPET_DB` | `%APPDATA%\VbeComplete\snippets.db` | Where the snippet database lives (portable installs / tests point it elsewhere). |
 
 ## Project structure
 
@@ -155,6 +169,8 @@ Behaviour is tuned through environment variables (set them before launching):
 | `parser.py` | VBA text parsing (statements, scope, comments and strings) |
 | `vba_builtins.py` | VBA built-in vocabulary (functions, types, keywords, enums) |
 | `ui.py` | The floating popup (tkinter) and its screen-avoidance logic |
+| `snippet_ui.py` | The snippet window (`Ctrl+Q`): search, add / edit / delete, insert button |
+| `snippets.py` | The snippet store (SQLite, two columns) and fuzzy title matching — no UI, no COM |
 | `log.py` | Optional diagnostic log (off by default, zero overhead) |
 | `tests/` | Regression suite (`test_real_project.py`) and the sample project it runs against. Two one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), and `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread. |
 
