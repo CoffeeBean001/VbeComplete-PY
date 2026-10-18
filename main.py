@@ -862,6 +862,22 @@ FOCUS_DEBOUNCE = 2
 # 真正的判定随后由轮询（读编辑器文本）重新给出。
 POPUP_GRACE_SEC = 0.15
 
+# ★v126：自动弹窗只认【按键】。
+#
+# 用户口径："当我鼠标点在以前写的变量的后面，也会自动提示……一定要按键才触发
+# 提示词，鼠标操作不要触发。" 于是给轮询那条自动路径加一道闸：编辑器文本变了，
+# 但最近压根没有人按键 -> 这次变化是鼠标干的（点击后 VBE 重绘、右键菜单粘贴、
+# 拖拽移动代码…），只收起、不弹。
+#
+# 为什么用"时间窗"而不是更聪明的判据：文本变化本身不携带"谁干的"这个信息，
+# 而 Windows 的低层钩子只把键盘事件送到我们手上；鼠标侧的每一次编辑动作都
+# 隔着 VBE 自己的消息循环，抓不到确定信号。1.2 秒足够覆盖"按键 -> 文本落到
+# 文档里"的延迟（含输入法组字），又不至于把"点完鼠标过一会儿再打字"误判成
+# 鼠标操作 —— 因为那时的按键会重新刷新这个时间戳。
+# 想恢复旧行为（鼠标操作也弹）：set VBECOMPLETE_REQUIRE_KEY_TRIGGER=0
+REQUIRE_KEY_TRIGGER = settings.flag("REQUIRE_KEY_TRIGGER", True)
+KEY_TRIGGER_WINDOW = 1.2
+
 # 焦点离开 VBE 后的宽限期（秒）。这段时间内行为与"仍在 VBE"完全一致：
 # 输入法的候选/组字窗口会短暂抢走前台窗口，若一失焦就停轮询、释放 COM，
 # 中文输入就会漏触发。超过宽限期才认定用户真的离开了，转入"空闲轮询 +
@@ -1258,6 +1274,7 @@ def main():
         "last_snap": None,    # 上次轮询到的 (行号, 行文本, 模块名)，用于检测内容变化
         "cur_ctx": None,      # v79：(时刻, 行号, 行文本, 光标列)，每轮刷新，给回车自动缩进判据用
         "pending_keys": 0,    # v79：按了"可能写字"的键、文档却还没变的次数（输入法组字中）
+        "last_key_ts": 0.0,   # ★v126：最近一次真实按键的时刻（自动弹窗只认按键）
         "_popup_sig": None,   # 上次看到的 VBE 提示窗矩形（v66：变了就重摆候选窗）
         "ctrl": False,
         "alt": False,
@@ -1268,6 +1285,31 @@ def main():
         "non_vbe_hwnd": None,     # 最近一次"不在 VBE"时记录的前台窗口句柄
         "hook_suppress_until": 0.0,  # 钩子抑制冷却到期时刻（>now 表示抑制中）
     }
+
+    def _keyboard_driven():
+        """★v126：这次"编辑器内容变了"是不是【按键】惹的？
+
+        True  = 允许自动弹候选（正常的打字 / 中文上屏 / 键盘粘贴）；
+        False = 只收起、不弹（鼠标点击后的重绘、右键菜单粘贴、拖拽…）。
+
+        两条任一成立就算按键驱动：
+          * `pending_keys > 0` —— 按了字键却还没落到文档里（v79 的输入法组字
+            信号）。长拼音打了很久、上屏那一刻早过了时间窗，就靠这条兜住；
+          * 距最近一次 keydown 不超过 KEY_TRIGGER_WINDOW 秒。
+
+        ⚠️ 只有【真实】按键会刷新时间戳：钩子里 `LLKHF_INJECTED` 的事件（我们
+        自己 SendInput 的）在更早处就 return 了，绝不会自激。
+        """
+        if not REQUIRE_KEY_TRIGGER:
+            return True
+        try:
+            if int(state.get("pending_keys") or 0) > 0:
+                return True
+            return (time.time() - float(state.get("last_key_ts") or 0.0)
+                    <= KEY_TRIGGER_WINDOW)
+        except Exception:
+            # 判不出来就按旧行为走 —— 宁可多弹，也不要"打字没反应"。
+            return True
 
     def _com_allowed():
         """此刻是否允许访问 COM。
@@ -1310,6 +1352,13 @@ def main():
         state["trigger_queued"] = False
         # v72：轮询（自动）路径弹出来的候选窗 —— VBE 的成员列表一冒出来就该让位
         state["popup_manual"] = False
+        # ★v126：兜底复核一次"是按键惹的吗"。排队期间状态可能已经变了（用户
+        # 排进队列后转头去点鼠标），而 trigger 本身要读 COM、几十毫秒起步 ——
+        # 与其弹出来再收，不如在入口就拦住。
+        if not _keyboard_driven():
+            _log("trigger: 排队期间没有按键 -> 不弹（鼠标操作）")
+            completer.hide()
+            return
         completer.trigger(True)
 
     # ---- ★v115：代码片段窗 ----
@@ -2139,6 +2188,12 @@ def main():
             vk = data.vkCode
 
             if msg in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                # ★v126：先记下"确实有人按键"。自动弹窗只认按键 —— 鼠标点击 /
+                # 右键菜单粘贴造成的文本变化不该把列表弹出来（见 _keyboard_driven）。
+                # 放在这里而不是 on_press：on_press 是钩子把事件 post 给监听器
+                # 消息循环之后才执行的，隔着一次排队，轮询可能先看到文本变化。
+                # 注入的按键在上面已 return，不会被记成"用户按键"。
+                state["last_key_ts"] = time.time()
                 # Shift+Enter = 在当前行下方新起一行（缩进对齐上一行）。
                 # 与"弹窗是否可见"无关：弹窗开着也照样接管（顺带收起弹窗）。
                 # 只在【焦点真在代码窗格】且【COM 没在失败退避】时才吞键；
@@ -2924,6 +2979,19 @@ def main():
                                      % (_fst, vbe_focus_class(),
                                         vbe_bridge.vbe_popup_visible(),
                                         vbe_bridge.vbe_popup_info()))
+                                post(completer.hide)
+                            elif not _keyboard_driven():
+                                # ★v126：文本变了，可是最近根本没有按键 —— 这是
+                                # 鼠标操作（点击后 VBE 重绘该行、右键菜单粘贴、
+                                # 拖拽移动代码…）。用户口径："一定要按键才触发
+                                # 提示词，鼠标操作不要触发。" 于是只收起不弹。
+                                # ⚠️ 放在"焦点在代码窗格"之后：焦点不在时那句
+                                # 日志更有诊断价值，别被这条盖掉。
+                                _log("poll: line %s 变了但没有按键 -> 不弹"
+                                     "（鼠标操作；last_key_ts=%.2f）"
+                                     % (snap[0],
+                                        time.time() - float(
+                                            state.get("last_key_ts") or 0.0)))
                                 post(completer.hide)
                             else:
                                 _log("poll: line %s changed -> trigger"

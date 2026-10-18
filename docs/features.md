@@ -294,6 +294,25 @@
   first), `export` / `import` CSV. `VBECOMPLETE_NO_WORDBANK=1` ignores the bank entirely (first thing to
   try when something looks wrong); `VBECOMPLETE_WORD_BANK=<path>` moves it.
 
+- **v126 — the list gets out of the way, and the mouse alone never opens it.**
+  Two things the user asked for, both about *when* the popup should exist rather than what is in it.
+
+  **It closes once the name is complete.** Type a name all the way out and the list used to stay on
+  screen until you pressed `Esc` or clicked away, covering the lines below. Now it disappears as soon as
+  the typed word **exactly equals** a candidate **and no longer candidate starts with it** — the second
+  half matters: while `ws` still has `wsName` in the pool you are not done typing, and closing there
+  would eat the name you were about to finish. `Ctrl+Space` is exempt (you asked for the list; it shows
+  even when the name is complete). `VBECOMPLETE_HIDE_ON_COMPLETE=0` restores the old behaviour.
+
+  **Only keystrokes trigger it.** Moving the caret with the mouse (or pasting from a context menu, or
+  dragging code around) changes the text, and the poller used to treat any same-line text change as
+  typing — so clicking right after a variable you had written could raise the list. The poller now asks
+  a single question first: *was there a real key press recently?* (`state["last_key_ts"]`, stamped in
+  the low-level keyboard hook, plus the v79 "keys pressed but not yet in the document" counter that
+  covers IME composition). No key press -> hide, don't show. Synthetic keys we inject ourselves are
+  explicitly excluded (`LLKHF_INJECTED`), so nothing can self-trigger.
+  `VBECOMPLETE_REQUIRE_KEY_TRIGGER=0` restores the old behaviour.
+
 **Coexistence**
 
 - After `object.`, VbeComplete steps aside and lets the VBE's own, type-aware member list take over.
@@ -318,6 +337,8 @@ semantic infrastructure.
 | IDEA | VbeComplete |
 | --- | --- |
 | Completion as you type, live filtering | ✅ |
+| List closes by itself once the name is complete | ✅ (`Esc` no longer needed) |
+| Only typing opens the list, never the mouse | ✅ (clicks / menu paste never raise it) |
 | Fuzzy / camelCase matching with highlighted hits | ✅ |
 | Quality-ranked results | ✅ |
 | Local scope first | ✅ |
@@ -367,6 +388,8 @@ different ini file (portable installs and tests).
 | `VBECOMPLETE_PARAM_INFO_KEY` | off | `1` falls back to synthesising `Ctrl+Shift+I` when the host has no `CommandBars` — that path beeps too, so it is off by default. |
 | `VBECOMPLETE_MEMBER_POPUP` | off | `1` restores VbeComplete's own list after `object.` (off by default). |
 | `VBECOMPLETE_DECL_POPUP` | off | `1` restores suggesting inside declarations (off by default). |
+| `VBECOMPLETE_HIDE_ON_COMPLETE` | on | `0` keeps the list on screen after the name has been typed out completely (v126 closes it instead). |
+| `VBECOMPLETE_REQUIRE_KEY_TRIGGER` | on | `0` lets any same-line text change raise the list; the default requires a recent real key press, so mouse clicks and menu pastes only close it (v126). |
 | `VBECOMPLETE_NO_SCOPE_RANK` | off | `1` disables scope-aware ranking. |
 | `VBECOMPLETE_NO_RECENT_RANK` | off | `1` disables recently-used ranking. |
 | `VBECOMPLETE_RECENT_MAX` | 64 | How many recently-used names are remembered. |

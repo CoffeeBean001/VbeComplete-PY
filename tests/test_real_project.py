@@ -238,6 +238,14 @@ def main():
     _MEMBER_POPUP_SAVE = E.MEMBER_POPUP
     E.MEMBER_POPUP = True
 
+    # ★v126：同理 —— "名字打全就收起"（`HIDE_ON_COMPLETE`，默认开）是新语义，
+    #   而第 1~82 节里有二十多条用例拿"打全名后列表还在"当观察窗口，去验
+    #   【候选内容】（谁进了池子 / 排序 / 命中位置 / 回声防护 / 确认记忆作废…）——
+    #   它们验的是能力，不是弹窗时机。这里统一按旧口径（关）跑，弹窗时机由
+    #   §114 专门覆盖；"默认必须是开"这个事实由 §114.13 断言 KNOWN 默认值钉住。
+    _HIDE_ON_COMPLETE_SAVE = E.HIDE_ON_COMPLETE
+    E.HIDE_ON_COMPLETE = False
+
     mods = load_modules()
     print("载入 %d 个模块: %s\n" % (len(mods), ", ".join(sorted(mods))))
 
@@ -20257,12 +20265,12 @@ def main():
 
         # ---- 108.16 三个开关都登记了 ----
         _keys108 = [k for (k, _d, _s) in _ST108.KNOWN]
-        # ★v124d：KNOWN 总数 54 -> 55（再拆出 PARAM_INFO，见 §112）
+        # ★v126：KNOWN 总数 55 -> 57（+ HIDE_ON_COMPLETE / REQUIRE_KEY_TRIGGER）
         check("108.16 三个开关都进了 `settings.KNOWN`（各自独立，误触哪个关哪个）",
               [(_keys108.count("NO_INSERT_ABOVE"),
                 _keys108.count("NO_DUP_LINE"),
                 _keys108.count("NO_DEL_LINE"), len(_keys108))],
-              expect_contain=[(1, 1, 1, 55)])
+              expect_contain=[(1, 1, 1, 57)])
     finally:
         VB106._get_vbe_cached = _o_vbe108
 
@@ -20561,12 +20569,12 @@ def main():
 
         # ---- 109.13 两个新键都登记了 ----
         _keys109s = [k for k, _d, _s in _ST109.KNOWN]
-        # ★v124d：KNOWN 总数 54 -> 55（再拆出 PARAM_INFO，见 §112）
+        # ★v126：KNOWN 总数 55 -> 57（+ HIDE_ON_COMPLETE / REQUIRE_KEY_TRIGGER）
         check("109.13 两个新键都进了 `settings.KNOWN`：`NO_WORDBANK`（排错开关）、"
               "`WORD_BANK`（库路径）",
               [(_keys109s.count("NO_WORDBANK"), _keys109s.count("WORD_BANK"),
                 len(_keys109s))],
-              expect_contain=[(1, 1, 55)])
+              expect_contain=[(1, 1, 57)])
 
         check("109.14 启动接线在 `main()` 里、且**先建库再加载**"
               "（顺序反了就会先读到「没有库」、退回种子，然后建了库却不生效）",
@@ -21365,6 +21373,234 @@ def main():
         import traceback as _tp112
         _tp112.print_exc()
         check("第 112 节异常: %s" % _e112, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
+    # 114. ★v126：两条手感 —— ① 名字打全就收起；② 自动弹窗只认按键
+    #
+    #     用户原话："当我把提示词都输入全了，提示词列表框就收起来，就像 IDEA
+    #     那样，现在我们的项目不会收，仍然显示"；"当我鼠标点在以前写的变量的
+    #     后面，也会自动提示……一定要按键才触发提示词，鼠标操作不要触发"。
+    #
+    #     ① 的判据是 engine.prefix_is_resolved（精确命中 + 没有更长的候选）；
+    #     ② 的判据是 main._keyboard_driven（最近有真实按键 / 输入法组字中）。
+    #     ②跑在 main 的闭包里、没法单独实例化，所以用 AST 钉住三处接线。
+    # ------------------------------------------------------------------
+    print("\n=== 114. ★v126：打全即收 + 自动弹窗只认按键 ===")
+    try:
+        import ast as _ast114
+
+        # ---- 114.1 ~ 114.4 prefix_is_resolved 的四种情形 ----
+        check("114.1 打全且**没有更长候选** -> 判已打完（该收起）",
+              [(E.prefix_is_resolved("num", ["num"]),
+                E.prefix_is_resolved("NUM", ["num"]))],
+              expect_contain=[(True, True)])
+
+        check("114.2 打全但池子里还有**更长的**候选 -> 不算打完"
+              "（`ws` 后面还有 `wsName`，此刻收掉等于把用户正要打的字弄没）",
+              [(E.prefix_is_resolved("num", ["num", "numColInTargetSheet"]),
+                E.prefix_is_resolved("ws", ["wsName"]))],
+              expect_contain=[(False, False)])
+
+        check("114.3 只是前缀、没有任何候选精确等于它 -> 不算打完",
+              [(E.prefix_is_resolved("nu", ["num"]),
+                E.prefix_is_resolved("x", ["num", "num2"]))],
+              expect_contain=[(False, False)])
+
+        check("114.4 空词 / 空候选 -> 不算打完（行首、纯标点位置不收也不弹）",
+              [(E.prefix_is_resolved("", ["num"]),
+                E.prefix_is_resolved(None, ["num"]),
+                E.prefix_is_resolved("num", []),
+                E.prefix_is_resolved("num", None))],
+              expect_contain=[(False, False, False, False)])
+
+        # ---- 114.5 ~ 114.8 引擎集成：真的不弹 / 真的还弹 ----
+        class _UI114:
+            def __init__(self):
+                self.shown = False
+            def show(self, *a, **k):
+                self.shown = True
+            def update_selection(self, *a, **k):
+                pass
+            def hide(self, *a, **k):
+                self.shown = False
+            def contains_point(self, *a, **k):
+                return False
+
+        class _B114:
+            def __init__(self, names):
+                self.names = names
+            def get_context(self):
+                return {"line_no": 1, "caret_col": 8, "line_text": "    num",
+                        "in_string": False, "in_comment": False,
+                        "in_type_position": False, "in_decl_position": False,
+                        "proc_name": "ProcA", "module_name": "M1"}
+            def get_identifiers(self):
+                return [(n, "M1", "ProcA", False) for n in self.names]
+            def apply_completion(self, *a, **k):
+                return None
+
+        _u114 = _UI114()
+        _c114 = E.Completer(_B114(["num"]), _u114)
+        # 这一组要测的就是"打全即收"本身 —— 显式打开（main() 开头为了让前面
+        # 那批【候选内容】用例保留旧观察窗口，统一关掉了它）。
+        _old114 = E.HIDE_ON_COMPLETE
+        E.HIDE_ON_COMPLETE = True
+        try:
+            _c114.trigger(True)
+            check("114.5 集成：打全 `num`（池子里只有它）-> 不弹，且候选清空"
+                  "（留着旧候选会让随后的 Tab 把早已打完的名字再补一遍）",
+                  [(_u114.shown, _c114.is_visible(),
+                    _c114.current_matches())],
+                  expect_contain=[(False, False, [])])
+
+            _u114b = _UI114()
+            _c114b = E.Completer(_B114(["num", "numColInTargetSheet"]),
+                                 _u114b)
+            _c114b.trigger(True)
+            check("114.6 集成：同样打全 `num`，但池子里还有 "
+                  "`numColInTargetSheet` -> 照旧弹（用户可能正要接着打它）",
+                  [(_u114b.shown, _c114b.is_visible())],
+                  expect_contain=[(True, True)])
+
+            _u114c = _UI114()
+            _c114c = E.Completer(_B114(["num"]), _u114c)
+            _c114c.trigger(True, manual=True)
+            check("114.7 集成：`Ctrl+Space`（manual）点名要看 -> 打全了也照弹"
+                  "（否则就成了「按了没反应」）",
+                  [(_u114c.shown, _c114c.is_visible())],
+                  expect_contain=[(True, True)])
+        finally:
+            E.HIDE_ON_COMPLETE = _old114
+
+        _u114d = _UI114()
+        try:
+            E.HIDE_ON_COMPLETE = False
+            _c114d = E.Completer(_B114(["num"]), _u114d)
+            _c114d.trigger(True)
+            check("114.8 开关 `HIDE_ON_COMPLETE=0` 退回旧行为：打全了也一直显示",
+                  [(_u114d.shown, _c114d.is_visible())],
+                  expect_contain=[(True, True)])
+        finally:
+            E.HIDE_ON_COMPLETE = _old114
+
+        # ---- 114.9 ~ 114.12 main 侧接线（AST，不看注释）----
+        _tree114 = _ast114.parse(
+            io.open(os.path.join(ROOT, "main.py"), encoding="utf-8").read())
+
+        def _fn114(name):
+            for _n in _ast114.walk(_tree114):
+                if (isinstance(_n, _ast114.FunctionDef)
+                        and _n.name == name):
+                    return _n
+            return None
+
+        def _names_in114(node):
+            out = set()
+            for _n in _ast114.walk(node):
+                if isinstance(_n, _ast114.Name):
+                    out.add(_n.id)
+            return out
+
+        def _consts_in114(node):
+            """节点里出现过的字符串字面量（`state.get("pending_keys")` 这种
+            键名是 Constant，不是 Name —— 只查 Name 会漏判）。"""
+            out = set()
+            for _n in _ast114.walk(node):
+                if (isinstance(_n, _ast114.Constant)
+                        and isinstance(_n.value, str)):
+                    out.add(_n.value)
+            return out
+
+        def _calls_attr114(node, attr):
+            for _n in _ast114.walk(node):
+                if (isinstance(_n, _ast114.Call)
+                        and isinstance(_n.func, _ast114.Attribute)
+                        and _n.func.attr == attr):
+                    return True
+            return False
+
+        _kd114 = _fn114("_keyboard_driven")
+        check("114.9 `_keyboard_driven()` 存在，并且**真的读了开关** "
+              "`REQUIRE_KEY_TRIGGER` 与输入法组字信号 `pending_keys`"
+              "（少前者 = 开关是死的；少后者 = 长拼音上屏那一刻会被误判成鼠标）",
+              [(_kd114 is not None,
+                "REQUIRE_KEY_TRIGGER" in _names_in114(_kd114),
+                "pending_keys" in _consts_in114(_kd114))],
+              expect_contain=[(True, True, True)])
+
+        # win32_filter 里必须给 state["last_key_ts"] 赋值（真实按键的时标）。
+        _wf114 = _fn114("win32_filter")
+        _stamps114 = 0
+        for _n in _ast114.walk(_wf114):
+            if not isinstance(_n, _ast114.Assign):
+                continue
+            for _t in _n.targets:
+                if (isinstance(_t, _ast114.Subscript)
+                        and isinstance(_t.value, _ast114.Name)
+                        and _t.value.id == "state"
+                        and isinstance(_t.slice, _ast114.Constant)
+                        and _t.slice.value == "last_key_ts"):
+                    _stamps114 += 1
+        check("114.10 `win32_filter` 里给 `state[\"last_key_ts\"]` 打了时标"
+              "（自动弹窗唯一的「有人按键」信号；放在 on_press 里就晚了 ——"
+              "那是钩子 post 给监听器之后才执行的，隔着一次排队）",
+              [(_stamps114,)], expect_contain=[(1,)])
+
+        _calls114 = 0
+        for _n in _ast114.walk(_tree114):
+            if (isinstance(_n, _ast114.Call)
+                    and isinstance(_n.func, _ast114.Name)
+                    and _n.func.id == "_keyboard_driven"):
+                _calls114 += 1
+        check("114.11 `_keyboard_driven()` 一共被调用**两次**：轮询的文本变化"
+              "分支 + `_run_trigger` 兜底（只留一处就等于另一条路还是旧行为）",
+              [(_calls114,)], expect_contain=[(2,)])
+
+        _rt114 = _fn114("_run_trigger")
+        check("114.12 `_run_trigger` 入口再复核一次（排队期间用户可能已经去点"
+              "鼠标了），不满足就只收起、不弹",
+              [(("_keyboard_driven" in _names_in114(_rt114)),
+                _calls_attr114(_rt114, "hide"))],
+              expect_contain=[(True, True)])
+
+        # ---- 114.13 两个开关都登记了、默认都是「开」----
+        _rows114 = dict((k, d) for k, d, _s in S102.KNOWN)
+        check("114.13 两个新开关都进了 `settings.KNOWN`，默认值都是 1"
+              "（= 功能默认生效；`KNOWN` 总数 55 -> 57）",
+              [(_rows114.get("HIDE_ON_COMPLETE"),
+                _rows114.get("REQUIRE_KEY_TRIGGER"),
+                len(S102.KNOWN))],
+              expect_contain=[("1", "1", 57)])
+
+        # ---- 114.14 模块里读开关时给的**默认值**也必须是开 ----
+        # 为什么还要这一条：`KNOWN` 与 `flag(...)` 是两处默认值，§114.13 只钉住
+        # 前者。而 main() 为了让老用例保留旧观察窗口，整网都把
+        # `HIDE_ON_COMPLETE` 设成了 False —— 光靠行为用例**测不出**
+        # `flag("HIDE_ON_COMPLETE", False)` 这种笔误（那会让功能默认失效，
+        # 用户装上去毫无变化）。
+        def _flag_default114(fname, key):
+            _t = _ast114.parse(
+                io.open(os.path.join(ROOT, fname), encoding="utf-8").read())
+            for _n in _ast114.walk(_t):
+                if (isinstance(_n, _ast114.Call)
+                        and isinstance(_n.func, _ast114.Attribute)
+                        and _n.func.attr == "flag"
+                        and _n.args
+                        and isinstance(_n.args[0], _ast114.Constant)
+                        and _n.args[0].value == key):
+                    return getattr(_n.args[1], "value", "?") \
+                        if len(_n.args) > 1 else "?"
+            return None
+
+        check("114.14 `engine` / `main` 读这两个开关时，第二参（默认值）都是 "
+              "`True` —— 与 `KNOWN` 的 \"1\" 一致，否则功能装上去默认就是关的",
+              [(_flag_default114("engine.py", "HIDE_ON_COMPLETE"),
+                _flag_default114("main.py", "REQUIRE_KEY_TRIGGER"))],
+              expect_contain=[(True, True)])
+    except Exception as _e114:
+        import traceback as _tp114
+        _tp114.print_exc()
+        check("第 114 节异常: %s" % _e114, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原

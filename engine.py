@@ -138,6 +138,15 @@ MEMBER_POPUP = _settings.flag("MEMBER_POPUP", False)
 # VBECOMPLETE_DECL_POPUP=1`。
 DECL_POPUP = _settings.flag("DECL_POPUP", False)
 
+# ★v126：名字打全了就收起候选窗（用户口径："像 IDEA 那样"）。
+#
+# 判据是 prefix_is_resolved()：精确命中且没有更长的候选。刻意**不**收"还有
+# 更长候选"的情形（打 `ws` 时池子里有 `wsName`）—— 那时收掉等于把用户正要
+# 打的字弄没。
+# ⚠️ Ctrl+Space（manual=True）例外：用户点名要看，打全了也照显示。
+# 想恢复旧行为（输全后列表一直挂着）：`set VBECOMPLETE_HIDE_ON_COMPLETE=0`。
+HIDE_ON_COMPLETE = _settings.flag("HIDE_ON_COMPLETE", True)
+
 # v73：让位的【宽限期】（秒）—— 见 Completer.trigger 里让位那段。
 #
 # 让位原来的假设是"我们让开，VBE 的成员列表就会顶上"。这个假设在 With 块里
@@ -271,6 +280,35 @@ def extract_word_at(line_text, caret_col):
     if not m:
         return None, None, None
     return m.group(0), m.start() + 1, m.end() + 1
+
+
+def prefix_is_resolved(word, matches):
+    """输入词是不是"已经打全了" —— 该把候选窗收起来。
+
+    ★v126（用户口径："我把提示词都输入全了，列表框就收起来，就像 IDEA 那样"）。
+
+    判据两条同时成立：
+      1. 存在候选**精确等于**这个词（大小写不敏感）；
+      2. **没有**任何候选以它为前缀、还比它长。
+
+    第 2 条是关键，少不得：打 `ws` 时池子里还有 `wsName`，此刻"精确命中 `ws`"
+    也成立，可用户明明还想接着打 `wsName` —— 这时把列表收掉就是帮倒忙。
+    只有"精确命中 + 再没有更长的了"才说明用户已经写完这个名字。
+
+    只解决"输全了还挂着挡视线"这一件事，**不**改候选的计算（`matches` 依旧
+    由调用方算好传进来），也不碰"打全了按 Tab 直接确认"那条老逻辑。
+    """
+    w = str(word or "").strip().lower()
+    if not w:
+        return False
+    exact = False
+    for m in matches or ():
+        ml = str(m).lower()
+        if ml == w:
+            exact = True
+        elif ml.startswith(w):
+            return False          # 还有更长的候选 -> 用户没写完
+    return exact
 
 
 def _ident_char_before_caret(ctx):
@@ -2750,6 +2788,19 @@ class Completer:
             except Exception:
                 pass
         if not matches:
+            self.hide()
+            return
+        # ★v126：名字已经打全（精确命中、且再没有更长的候选）-> 收起。
+        #
+        # 用户口径："提示词都输入全了，列表框就收起来，就像 IDEA 那样。" 以前
+        # 打全后列表一直挂着，挡住下面几行代码，只能按 Esc 或点鼠标才消失。
+        # 判据（含"还有更长候选就不收"这一条）见 prefix_is_resolved。
+        # ⚠️ 放在这里（算完 matches 之后、self.matches 赋值之前）：一旦收掉，
+        # `self.matches` 就该是空的 —— 留着旧候选会让随后的 Tab 确认把一段
+        # 用户早已打完的名字又"补"一遍。
+        # ⚠️ manual（Ctrl+Space）不走这条：用户点名要看，打全了也照显示。
+        if HIDE_ON_COMPLETE and not manual and prefix_is_resolved(word, matches):
+            _log("trigger: %r 已打全（无更长候选）-> 收起" % (word,))
             self.hide()
             return
         self.matches = matches
