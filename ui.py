@@ -46,6 +46,74 @@ SCROLL_PAD = 2              # 滚动条与名字之间的留白
 COLOR_SCROLL_TRACK = "#F0F0F0"   # 滚动条槽：淡灰（VBE 那套系统灰）
 COLOR_SCROLL_THUMB = "#C8C8C8"   # 滚动条滑块：比槽深一档的淡灰
 
+# ---- ★v126d：名字左边的分类小图标（仿 VBE 的成员列表）----
+#
+# 用户口径（原话）："在提示词列表上，能不能像vbe这样，属性和方法前面，加上个
+# 不一样的图标来分辨，最好做成像vbe这样一样的图表。"
+#
+# 为什么不用 ico/bmp：VBE 那套是 16px 位图，我们的字号跟着 VBE 变、行高也跟着变，
+# 固定位图一大一小全是毛边。这里全部用 Canvas 图元现画（矩形 / 三角 / 菱形），
+# 尺寸按常量走，永远清晰，也不需要随包发图片。
+#
+# ⚠️ 形状要"不看颜色也分得开"：选中行是深蓝底（COLOR_SEL_BG），颜色对比会被压掉，
+#    所以除了配色，每个档位的**轮廓**也不一样（箭头 / 带杠方块 / 实心块 / 空心块 /
+#    菱形）。
+ICON_W_MIN = 9              # 图标边长下限（小字号时也不能糊成一点）
+ICON_W_MAX = 16             # 上限（VBE 自己那套图标就是 16px，再大就抢戏了）
+ICON_GAP = 4                # 图标与名字之间留白
+
+# 正常底（白 / 浅蓝悬停）上的图标颜色
+COLOR_ICON = {
+    "func": "#1F8A3B",      # 方法 / 函数：绿（VBE 的方法图标就是一支绿箭头）
+    "prop": "#7A3FA8",      # 属性：紫
+    "var":  "#2A5CAA",      # 变量 / 常量：蓝
+    "type": "#B26A00",      # 类型（类 / Type / Enum / 内建类型）：琥珀
+    "kw":   "#8A8A8A",      # 语言关键字：灰
+}
+# 选中行（深蓝底）上的浅色版 —— 直接压原色会糊成一团
+COLOR_ICON_ON = {
+    "func": "#6FE08C",
+    "prop": "#CBA6F7",
+    "var":  "#9CC2F5",
+    "type": "#FFC46B",
+    "kw":   "#D8D8D8",
+}
+KIND_FALLBACK = "var"       # 认不出来的"档位值"按变量画；**压根没有档位**时不画（见 _draw）
+
+
+def normalize_kind(kind):
+    """把各种可能的"类型"写法收敛成五档之一（纯函数，UI 与测试共用一份）。
+
+    认不出来（None / 空 / 大小写乱 / 未来新增的档位）一律回 `KIND_FALLBACK`：
+    画图标这条路绝不能因为"后端给了个没见过的 kind"就把候选窗整死。
+    """
+    k = str(kind or "").strip().lower()
+    if k in COLOR_ICON:
+        return k
+    return KIND_FALLBACK
+
+
+def icon_width(row_h):
+    """图标（正方形）的边长 —— **跟着行高走**（纯函数）。
+
+    字号是跟着 VBE 变的（8~24pt，行高 13~31px），图标写死一个尺寸就会出现
+    "小字号糊成一团 / 大字号小得看不见"。按行高的 0.62 取，再钳到
+    `ICON_W_MIN..ICON_W_MAX`（上限 16px = VBE 自己那套图标的尺寸）。
+    """
+    try:
+        rh = int(row_h)
+    except Exception:
+        rh = 16
+    if rh <= 0:
+        rh = 16
+    return max(ICON_W_MIN, min(ICON_W_MAX, int(round(rh * 0.62))))
+
+
+def icon_color(kind, on_selected=False):
+    """某个档位的图标颜色；`on_selected=True` 时给深蓝底用的浅色版。"""
+    k = normalize_kind(kind)
+    return (COLOR_ICON_ON if on_selected else COLOR_ICON)[k]
+
 PAD_X = 6                   # 行内左右留白
 
 # ---- ★v119：字号必须是【整数】 ----
@@ -301,6 +369,9 @@ class Popup:
         self._want_visible = False
         self._pending_show = None
         self._rows = []          # [(name, [命中下标...]), ...] 当前这一屏
+        # ★v126d：{名字: 图标档位}，与 _rows 同时从 completer 取（见
+        # _sync_from_completer）。拿不到就是空 dict —— 那时只画名字，不画图标。
+        self._kinds = {}
         self._sel = 0            # 选中行在【本屏】内的行号（0-based）
         self._total = 0          # 候选总数（可能大于一屏）
         self._top = 0            # 本屏第一项在候选列表中的下标
@@ -478,7 +549,16 @@ class Popup:
         except Exception:
             hits = {}
 
+        # ★v126d：图标档位。老式 / 测试用假 completer 没有这个属性 -> 空 dict，
+        # 于是不画图标（绝不因为"少了个可选接口"就弹不出候选）。
+        kinds = {}
+        try:
+            kinds = dict(getattr(self.completer, "match_kinds", None) or {})
+        except Exception:
+            kinds = {}
+
         self._rows = [(m, list(hits.get(m) or ())) for m in rows]
+        self._kinds = kinds
         self._total = total
         self._top = top
         self._sel = sel if rows else 0
@@ -592,8 +672,12 @@ class Popup:
         except Exception:
             cw = 7.0
         text_w = float(NAME_CHARS) * cw
-        # 名字列起点：v49 去掉序号列后，名字从列表最左侧开始
-        name_x0 = PAD_X
+        # ★v126d：最左边让出一列给图标（仿 VBE 的成员列表：属性/方法前面那个小图），
+        # 名字列起点 = 左边距 + 图标宽 + 间距。**名字区宽度仍然是 NAME_CHARS 个
+        # 字符**，所以省略号的位置一点没变，只是整窗宽了"图标列"那几像素。
+        icon_w = icon_width(row_h)
+        icon_x0 = PAD_X
+        name_x0 = PAD_X + icon_w + ICON_GAP
 
         # 纵向滚动条：候选超过一屏才需要
         vscroll = self._total > MAX_VISIBLE_ROWS
@@ -647,6 +731,12 @@ class Popup:
             if on or hovered:
                 c.create_rectangle(0, y0, list_bg_right, y0 + row_h,
                                    fill=bg, outline="")
+            # ★v126d：名字前面那个分类小图标（属性 / 方法 / 变量 / 类型 / 关键字）。
+            # ⚠️ 档位未知（老式 completer 没给 match_kinds）就**不画** —— 这里
+            # 宁可空着，也不能一律画成"变量"，那是在说假话。
+            _k = self._kinds.get(name) if self._kinds else None
+            if _k:
+                self._draw_icon(c, _k, icon_x0, ym, icon_w, on, bg)
             # 固定宽度：超过 30 字用 ... 省略；命中下标只保留仍在可见前缀内的
             disp, _trunc, prefix = self._truncate_to_width(name, text_w)
             x = name_x0
@@ -675,6 +765,49 @@ class Popup:
                     self._position()
             except Exception:
                 pass
+
+    def _draw_icon(self, c, kind, x0, ym, w, on=False, bg=COLOR_BG):
+        """在 (x0, 行中线 ym) 画一个边长 `w` 的分类小图标（★v126d）。
+
+        形状（刻意不看颜色也分得开，选中行是深蓝底、颜色对比会被压掉）：
+          func 绿箭头   —— 方法 / 函数：一截横杆 + 一个三角头（VBE 就是这个）
+          prop 紫方块   —— 属性：实心方块，中间横一道与底色同色的杠（"属性页"）
+          var  蓝实心块 —— 变量 / 常量
+          type 琥珀空心框 —— 类型（类 / Type / Enum / 内建类型）
+          kw   灰菱形   —— 语言关键字
+
+        尺寸全部由 `w` 推出来（`icon_width(row_h)`），所以大字号时图标会跟着变大；
+        kind 认不出来（None / 空 / 后端给了个没见过的值）时按 `var` 画 —— 这里
+        绝不抛异常：图标是锦上添花，画不出来也得把名字画出来。
+        """
+        try:
+            k = normalize_kind(kind)
+            fill = icon_color(k, on)
+            s = max(ICON_W_MIN, min(ICON_W_MAX, int(w or ICON_W_MIN)))
+            x1 = x0 + s - 1
+            half = max(3, s // 2 - 1)        # s=10 -> 4（9px 高）；s=16 -> 7
+            if k == "func":
+                c.create_rectangle(x0 + 1, ym - 1, x0 + s // 2, ym + 1,
+                                   fill=fill, outline="")
+                c.create_polygon(x0 + s // 2, ym - half, x1, ym,
+                                 x0 + s // 2, ym + half,
+                                 fill=fill, outline="")
+            elif k == "prop":
+                c.create_rectangle(x0, ym - half, x1, ym + half,
+                                   fill=fill, outline="")
+                c.create_line(x0 + 2, ym, x1 - 2, ym, fill=bg)
+            elif k == "type":
+                c.create_rectangle(x0, ym - half, x1, ym + half,
+                                   fill="", outline=fill, width=2)
+            elif k == "kw":
+                mx = x0 + s // 2
+                c.create_polygon(mx, ym - half, x1, ym, mx, ym + half, x0, ym,
+                                 fill=fill, outline="")
+            else:                            # "var"
+                c.create_rectangle(x0 + 1, ym - half, x1 - 1, ym + half,
+                                   fill=fill, outline="")
+        except Exception:
+            pass
 
     def _draw_vscrollbar(self, list_w, sb_v_w, v_track_bottom):
         """右侧（列表边界处）纵向滚动条：轨道 + 表示当前位置的滑块。

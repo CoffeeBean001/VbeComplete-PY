@@ -21731,6 +21731,208 @@ def main():
         check("第 115 节异常: %s" % _e115, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
+    # 116. ★v126d：候选前面的分类小图标（仿 VBE 的成员列表）
+    #     用户口径（原话）："在提示词列表上，能不能像vbe这样，属性和方法前面，
+    #     加上个不一样的图标来分辨，最好做成像vbe这样一样的图表。"
+    # ------------------------------------------------------------------
+    print("\n=== 116. ★v126d：候选窗分类小图标（属性 / 方法 / 变量 / 类型 / 关键字） ===")
+    try:
+        import ui as _ui116
+        _uisrc116 = io.open(os.path.join(ROOT, "ui.py"), encoding="utf-8").read()
+        _esrc116 = io.open(os.path.join(ROOT, "engine.py"),
+                           encoding="utf-8").read()
+
+        # ---- 116.1 纯函数：档位收敛 ----
+        check("116.1 `ui.normalize_kind` 把各种写法收敛成五档：认识的（含大小写混写、"
+              "带空白）原样返回，认不出来的一律回落到 `var` —— 画图标绝不能因为"
+              "一个没见过的 kind 就把候选窗整死",
+              [(_ui116.normalize_kind("prop"), _ui116.normalize_kind(" FUNC "),
+                _ui116.normalize_kind("Kw"), _ui116.normalize_kind("type"),
+                _ui116.normalize_kind("var"),
+                _ui116.normalize_kind(None), _ui116.normalize_kind(""),
+                _ui116.normalize_kind("whatever"))],
+              expect_contain=[("prop", "func", "kw", "type", "var",
+                               "var", "var", "var")])
+
+        # ---- 116.2 纯函数：图标边长跟着行高走 ----
+        check("116.2 `ui.icon_width(行高)` 跟着行高走、并钳在 9..16：小字号不至于"
+              "糊成一点，大字号不至于抢戏（16 正是 VBE 自己那套图标的尺寸）；"
+              "行高 0 / 怪值不抛异常，按常规行高处理",
+              [(_ui116.icon_width(13), _ui116.icon_width(16),
+                _ui116.icon_width(31), _ui116.icon_width(0),
+                _ui116.icon_width("坏值"))],
+              expect_contain=[(9, 10, 16, 10, 10)])
+
+        # ---- 116.3 纯函数：五档各有正常 / 选中两套颜色 ----
+        _kinds116 = ("func", "prop", "var", "type", "kw")
+
+        def _lum116(h):
+            _t = str(h).lstrip("#")
+            _r, _g, _b = int(_t[0:2], 16), int(_t[2:4], 16), int(_t[4:6], 16)
+            return 0.299 * _r + 0.587 * _g + 0.114 * _b
+
+        _col116 = [str(_ui116.icon_color(k)) for k in _kinds116]
+        _col116on = [str(_ui116.icon_color(k, True)) for k in _kinds116]
+        check("116.3 五个档位的颜色互不相同；选中行（深蓝底）另有一套**更亮**的浅色版 "
+              "—— 直接把正常色压在深蓝上会糊成一团（与 v126c 的选中行配色同一考虑）",
+              [(len(set(_col116)) == 5,
+                len(set(_col116on)) == 5,
+                all(_lum116(b) > _lum116(a)
+                    for a, b in zip(_col116, _col116on)))],
+              expect_contain=[(True, True, True)])
+
+        # ---- 116.4 五种形状（假画布，不需要 Tk）----
+        class _RecCanvas116(object):
+            def __init__(self):
+                self.items = []
+
+            def _add(self, tag, *a, **kw):
+                self.items.append((tag, a, kw))
+
+            def create_rectangle(self, *a, **kw):
+                self._add("rect", *a, **kw)
+
+            def create_polygon(self, *a, **kw):
+                self._add("poly", *a, **kw)
+
+            def create_line(self, *a, **kw):
+                self._add("line", *a, **kw)
+
+        def _draw116(kind, on=False):
+            _c = _RecCanvas116()
+            # _draw_icon 不碰 self（纯画图），直接传 None 当实例不影响
+            _ui116.Popup._draw_icon(None, _c, kind, 6, 20, 10, on, "#FFFFFF")
+            return _c.items
+
+        _if116, _ip116 = _draw116("func"), _draw116("prop")
+        _iv116, _it116 = _draw116("var"), _draw116("type")
+        _ik116 = _draw116("kw")
+        _ifon116 = _draw116("func", True)
+
+        def _kw116(items, i, key):
+            """取第 i 个图元的某个属性；图元不够就返回 None（**别抛 IndexError**）。"""
+            try:
+                return items[i][2].get(key)
+            except Exception:
+                return None
+        check("116.4 `_draw_icon` 五种**轮廓**各不相同（不看颜色也分得开，因为选中行"
+              "是深蓝底、颜色对比会被压掉）：方法=横杆+箭头（两块）、属性=方块+一道"
+              "与底色同色的横杠、变量=一块实心方块、类型=空心框（fill 空、outline "
+              "上色）、关键字=菱形；选中行换成浅色版",
+              [([t for t, _a, _k in _if116], [t for t, _a, _k in _ip116],
+                [t for t, _a, _k in _iv116], [t for t, _a, _k in _it116],
+                [t for t, _a, _k in _ik116],
+                _kw116(_ip116, 1, "fill"),         # 属性那道杠 = 底色
+                _kw116(_it116, 0, "fill"),         # 类型：空心
+                _kw116(_it116, 0, "outline"),
+                _kw116(_ifon116, 1, "fill"))],
+              expect_contain=[(["rect", "poly"], ["rect", "line"], ["rect"],
+                               ["rect"], ["poly"],
+                               "#FFFFFF", "", _ui116.COLOR_ICON["type"],
+                               _ui116.COLOR_ICON_ON["func"])])
+
+        # ---- 116.5 引擎：五档判据 + 优先级 ----
+        class _U116(object):
+            def show(self, *a, **k):
+                pass
+
+            def update_selection(self, *a, **k):
+                pass
+
+            def hide(self, *a, **k):
+                pass
+
+        class _B116(object):
+            def __init__(self, pool, ctx):
+                self._pool = list(pool)
+                self._ctx = dict(ctx)
+
+            def get_context(self):
+                return dict(self._ctx)
+
+            def get_identifiers(self):
+                return list(self._pool)
+
+            def get_proc_kinds(self):
+                return {"mymethod": "sub", "myprop": "property",
+                        "myfunc": "function"}
+
+            def get_type_names(self):
+                return {"cls1", "tenum"}
+
+            def apply_completion(self, *a, **k):
+                return None
+
+        _c116 = E.Completer(_B116([], {}), _U116())
+        _ck116 = _c116._classify_matches(
+            ["myMethod", "MyProp", "myFunc", "Cls1", "TEnum", "MsgBox",
+             "String", "Sub", "fooVar", "xlUp"])
+        check("116.5 `_classify_matches` 的五档：工程内 Sub/Function=方法、"
+              "Property=属性、工程类型（类 / Type / Enum）=类型、内建函数=方法、"
+              "语言关键字=关键字、其余=变量；★优先级按'工程内过程 > 工程类型 > "
+              "内建函数 > 内建类型 > 关键字'——所以 `String`（既是内建函数又是内建"
+              "类型）给**方法**图标（它确实能被调用）",
+              [(_ck116.get("myMethod"), _ck116.get("MyProp"),
+                _ck116.get("myFunc"), _ck116.get("Cls1"), _ck116.get("TEnum"),
+                _ck116.get("MsgBox"), _ck116.get("String"),
+                _ck116.get("Sub"), _ck116.get("fooVar"),
+                _ck116.get("xlUp"))],
+              expect_contain=[("func", "prop", "func", "type", "type",
+                               "func", "func", "kw", "var", "var")])
+
+        # ---- 116.6 trigger 真的把档位填上、hide 清空 ----
+        _pool116 = [("myProp", "M1", "ProcA", False),
+                    ("myMethod", "M1", "ProcA", False),
+                    ("myVar", "M1", "ProcA", False)]
+        _c116b = E.Completer(
+            _B116(_pool116, {"line_no": 1, "caret_col": 7,
+                             "line_text": "    my",
+                             "in_string": False, "in_comment": False,
+                             "in_type_position": False,
+                             "proc_name": "ProcA", "module_name": "M1"}),
+            _U116())
+        _c116b.trigger(True)
+        _got116 = (_c116b.match_kinds.get("myProp"),
+                   _c116b.match_kinds.get("myMethod"),
+                   _c116b.match_kinds.get("myVar"),
+                   set(_c116b.match_kinds) == set(_c116b.matches))
+        _c116b.hide()
+        check("116.6 集成：`trigger` 之后每个候选都有一档（与 `matches` 一一对应），"
+              "Property -> prop、Sub -> func、变量 -> var；`hide()` 后清空 "
+              "（与 `match_hits` 同生同灭，不许把上一批的档位带到下一次）",
+              [_got116[0], _got116[1], _got116[2], _got116[3],
+               dict(_c116b.match_kinds)],
+              expect_contain=["prop", "func", "var", True, {}])
+
+        # ---- 116.7 接线护栏（UI）----
+        check("116.7 接线护栏（ui.py 源码）：①`_sync_from_completer` 从 completer 读 "
+              "`match_kinds`；②名字列起点让出图标列（`PAD_X + icon_w + ICON_GAP`）；"
+              "③画的时候按行取档位、**拿不到就不画**（`if _k:`，宁可空着也不能一律"
+              "画成'变量'）；④颜色只从 `icon_color()` 出（不许各处硬编码）；"
+              "⑤`_draw_icon` 只定义一次",
+              [("match_kinds" in _uisrc116,
+                "name_x0 = PAD_X + icon_w + ICON_GAP" in _uisrc116,
+                "if _k:" in _uisrc116,
+                _uisrc116.count("fill = icon_color(k, on)") == 1,
+                _uisrc116.count("def _draw_icon(") == 1)],
+              expect_contain=[(True, True, True, True, True)])
+
+        # ---- 116.8 接线护栏（engine）----
+        check("116.8 接线护栏（engine.py 源码）：`trigger` 在 matches **定稿之后**"
+              "调 `_classify_matches` 填 `match_kinds`；`__init__` 与 `hide()` 各清"
+              "一次；判据只定义一处 —— 放前面会白算（后面几道收窄 / 回声防护会删候选）",
+              [("self.match_kinds = self._classify_matches(matches)" in _esrc116,
+                _esrc116.count("self.match_kinds = {}") >= 2,
+                _esrc116.count("def _classify_matches(") == 1,
+                _esrc116.index("self.match_kinds = self._classify_matches(matches)")
+                > _esrc116.index("if HIDE_ON_COMPLETE and not manual"))],
+              expect_contain=[(True, True, True, True)])
+    except Exception as _e116:
+        import traceback as _tp116
+        _tp116.print_exc()
+        check("第 116 节异常: %s" % _e116, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原
     #     这不是在测产品代码，而是在测【测试网自己】：一节忘了还原，后面每一节
     #     都会悄悄跑在别人的假对象上，而**不会有任何一条用例变红**。

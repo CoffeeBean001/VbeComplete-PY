@@ -326,6 +326,19 @@
   constants at the top of `ui.py`. (Same version moved the intra-procedure jumps to
   `Ctrl+Shift+↑` / `Ctrl+Shift+↓`, see above.)
 
+- **v126d — a type icon in front of every candidate.** The list draws a small icon to the left of
+  each name, the way the VBE's own member list does, so a property and a method can be told apart at a
+  glance: **green arrow** for methods / functions (`Sub`, `Function`, built-in functions such as
+  `MsgBox`), **purple block with a bar** for `Property` members, **blue block** for variables and
+  constants, **amber hollow box** for types (class modules, `Type`, `Enum`, built-in types) and a
+  **grey diamond** for language keywords. The icons are **drawn with canvas primitives**, not shipped
+  bitmaps: they scale with the row height (9–16 px), so a 24 pt editor font does not leave them
+  microscopic, and every shape differs in *outline* too (arrow / barred block / solid / hollow /
+  diamond) — the selected row is dark blue, where colour contrast alone would not survive. The
+  classification is one function, `Completer._classify_matches`, with a fixed priority: project
+  procedures > project types > built-in functions > built-in types > keywords > everything else
+  (`var`). A candidate with no known kind simply gets **no** icon rather than a misleading one.
+
 **Coexistence**
 
 - After `object.`, VbeComplete steps aside and lets the VBE's own, type-aware member list take over.

@@ -1164,6 +1164,10 @@ class Completer:
         # 当前候选各自的命中下标：{名字: [下标, ...]}，供 UI 把命中的字符标红。
         # 由 trigger() 填写、hide() 清空。UI 通过 completer 读取，不占用 show() 签名。
         self.match_hits = {}
+        # ★v126d：当前候选各自的【图标类型】{名字: "func"/"prop"/"var"/"type"/"kw"}，
+        # 供 UI 在名字左边画一个 VBE 那样的小图标（属性 / 方法一眼分得开）。
+        # 与 match_hits 同生同灭：trigger 填、hide 清。
+        self.match_kinds = {}
         # ---- 滚动视口 ----
         # 弹窗高度固定显示 view_rows 行，但候选永远【不会】被截断：
         # 多余的排在窗口外，靠上下键/滚轮滚动查看。view_top 是当前窗口的起始下标。
@@ -1675,6 +1679,81 @@ class Completer:
             return {str(k).lower(): str(v).lower() for k, v in dict(d).items()}
         except Exception:
             return {}
+
+    def _classify_matches(self, matches):
+        """给每个候选打一个**图标类型**，供候选窗在名字左边画小图标（★v126d）。
+
+        用户口径（原话）："在提示词列表上，能不能像vbe这样，属性和方法前面，加上个
+        不一样的图标来分辨，最好做成像vbe这样一样的图表。"
+
+        五个档位（UI 侧只管照着画，判据全在这一处 —— 同一条语义只有一份实现）：
+          * `prop` —— 工程里的 `Property Get/Let/Set`；
+          * `func` —— 工程里的 `Sub` / `Function` / `Declare`，以及 VBA 内建**函数**
+            （`MsgBox` / `Left` / `Split` …）；
+          * `type` —— 可作为数据类型的名字：工程里的类模块 / 窗体 / `Type` / `Enum`，
+            以及内建类型名（`String` / `Long` …）；
+          * `kw`   —— VBA 语言关键字（`Sub` / `If` / `For` …）；
+          * `var`  —— 其余一切（变量 / 参数 / 常量 / 宿主枚举常量 …）。
+
+        ⚠️ 判定顺序就是优先级，别随意调换：
+          1) **工程内过程优先** —— 你写了个 `Function String(...)`，那 `String`
+             在你这儿就是方法，不是内建类型；
+          2) 然后工程内类型（"你自己的类"更像类型而不是函数）；
+          3) 再内建函数 —— `String` / `Date` 同时在内建函数与内建类型里，
+             这里给"函数"图标更有用（它确实能被调用）；
+          4) 内建类型、关键字；
+          5) 剩下的全算变量。
+
+        为什么不用"后端记录里的 kind"：`get_identifiers()` 的记录是
+        `(name, module, proc, priv)`，**压根没有 kind** —— 想带上它得改后端记录
+        结构、作用域过滤、缓存三处；而上面这几张表本来就是现成的（过程种类、
+        类型名、内建三张 lower 集合），一次字典/集合查询的代价，一个候选一个。
+
+        任何异常都不许冒泡：打不上图标就当 `var`，候选窗绝不能因为"图标"挂掉。
+        """
+        out = {}
+        try:
+            items = list(matches or ())
+        except Exception:
+            return out
+        if not items:
+            return out
+        try:
+            import vba_builtins as _vb
+        except Exception:
+            _vb = None
+        try:
+            proc_kinds = self._proc_kinds() or {}
+        except Exception:
+            proc_kinds = {}
+        try:
+            proj_types = self._type_name_set() or set()
+        except Exception:
+            proj_types = set()
+        _bf = getattr(_vb, "ACTIVE_FUNCTION_LOWER", frozenset()) \
+            if _vb is not None else frozenset()
+        _bt = getattr(_vb, "ACTIVE_TYPE_LOWER", frozenset()) \
+            if _vb is not None else frozenset()
+        _bk = getattr(_vb, "ACTIVE_KEYWORD_LOWER", frozenset()) \
+            if _vb is not None else frozenset()
+        for n in items:
+            try:
+                low = str(n).lower()
+                if low in proc_kinds:
+                    out[n] = "prop" if proc_kinds[low] == "property" else "func"
+                elif low in proj_types:
+                    out[n] = "type"
+                elif low in _bf:
+                    out[n] = "func"
+                elif low in _bt:
+                    out[n] = "type"
+                elif low in _bk:
+                    out[n] = "kw"
+                else:
+                    out[n] = "var"
+            except Exception:
+                out[n] = "var"
+        return out
 
     def _is_callable_name(self, name):
         """这个名字能不能被调用（该补括号）。★v98 建，★v99 收紧。
@@ -2804,6 +2883,9 @@ class Completer:
             self.hide()
             return
         self.matches = matches
+        # ★v126d：给这批候选各打一个图标类型（UI 照它画小图标）。放在 matches
+        # 定稿之后 —— 前面那几道收窄 / 回声防护会删候选，先算等于白算。
+        self.match_kinds = self._classify_matches(matches)
         # 按 Tab 即可直接确认当前已输入的完整名字；否则选中列表首项。
         exact = word.lower()
         sel = 0
@@ -3096,6 +3178,7 @@ class Completer:
         self.ctx = None
         self.word_is_complete = False
         self.match_hits = {}
+        self.match_kinds = {}
         self.ui.hide()
 
     def maybe_hide_on_outside_click(self, px, py):

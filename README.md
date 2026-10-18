@@ -10,6 +10,8 @@
 
 The VBE only completes `object.member` — never *your own* variable or procedure names. This fills
 that gap: type a few letters, a live-filtered list appears next to the caret, `Tab` accepts it.
+Each entry carries a small **type icon** (method / property / variable / type / keyword), the same
+idea as the VBE's own member list, so you can tell them apart at a glance.
 Works in the VBE shared by **Microsoft Office** (Excel, Word, PowerPoint, Access, Visio) and
 **WPS Office** — the host is detected automatically.
 
