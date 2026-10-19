@@ -15269,15 +15269,21 @@ def main():
               expect_contain=[(0, False, True, True, False)])
 
         # ---- 83.4 插入位置纯函数（不碰 COM，可离线钉死）----
-        _sp = VB83._space_insert_pos
-        check("83.4 `_space_insert_pos`：词尾在行末 -> 就在词尾补；"
-              "词尾右边已经是空格 -> 不补（不重复）；"
-              "右边是别的字符 -> 补（把关键字与后面的东西隔开）",
-              [(_sp("    public", 5, "public"),            # k=10 == len -> 10
-                _sp("    public Sub", 5, "public"),       # k=10 是空格 -> None
-                _sp("    publicx", 5, "public"),          # k=10 是 'x' -> 10
-                _sp("    public", 5, ""))],               # 空 completion -> 4
-              expect_contain=[(10, None, 10, 4)])
+        # ★v126e：入参从「写之前的行 + 词起始列」改成「**VBE 格式化之后**的行 +
+        # 词尾下标」—— 那个下标必须来自真行，见 `_space_after_pos` 的说明。
+        _sp = VB83._space_after_pos
+        check("83.4 `_space_after_pos(line, 词尾下标)`：词尾在行末 -> 就在词尾补；"
+              "词尾右边已经是空格 / Tab -> 不补（不重复）；"
+              "右边是别的字符 -> 补（把关键字与后面的东西隔开）；"
+              "下标越界按行末、负数 / 垃圾值不补",
+              [(_sp("    public", 10),            # k=10 == len -> 10
+                _sp("    public Sub", 10),       # k=10 是空格 -> None
+                _sp("    public\tSub", 10),      # Tab 也算已有空白 -> None
+                _sp("    publicx", 10),          # k=10 是 'x' -> 10
+                _sp("    public", 99),           # 越界 -> 按行末 10
+                _sp("    public", -1),           # 负数 -> None
+                _sp("    public", "坏值"))],      # 垃圾 -> None
+              expect_contain=[(10, None, None, 10, 10, None, None)])
 
         # ---- 83.5 源码护栏：三方接线必须都在 ----
         #      ★v103c：接入点从"两个独立判据"合并成一条 `_completion_followup`
@@ -15302,15 +15308,18 @@ def main():
         _bsrc83 = io.open(os.path.join(ROOT, "vbe_bridge.py"),
                           encoding="utf-8").read()
         check("83.6 源码护栏：后端必须有开关 `AUTO_SPACE_AFTER_KEYWORD`、"
-              "用 `_space_insert_pos` 定位、并在光标就位后经 `_send_char` 注入"
-              "（真机实测：VBE 会 trim 行尾空格，只能注入按键）",
+              "用 `_space_after_pos(actual, end0)` 定位、并在光标就位后经 "
+              "`_send_char` 注入（真机实测：VBE 会 trim 行尾空格，只能注入按键）；"
+              "★v126e：定位**必须**喂 VBE 格式化之后的 `actual` + 修正过的 "
+              "`end0`，喂 `new_line` / `word_start_col` 就会偏（用户报的"
+              "「光标落在 sub 中间」）",
               [("AUTO_SPACE_AFTER_KEYWORD = _env_flag(" in _bsrc83,
-                "_space_insert_pos(new_line, word_start_col, completion)"
-                in _bsrc83,
+                "_space_after_pos(actual, end0)" in _bsrc83,
                 "getattr(self, \"_send_char\", None)" in _bsrc83,
-                "def _space_insert_pos(" in _bsrc83,
+                "def _space_after_pos(" in _bsrc83,
+                "_space_insert_pos" not in _bsrc83,
                 "want_space=False" in _bsrc83)],
-              expect_contain=[(True, True, True, True, True)])
+              expect_contain=[(True, True, True, True, True, True)])
 
         _vsrc83 = io.open(os.path.join(ROOT, "vba_builtins.py"),
                           encoding="utf-8").read()
@@ -21931,6 +21940,117 @@ def main():
         import traceback as _tp116
         _tp116.print_exc()
         check("第 116 节异常: %s" % _e116, [True], expect_contain=[False])
+
+    # ------------------------------------------------------------------
+    # 117. ★v126e：`ReplaceLine` 会触发行格式化 —— 落光标的下标必须按【真行】算
+    #     用户口径（原话）："我输入 MsgBox \"已取消！\",vbExclamation:Exit su，
+    #     此时提示了 sub，我按 tab 键之后，由于 vbe 会自动格式化，会导致我们的
+    #     sub 在打印到编辑器后，光标落在了 sub 单词中间，并打印了空格。"
+    #
+    #     真机实测（v126e，独立 Excel 实例）：
+    #       写 `MsgBox "abc",vbExclamation:Exit Sub`
+    #       读 `MsgBox "abc", vbExclamation: Exit Sub`   ← `,` 和 `:` 后各补一格
+    #     词前面凭空多出 2 个字符 ⇒ 拿"写之前"的下标定位就会差 2 格，
+    #     正好落进 3 个字母的 `Sub` 中间，随后注入的空格就打在词中间。
+    # ------------------------------------------------------------------
+    print("\n=== 117. ★v126e：VBE 行格式化后，补空格的光标必须落在词尾 ===")
+    try:
+        import vbe_bridge as VB117
+        _o_vbe117 = VB117._get_vbe_cached
+
+        class _Mod117(object):
+            """假 CodeModule：`ReplaceLine` 忠实模拟真机测到的行格式化。
+
+            只模拟这一条（`,` / `:` 后面补一个空格 —— 下一个字符本来不是空白时），
+            因为正是它把用户那个 bug 造出来的。
+            """
+
+            def __init__(self, lines):
+                self.lines = list(lines)
+                self.writes = []
+
+            def Lines(self, n, c=None):
+                if c is None:
+                    c = max(1, len(self.lines) - n + 1)
+                return "\r\n".join(self.lines[n - 1:n - 1 + c])
+
+            @property
+            def CountOfLines(self):
+                return len(self.lines)
+
+            def ReplaceLine(self, n, text):
+                t = str(text).rstrip("\r\n")
+                _out = []
+                for _i, _ch in enumerate(t):
+                    _out.append(_ch)
+                    if _ch in ",:" and (_i + 1 >= len(t)
+                                        or t[_i + 1] not in " \t"):
+                        _out.append(" ")
+                self.lines[n - 1] = "".join(_out)
+                self.writes.append(("replace", n, self.lines[n - 1]))
+
+        class _Pane117(object):
+            def __init__(self, mod, sel=(1, 1, 1, 1)):
+                self.CodeModule = mod
+                self.sel = sel
+                self.sets = []
+
+            def GetSelection(self):
+                return self.sel
+
+            def SetSelection(self, sl, sc, el, ec):
+                self.sel = (sl, sc, el, ec)
+                self.sets.append(self.sel)
+
+        class _Vbe117(object):
+            def __init__(self, pane):
+                self.ActiveCodePane = pane
+
+        def _run117(line, want_space):
+            """补 `Sub`（`su` -> `Sub`），返回 (格式化后的行, 落点列, 注入的字符)。"""
+            _mod = _Mod117([line])
+            _pane = _Pane117(_mod)
+            VB117._get_vbe_cached = lambda: _Vbe117(_pane)
+            _sent = []
+            try:
+                _be = VB117.VbeBackend(
+                    send_char=lambda ch: (_sent.append(ch), True)[1])
+                _ws = line.rindex("su") + 1          # 1-based 字符列
+                _be.apply_completion(1, _ws, _ws + 2, "Sub",
+                                     want_space=want_space)
+            finally:
+                VB117._get_vbe_cached = _o_vbe117
+            return (_mod.lines[0], (_pane.sets[-1] if _pane.sets else None),
+                    list(_sent))
+
+        _L117 = '    MsgBox "abc",vbExclamation:Exit su'
+        _got117 = _run117(_L117, True)
+        # 期望的落点 = 【格式化之后那一行】里 `Sub` 的词尾（字符下标+1）。
+        # ⚠️ 这个值是用 actual 现算的，跟实现怎么算无关 —— 差一格就会红。
+        _end117 = _got117[0].index("Sub") + 3
+        check("117.1 ★用户报的场景：`MsgBox \"abc\",vbExclamation:Exit su` 里 Tab 补成 "
+              "`Sub`，VBE 把 `,` 与 `:` 后面各补一个空格（词前面多 2 个字符）—— "
+              "光标必须落在【格式化之后那一行】的 `Sub` **末尾**（字符列 = 词尾下标+1），"
+              "注入的那个空格也只能落在那里；旧口径按'写之前'的下标算会差 2 格，"
+              "正好落进 `Sub` 中间、空格也打在词中间（`Su b`）",
+              [_got117[0], _got117[1], _got117[2], _end117 + 1],
+              expect_contain=['    MsgBox "abc", vbExclamation: Exit Sub',
+                              (1, _end117 + 1, 1, _end117 + 1),
+                              [" "], _end117 + 1])
+
+        _got117b = _run117(_L117, False)
+        _end117b = _got117b[0].index("Sub") + 3
+        check("117.2 同一行的**补括号/不补空格**那条路：`_find_completion_end` "
+              "早就会按真行修正词尾，所以光标同样落在 `Sub` 末尾、且什么都不注入 —— "
+              "反过来说，v126e 的 bug 只在'补空格'那条路上（它把修正过的 end0 "
+              "又覆盖成了旧下标）",
+              [_got117b[1], _got117b[2], _end117b + 1],
+              expect_contain=[(1, _end117b + 1, 1, _end117b + 1), [],
+                              _end117b + 1])
+    except Exception as _e117:
+        import traceback as _tp117
+        _tp117.print_exc()
+        check("第 117 节异常: %s" % _e117, [True], expect_contain=[False])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原

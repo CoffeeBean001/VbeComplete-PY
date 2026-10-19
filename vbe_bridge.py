@@ -1946,8 +1946,8 @@ def _in_call_stmt(line_text):
 _CALL_STMT_RE = re.compile(r"^[ \t]*call(?![A-Za-z0-9_])", re.I)
 
 
-def _space_insert_pos(new_line, word_start_col, completion):
-    """要在 `new_line` 的哪个【字符下标】注入一个空格；不需要补就返回 None。
+def _space_after_pos(line, end0):
+    """要在 `line` 的哪个【字符下标】注入一个空格；不需要补就返回 None。
 
     ★v103b 纯函数（不碰 COM），供 `apply_completion` 判"关键字后要不要补空格"，
     也让这条判据能被离线用例直接钉住。
@@ -1958,17 +1958,25 @@ def _space_insert_pos(new_line, word_start_col, completion):
       * 词尾右边是别的字符      -> 要补（把关键字与后面的东西隔开）。
     注意返回的是**词尾下标**（0-based，插入点），不是"跳过空白之后"的位置 ——
     同 v98 括号那条铁律：为判断而算的位置不能拿去当插入点。
+
+    ★★v126e：`end0` **必须来自 VBE 格式化之后的那一行**（`apply_completion`
+    里的 `actual` + `_find_completion_end` 修正过的值）。原来这里按
+    `word_start_col + len(completion)` 算，那个下标属于"写之前"那一行 —— 而
+    `ReplaceLine` 会触发行格式化，在 `,` 后、`:` 后各补一个空格（实测：
+    `MsgBox "已取消！",vbExclamation:Exit Sub`
+    -> `MsgBox "已取消！", vbExclamation: Exit Sub`），词前面凭空多出 2 个
+    字符 ⇒ 旧下标偏小 ⇒ 光标落进 `Sub` 中间、注入的空格打在词中间。
     """
     try:
-        k = int(word_start_col) - 1 + len(str(completion or ""))
+        k = int(end0)
     except Exception:
         return None
     if k < 0:
         return None
-    line = str(new_line or "")
-    if k >= len(line):
-        return k
-    if line[k] in " \t":
+    text = str(line or "")
+    if k >= len(text):
+        return len(text)        # 越界 -> 就补在行末（绝不返回一个行外的下标）
+    if text[k] in " \t":
         return None
     return k
 
@@ -5857,12 +5865,18 @@ class VbeBackend:
             # （带实参要写成 `Call judge(1, 2)`），补一个尾随空格纯属无意义字符，
             # 而且那个位置的空括号本来就会被 VBE 删掉（v102 实测）。判据与上面
             # 补括号那道用的是**同一个** `_in_call_stmt`（同一语义只有一份实现）。
+            #
+            # ★★v126e：**这个下标不能在这里算**。`ReplaceLine` 会触发 VBE 的行
+            #   格式化，它会在 `,` 后、`:` 后各补一个空格（实测：
+            #   `MsgBox "已取消！",vbExclamation:Exit Sub`
+            #   -> `MsgBox "已取消！", vbExclamation: Exit Sub`，**词前面多 2 个
+            #   字符**）。在写入【之前】算出来的下标到了真行上就是错的：光标
+            #   少走 2 格 ⇒ 落进 `Sub` 中间，随后注入的空格就打在词中间
+            #   （`S Ub`）—— 用户报的那个 bug。所以改到下面 `actual` 读回来、
+            #   `_find_completion_end` 修正过 `end0` 之后再算。
             space_at = None
-            if want_space and AUTO_SPACE_AFTER_KEYWORD \
-                    and not _in_call_stmt(line_text):
-                space_at = _space_insert_pos(new_line, word_start_col, completion)
-            _log("apply_completion: want_space=%s AUTO_SPACE=%s space_at=%s"
-                 % (want_space, AUTO_SPACE_AFTER_KEYWORD, space_at))
+            want_sp = bool(want_space and AUTO_SPACE_AFTER_KEYWORD
+                           and not _in_call_stmt(line_text))
 
             # 词尾字符下标（0-based）
             start0 = max(0, word_start_col - 1)
@@ -5885,6 +5899,17 @@ class VbeBackend:
                 end0 = _find_completion_end(actual, completion,
                                             end0 - len(completion), end0)
             end0 = min(end0, len(actual))
+            # ★v126e：补空格的下标在【VBE 格式化之后】的真行 `actual` 上算 ——
+            # 位置就是补全词的词尾，也就是刚被 `_find_completion_end` 修正过的
+            # `end0`。为什么不能再拿 `word_start_col + len(completion)`：那个下标
+            # 属于【写之前】那一行，VBE 在 `,` / `:` 后面各补一个空格之后它就
+            # 偏了（见上面 v126e 那段）。判据只有 `_space_after_pos` 这一份实现。
+            if want_sp:
+                space_at = _space_after_pos(actual, end0)
+            _log("apply_completion: want_space=%s AUTO_SPACE=%s space_at=%s "
+                 "end0=%s actual=%r"
+                 % (want_space, AUTO_SPACE_AFTER_KEYWORD, space_at, end0,
+                    str(actual).rstrip("\r\n")))
             # ★v107c：留给下面"要不要唤出参数信息"用 —— 光标最终落在哪一行文本上。
             # 若"二次确认"发现 VBE 又改写了这一行，下面会把它换成实际那一行。
             param_line = actual

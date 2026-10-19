@@ -22,6 +22,13 @@
   keyword gets its own trailing space (`public `). Inside a `Function`, its **own** name is the
   return-value variable, so completing it there — `MyFunc = …` — inserts nothing
   (no `MyFunc() = …`).
+  Writing a line back also makes the VBE **reformat** it — it adds a space after each `,` and `:`
+  and around `=` (`MsgBox "abc",vbExclamation:Exit Sub` reads back as
+  `MsgBox "abc", vbExclamation: Exit Sub`), and it trims trailing spaces. So the caret index is
+  computed on the **line as the VBE actually stored it**, never on the text we meant to write: the
+  word's end is re-located inside the stored line, and only then does the trailing space get
+  injected there (v126e — before that fix the index was two cells short on such a line and the caret
+  landed *inside* `Sub`, with the injected space splitting the word).
 - **Quiet while you declare — except for the keywords that belong there.** At a declaration —
   `Dim …`, `Const …`, `Sub …`, `Function …`, `Property …`, `Type …` — the list never offers
   *existing symbols* (variable names, procedure names, module names): you are *inventing* a name, so
