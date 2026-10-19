@@ -81,7 +81,6 @@ import settings
 import vbe_bridge
 import snippets
 import snippet_ui
-import jump_ui
 import vba_builtins
 import wordbank
 from vbe_bridge import VbeBackend, com_backoff_remaining
@@ -111,8 +110,6 @@ VK_CONTROL = 0x11
 VK_MENU = 0x12         # Alt
 VK_I = 0x49            # v107c：Ctrl+Shift+I = VBE 的「参数信息 / 快速信息」
 VK_Q = 0x51            # v115：Ctrl+Q = 代码片段窗
-VK_O = 0x4F            # v121：Ctrl+Shift+O = 过程大纲
-VK_F = 0x46            # v121：Ctrl+Shift+F = 查找引用（文本级）
 VK_D = 0x44            # v122：Ctrl+D = 复制当前行到下方
 VK_K = 0x4B            # v122：Ctrl+K = 删除整行
 VK_OEM_2 = 0xBF        # v120：Ctrl+/ = 批量注释 / 取消注释（US 布局的 `/` 键）
@@ -359,49 +356,6 @@ def _comment_vk_ok(vk, ctrl_down, shift_down, alt_down, win_down):
     if shift_down or alt_down or win_down:
         return False
     return True
-
-
-# ---------------------------------------------------------------------------
-# ★v121：过程大纲（`Ctrl+Shift+O`）/ 查找引用（`Ctrl+Shift+F`）—— 第 0 档
-#
-# 用户口径（原话）："那你先帮我处理第0档的那个吧，我们先一步步来。" 第 0 档 =
-# 不接 AI、纯本地的两条：
-#   ① 过程大纲 + 跳转：列出本模块所有 `Sub` / `Function` / `Property`，模糊搜、
-#      回车跳过去（VBE 右上角那个过程下拉框在几十个过程时基本没法用）；
-#   ② 文本级「查找引用」：某个名字在本工程里出现在哪些行，回车跳过去。
-#
-# 分工与其他"接管一次按键"的功能同一副骨架：
-#   * 钩子线程只判"这一下该不该由我们接管"（纯函数 + 闸门），**绝不碰 COM**；
-#   * 读模块 / 跳光标都在主线程（这条是硬要求：钩子线程没有 COM 单元）；
-#   * 与 Ctrl+Q 不同的是：这两个动作**自身要读 COM**，所以闸门里必须保留
-#     "COM 退避中不接管" —— 否则退避期间吞了键却弹不出窗，用户看到的是
-#     "按了没反应"。
-#
-# 想关掉：`settings.ini` 里 `NO_OUTLINE = 1` / `NO_USAGES = 1`。
-OUTLINE_POPUP = not settings.flag("NO_OUTLINE", False)
-USAGES_POPUP = not settings.flag("NO_USAGES", False)
-
-
-def _outline_vk_ok(vk, ctrl_down, shift_down, alt_down, win_down):
-    """这一下是不是"Ctrl+Shift+O"（★v121，纯函数，无系统调用）。
-
-    要求 **Ctrl 和 Shift 都按着**、Alt / Win 都不按。`Ctrl+Shift+O` 是 VS Code
-    "转到文件中的符号"的位置，VBE 自己没绑定它 ⇒ 吞掉不丢任何原生功能。
-    """
-    if vk != VK_O or not ctrl_down or not shift_down:
-        return False
-    return not (alt_down or win_down)
-
-
-def _usages_vk_ok(vk, ctrl_down, shift_down, alt_down, win_down):
-    """这一下是不是"Ctrl+Shift+F"（★v121，纯函数，无系统调用）。
-
-    同上：Ctrl+Shift 都要按着，Alt / Win 不按。VBE 的查找是 `Ctrl+F`、替换是
-    `Ctrl+H`，`Ctrl+Shift+F` 在 VBE 代码窗格里没有绑定。
-    """
-    if vk != VK_F or not ctrl_down or not shift_down:
-        return False
-    return not (alt_down or win_down)
 
 
 # ---------------------------------------------------------------------------
@@ -1266,10 +1220,6 @@ def main():
         # ★v115：代码片段窗。数据库**惰性打开**（第一次 Ctrl+Q 才建库文件）——
         # 不用这个功能的人不该被塞一个空数据库。
         snippet_win = snippet_ui.SnippetWindow(root, snippets.SnippetStore())
-        # ★v121：过程大纲 / 查找引用窗 —— 两个功能**共用一个窗**（都是"一列可
-        # 模糊搜索的结果，回车跳过去"）。同样是纯 tkinter，不碰 COM：读模块与
-        # 跳光标都在这两个回调里（主线程）做。
-        jump_win = jump_ui.JumpWindow(root)
     except Exception:
         raise
 
@@ -1419,141 +1369,6 @@ def main():
             snippet_win.open_at_caret(rect)
         except Exception:
             _log("snippet: 开窗失败（详见异常）")
-
-    # ---- ★v121：过程大纲（Ctrl+Shift+O）/ 查找引用（Ctrl+Shift+F）----
-    def _jump_back_to_vbe():
-        """大纲 / 引用窗关掉之后，把焦点还给 VBE（失败只影响手感）。"""
-        try:
-            backend.focus_vbe()
-        except Exception:
-            pass
-
-    def _jump_picked(item):
-        """用户在窗里单击 / 回车选了一项：跳到那个位置（主线程，要 COM）。
-
-        顺序：**先跳、再还焦点**。`goto_location` 里的 `CodePane.Show()` 负责把
-        那个模块的代码窗切到前台并把光标放好；随后把前台窗口还给 VBE —— 窗是
-        Toplevel，焦点那一瞬间在我们自己身上，不还回去用户敲键盘会"没反应"。
-
-        ★v121b 起**窗不会因为跳转而收起**（用户口径：导航窗手动关）⇒ 这里只管
-        跳和还焦点，跳成没跳成由窗自己在状态栏报（"已跳到 …" / 红字说原因）。
-
-        `expect` 是"锚点"：大纲给过程名、引用给查的那个名字。跳之前后端会再读一遍
-        目标行核对，行号一旦失真就**不跳**（宁可这一次什么都不发生，也绝不把光标
-        扔到不相干的代码上）。
-        """
-        try:
-            ok = backend.goto_location(item.get("module"), item.get("line"),
-                                       expect=item.get("expect") or None)
-        except Exception:
-            ok = False
-        _log("jump: %s:%s -> %r" % (item.get("module"), item.get("line"), ok))
-        if not ok:
-            # 跳不成也**别收窗**：窗里会显示一句"那个模块还没打开代码窗"。
-            # 收起窗再什么都不发生 = "按了没反应"，是最差的手感。
-            return False
-        _jump_back_to_vbe()
-        # 光标换了位置，轮询快照必须作废，否则下一次轮询会拿旧行文本比对，
-        # 平白多弹一次候选窗（与 _delete_blank_line_here 同一条规矩）。
-        state["cur_ctx"] = None
-        return True
-
-    if jump_win is not None:
-        jump_win.on_pick = _jump_picked
-        jump_win.on_closed = _jump_back_to_vbe
-
-    def _jump_rect():
-        """开窗【之前】量光标屏幕坐标（窗一显示，前台就变了，量不到了）。"""
-        try:
-            return caret_screen_rect()
-        except Exception:
-            return None
-
-    def _open_outline():
-        """Ctrl+Shift+O：把当前模块的过程列成一列，模糊搜 + 单击 / 回车跳过去。
-
-        窗开着的时候再按一次 = 收起（手动关窗的主路径之一）。没有过程也照样开窗
-        （底下状态栏会说明"这里没有 Sub / Function / Property"）—— 吞了按键却
-        什么都不发生是最差的手感。
-        """
-        if jump_win is None:
-            return
-        try:
-            if jump_win.is_open():
-                jump_win.close()
-                return
-            try:
-                completer.hide()
-            except Exception:
-                pass
-            rect = _jump_rect()
-            mod, procs = backend.list_procedures_here()
-            items = []
-            for row in procs:
-                name, kind, line, priv, text = row
-                label = "%s %s%s" % (kind, name, "　·　Private" if priv else "")
-                items.append({"label": label, "module": mod, "line": line,
-                              "kind": kind, "expect": name, "text": text})
-            if not mod:
-                # 拿不到模块名 = 当前没有打开的代码窗（用户把代码窗关了）。
-                # 这时整工具本来也不工作，状态栏如实说明，别说成"0 个过程"。
-                sub = "当前没有打开代码窗 —— 先在 VBE 里双击一个模块"
-            elif not items:
-                sub = mod + "　·　这里没有 Sub / Function / Property"
-            else:
-                sub = "%s　·　%d 个过程" % (mod, len(items))
-            jump_win.show_items(rect, items, title="过程大纲", subtitle=sub)
-        except Exception:
-            _log("outline: 开窗失败（详见异常）")
-
-    def _open_usages():
-        """Ctrl+Shift+F：查"光标处那个名字"在本工程里出现在哪些行（文本级）。
-
-        刻意只做**文本级**：不解析类型、不区分同名变量在不同过程里的作用域 ——
-        那需要一张真实的符号表，VBE 只给我们纯文本。界面上照这个口径标，不假装
-        是重构用的"查找引用"。窗开着再按一次 = 收起。
-        """
-        if jump_win is None:
-            return
-        try:
-            if jump_win.is_open():
-                jump_win.close()
-                return
-            try:
-                completer.hide()
-            except Exception:
-                pass
-            rect = _jump_rect()
-            mod, word = backend.word_at_caret()
-            if not word:
-                _why = ("当前没有打开代码窗 —— 先在 VBE 里双击一个模块"
-                        if not mod else
-                        "光标不在一个名字上 —— 把光标放进名字里"
-                        "（或紧跟其后）再按一次")
-                jump_win.show_items(rect, [], title="查找引用", subtitle=_why)
-                return
-            mod0, hits, scanned = backend.find_references(word)
-            items = []
-            for (mname, line, col, text, decl, jumpable) in hits:
-                body = str(text or "").strip()
-                tail = "　·　声明" if decl else ""
-                if not jumpable:
-                    # 那个模块没有打开的代码窗 ⇒ COM 里没法打开它（VBE 的
-                    # CodePanes 只含已打开的）。提前标出来，别等用户回车才发现。
-                    tail += "　·　未打开代码窗"
-                label = "%s(%d)　%s%s" % (mname, line, body[:90], tail)
-                items.append({"label": label, "module": mname, "line": line,
-                              "kind": "声明" if decl else "", "expect": word,
-                              "text": body, "open": bool(jumpable)})
-            if items:
-                sub = "%s　·　%d 处 / %d 个模块" % (word, len(items), scanned)
-            else:
-                sub = "%s　·　没找到（文本级：字符串和注释里的不算）" % word
-            jump_win.show_items(rect, items, title="查找引用", subtitle=sub)
-            _log("refs: %s 在 %s 里 %d 处（当前模块 %r）"
-                 % (word, "%d 个模块" % scanned, len(items), mod0))
-        except Exception:
-            _log("refs: 开窗失败（详见异常）")
 
     def post_trigger():
         """把"内容变了，重整候选"排进主线程队列，并做【合并】。
@@ -2084,47 +1899,6 @@ def main():
         except Exception:
             return False
 
-    def _outline_key_ok(vk):
-        """这一下 Ctrl+Shift+O 要不要由我们接管（★v121，跑在键盘钩子线程）。
-
-        与 `_comment_key_ok` 同一副骨架，只读本地状态 / 纯 Win32，绝不碰 COM。
-
-        三道闸：开关打开 + 纯函数判据 + `COM 退避中不接管` + 焦点在代码窗格。
-
-        ⚠️ 这里**必须**保留 COM 退避那道闸（与 Ctrl+Q 不同）：开大纲要读模块全文，
-        退避期间读不到 ⇒ 吞了键却弹不出窗 = "按了没反应"。让按键过去反而干净。
-        刻意**不**看 `pending_keys`：这一下不改文本，输入法组字中也不会误伤。
-        """
-        try:
-            if not OUTLINE_POPUP:
-                return False
-            if vk != VK_O:
-                return False          # 先挡掉绝大多数按键，省几次系统调用
-            if not _outline_vk_ok(
-                    vk, *_mods_now()):
-                return False
-            if com_backoff_remaining() > 0 or not in_vbe_code_area():
-                return False
-            return True
-        except Exception:
-            return False
-
-    def _usages_key_ok(vk):
-        """这一下 Ctrl+Shift+F 要不要由我们接管（★v121，钩子线程）。理由同上。"""
-        try:
-            if not USAGES_POPUP:
-                return False
-            if vk != VK_F:
-                return False
-            if not _usages_vk_ok(
-                    vk, *_mods_now()):
-                return False
-            if com_backoff_remaining() > 0 or not in_vbe_code_area():
-                return False
-            return True
-        except Exception:
-            return False
-
     def _insert_above_key_ok(vk):
         """这一下 Ctrl+Shift+Enter 要不要由我们接管（★v122，跑在键盘钩子线程）。
 
@@ -2239,8 +2013,6 @@ def main():
                     # ★v122：Ctrl+D 复制当前行 / Ctrl+K 删除整行。两条都要改文本，
                     # 所以排在候选窗那条分支【之前】—— 窗里那些候选的行号/前缀
                     # 马上就不作数了（动作里会先 completer.hide()）。
-                    # 排在"开窗类"（Ctrl+Q / 大纲 / 引用）之后：那些不动文本，
-                    # 用户先开着窗再按 Ctrl+D 也不该被这里抢走。
                     action = (_line_op_here, (vk,))
                     suppress = True
                 elif _insert_above_key_ok(vk):
@@ -2249,17 +2021,6 @@ def main():
                     # "Enter + Shift"，Ctrl+Shift+Enter 也会命中它，被它抢走就
                     # 变成"在下方插行"—— 差一个字，方向反了。
                     action = (_insert_line_above_here, ())
-                    suppress = True
-                elif _outline_key_ok(vk):
-                    # ★v121：Ctrl+Shift+O = 过程大纲（判据 / 闸门见 _outline_key_ok）。
-                    # 纯开窗动作，不改文本，因此与候选窗是否可见无关 —— 开着候选
-                    # 也照样能叫出来（动作里会先 completer.hide()）。
-                    action = (_open_outline, ())
-                    suppress = True
-                elif _usages_key_ok(vk):
-                    # ★v121：Ctrl+Shift+F = 文本级查找引用（同骨架）。两条都排在
-                    # "改写文本"的分支之前：它们只有开窗 + 跳光标，没有写回。
-                    action = (_open_usages, ())
                     suppress = True
                 elif (_is_newline_shortcut(vk, _shift_down())
                         and com_backoff_remaining() <= 0

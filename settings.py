@@ -112,11 +112,6 @@ KNOWN = (
      "`Ctrl+Q` 代码片段窗。1 = 关，按键交还 VBE"),
     ("NO_COMMENT", "0",
      "`Ctrl+/` 批量注释 / 取消注释。1 = 关，按键交还 VBE"),
-    ("NO_OUTLINE", "0",
-     "`Ctrl+Shift+O` 过程大纲（列出本模块的 Sub / Function / Property，回车跳过去）。"
-     "1 = 关，按键交还 VBE"),
-    ("NO_USAGES", "0",
-     "`Ctrl+Shift+F` 文本级查找引用（这个名词在本工程里出现在哪些行）。1 = 关"),
     ("NO_INSERT_ABOVE", "0",
      "`Ctrl+Shift+Enter` 在当前行上方插入新行。1 = 关，按键交还 VBE"),
     ("NO_DUP_LINE", "0",

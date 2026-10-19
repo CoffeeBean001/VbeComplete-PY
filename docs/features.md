@@ -193,43 +193,6 @@
   really is a toggle; a selection that *ends* at column 1 is treated as excluding its last line, matching
   IDEA. `VBECOMPLETE_NO_COMMENT=1` turns it off.
 
-- **v121 — module outline (`Ctrl+Shift+O`) and textual find references (`Ctrl+Shift+F`).**
-  Both keys open **one** window (`jump_ui.JumpWindow`): a single fuzzy-searchable column, **one
-  click** (or `Enter`) to jump. Nothing is uploaded, nothing is guessed, and **not a single byte of
-  code is written** — these are navigation only. The outline lists the **current module's**
-  `Sub` / `Function` /
-  `Property Get|Let|Set` / `Declare`, with line numbers, a `Private` marker and the procedure header
-  as the subtitle. Find references takes the name under the caret and lists every **whole-word** hit
-  in the **active project** (module + line + that line's text), current module first, declaring
-  occurrences marked. Searching reuses `snippets.search`, so both feel exactly like the snippet window.
-
-  Choices worth knowing: **`Event` is excluded** (event names are not in the completion pool — the
-  same rule as "silent while declaring"); the matcher is `(?<!\w)name(?!\w)` with `re.IGNORECASE`
-  rather than a lower-cased copy of the module, because `"İ".lower()` changes length and every index
-  after it would shift; hits inside **strings and comments do not count** (the same `scan_code_states`
-  pass that `Ctrl+/` uses); the caret always lands at **column 1**, because `SetSelection` takes
-  *display* columns and any self-conversion goes wrong on lines containing full-width characters;
-  and before jumping, the target line is re-checked (must be non-blank, must contain the expected
-  name) — if the line number has drifted, **it does not jump** rather than dropping the caret into
-  unrelated code. A failed jump **keeps the window open** and explains itself in red underneath.
-
-  Two feel requirements as of v121b: **a single click jumps** (no need to remember "double click" —
-  the binding is on `ButtonRelease-1`, because a Listbox changes its selection on button *press*, so
-  releasing is the moment the clicked row is known), and **the window never closes itself**. It stays
-  put after a jump so you can hit the next reference without reopening it; `_pick()` deliberately has
-  no `self.close()` (pinned by an AST test). The status bar reports `jumped to <module> · line N` on
-  success and turns the same line red when the jump was refused. Three ways to close it: `Esc`, the
-  window's close button, or pressing the same shortcut again (in the window it is bound locally; with
-  the VBE focused the hook sees the window is already open and closes it).
-
-  One hard COM limit: a `VBComponent` has **no `CodePane` property** (verified: `AttributeError:
-  <unknown>.CodePane`), and `vbe.CodePanes` only contains panes that **have already been opened**
-  (24 components, 6 panes on this machine). A module that was never opened therefore cannot be jumped
-  into at all — the list marks it, and double-clicking it in the VBE once is the workaround. Also note
-  these two features differ from `Ctrl+Q` in one place: **they read COM themselves**, so the hook gate
-  keeps the "do not take over while COM is backing off" check (swallowing the key and then failing to
-  open the window feels like nothing happened). `VBECOMPLETE_NO_OUTLINE=1` / `VBECOMPLETE_NO_USAGES=1`.
-
 - **v122 — three line-wise editing keys (`Ctrl+Shift+Enter` / `Ctrl+D` / `Ctrl+K`).**
   All three follow the same rule: **the selected lines when there is a selection, otherwise the
   caret's line** (the IDEA / VS Code convention). They *do* write code, so they reuse the skeleton of
@@ -346,6 +309,19 @@
   procedures > project types > built-in functions > built-in types > keywords > everything else
   (`var`). A candidate with no known kind simply gets **no** icon rather than a misleading one.
 
+- **v127 — the module outline and find-references window are gone.** `Ctrl+Shift+O` (v121's
+  module outline) and `Ctrl+Shift+F` (v121's textual find references) were removed at the user's
+  request — they never got used, and a navigation window nobody opens is just surface area to keep
+  testing. Everything that existed only for them went with them: `jump_ui.py`, the five backend
+  methods (`current_module_text` / `list_procedures_here` / `word_at_caret` / `find_references` /
+  `goto_location`), `parser.list_procedures` / `parser.find_occurrences`, `tests/probe_outline.py`,
+  and the `NO_OUTLINE` / `NO_USAGES` switches (`KNOWN` is back to 55). **Both keys are handed back to
+  the VBE unchanged** — the hook no longer claims them, so whatever the editor does with them is what
+  you get (nothing, in a code pane). If an old `settings.ini` still contains those two switches, they
+  are simply unknown keys now and change no behaviour. §118 pins the deletion with source-level
+  contracts (functions, constants, switches, files and docs), so a future change cannot quietly
+  reintroduce half of it.
+
 **Coexistence**
 
 - After `object.`, VbeComplete steps aside and lets the VBE's own, type-aware member list take over.
@@ -381,8 +357,6 @@ semantic infrastructure.
 | Smart indentation and automatic block closers | ✅ |
 | Start a new line (`Shift+Enter`) | ✅ |
 | Toggle line comment (`Ctrl+/`) | ✅ |
-| File structure outline (`Ctrl+Shift+O`) | ✅ (single click jumps; the window stays open) |
-| Find usages (`Ctrl+Shift+F`) — textual only, no scope resolution | ⚠️ partial |
 | Duplicate line (`Ctrl+D`) | ✅ |
 | Delete line (`Ctrl+K`) | ✅ |
 | Start a new line above (`Ctrl+Shift+Enter`) | ✅ (deeper indent when above a block closer) |
@@ -396,10 +370,9 @@ semantic infrastructure.
 Go-to-definition, rename refactoring and live syntax/error checking all depend on a full,
 always-current semantic model of the project — type inference, symbol tables, a dependency graph.
 The VBE exposes only the *plain text* of a `CodeModule`, so rebuilding a compiler front-end on top of
-it would be costly and fragile; the risk/benefit simply doesn't add up. Two partial answers exist
-instead of the real thing: **find usages is textual** (v121, `Ctrl+Shift+F` — it tells you where the
-characters appear, not which symbol they bind to), and **live templates became a snippet library**
-(v115, `Ctrl+Q` — you pick a snippet, the tool never guesses an abbreviation).
+it would be costly and fragile; the risk/benefit simply doesn't add up. One partial answer exists
+instead of the real thing: **live templates became a snippet library** (v115, `Ctrl+Q` — you pick a
+snippet, the tool never guesses an abbreviation).
 
 ## Configuration
 
@@ -437,8 +410,6 @@ different ini file (portable installs and tests).
 | `VBECOMPLETE_NO_CTRL_NAV_TAB` | off | `1` keeps the `Ctrl+Shift+↓` jump but never adds the procedure-level indent to the landing line. |
 | `VBECOMPLETE_NO_SNIPPETS` | off | `1` disables the `Ctrl+Q` snippet window; the key stays with the VBE. |
 | `VBECOMPLETE_NO_COMMENT` | off | `1` disables `Ctrl+/` comment toggling; the key stays with the VBE. |
-| `VBECOMPLETE_NO_OUTLINE` | off | `1` disables the `Ctrl+Shift+O` module outline. |
-| `VBECOMPLETE_NO_USAGES` | off | `1` disables `Ctrl+Shift+F` find references. |
 | `VBECOMPLETE_NO_INSERT_ABOVE` | off | `1` disables `Ctrl+Shift+Enter` (insert a line above). |
 | `VBECOMPLETE_NO_DUP_LINE` | off | `1` disables `Ctrl+D` (duplicate the line). |
 | `VBECOMPLETE_NO_DEL_LINE` | off | `1` disables `Ctrl+K` (delete the line). |
@@ -460,13 +431,12 @@ different ini file (portable installs and tests).
 | `wordbank.py` | The vocabulary bank (`wordbank.db`): create / read-only load / CLI. Knows about SQLite, **not** about VBA |
 | `ui.py` | The floating popup (tkinter) and its screen-avoidance logic |
 | `snippet_ui.py` | The snippet window (`Ctrl+Q`): search, add / edit / delete, insert button |
-| `jump_ui.py` | The outline / find-references window (v121, `Ctrl+Shift+O` and `Ctrl+Shift+F`): one fuzzy-searchable list, `Enter` to jump; a failed jump keeps the window open and says why |
 | `snippets.py` | The snippet store (SQLite, two columns) and fuzzy title matching — no UI, no COM |
 | `recent.py` | The recently-used table (`recent.json`): load, atomic save, corrupt-file tolerance — no UI, no COM (v119) |
 | `settings.py` | The configuration centre (v120): `settings.ini` parsing, the three-layer lookup, the `KNOWN` table and the commented-out template. Imports nothing from the project — `log.py` depends on it, not the other way round. `py -3 settings.py` dumps every value with its source. |
 | `settings.example.ini` | The template that `settings.py` generates, checked in so you can read it without running anything (every line commented out). |
 | `log.py` | Optional diagnostic log (off by default, zero overhead) |
-| `tests/` | Regression suite (`test_real_project.py`, 1130 checks) and the sample project it runs against. Seven one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand), and `probe_outline.py` verifies v121 on the same setup (list procedures, find references, jump and read `GetSelection()` back, confirm a module without an open code pane is refused; it also **opens the real window and injects a real left-button release** to check that a single click jumps and that the window stays open — **without writing a single byte**). `probe_lineops.py` verifies v122 on the same setup (`Ctrl+Shift+Enter` above, `Ctrl+D`, `Ctrl+K`): it appends **one temporary procedure to the end of a module**, deletes it afterwards, and byte-compares the module with the backup taken beforehand. `probe_wordbank.py` verifies v123 on a real Excel + VBE: it builds a **temporary** bank (never your own `wordbank.db`), adds a word and disables a built-in function, then checks that after `load_active()` the added word is in the pool and the disabled one is gone, and that `reset_active()` restores the baseline exactly. |
+| `tests/` | Regression suite (`test_real_project.py`, 1172 checks) and the sample project it runs against. Six one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand), `probe_lineops.py` verifies v122 on the same setup (`Ctrl+Shift+Enter` above, `Ctrl+D`, `Ctrl+K`): it appends **one temporary procedure to the end of a module**, deletes it afterwards, and byte-compares the module with the backup taken beforehand. `probe_wordbank.py` verifies v123 on a real Excel + VBE: it builds a **temporary** bank (never your own `wordbank.db`), adds a word and disables a built-in function, then checks that after `load_active()` the added word is in the pool and the disabled one is gone, and that `reset_active()` restores the baseline exactly. |
 
 ## Credits
 

@@ -53,8 +53,6 @@ autostart on login · `run_tests.bat` runs the offline regression suite.
 | `Ctrl+Shift+↓` | Jump to the blank line above `End Sub` / `End Function` (inserting one if needed) and write it at the procedure's indent level |
 | `Ctrl+Q` | Open the **snippet window** at the caret: title list on the left (fuzzy search box), code on the right; add / edit / delete, and insert the snippet at the caret |
 | `Ctrl+/` | **Toggle line comment** (IDEA-style): on every line of the selection, or the caret's line when there is none — removes the comment when all of them already have one, otherwise adds it |
-| `Ctrl+Shift+O` | **Outline of this module**: every `Sub` / `Function` / `Property` / `Declare` in it — fuzzy search, **click** (or `Enter`) to jump |
-| `Ctrl+Shift+F` | **Find references** (text level): with the caret inside a name, lists every occurrence of it in the active project — fuzzy search, **click** (or `Enter`) to jump |
 | `Ctrl+Shift+Enter` | Insert a new line **above** the current one (same indent; one level deeper when the current line is a block **closer** such as `End If` / `Next`) |
 | `Ctrl+D` | **Duplicate the current line** below (the selected lines, when there is a selection); the caret follows to the same column |
 | `Ctrl+K` | **Delete the whole line** (the selected lines, when there is a selection); the caret moves to the end of the line above |
@@ -79,22 +77,6 @@ rule as IDEA: it *removes* only when **every non-blank line is already commented
 adds. Removal strips one `' ` (quote + space) and falls back to a bare `'`, so hand-written
 `'notes` uncomment correctly too. One caveat: N lines means **N undo steps** (the VBE has no
 command groups), so `Ctrl+Z` needs to be pressed N times to get all the way back.
-
-**Outline (`Ctrl+Shift+O`) and find references (`Ctrl+Shift+F`)** both open one list at the caret:
-type a few characters to filter, **click a row** (or press `Enter`) to jump. The outline lists the
-**current module's** `Sub` / `Function` / `Property Get|Let|Set` / `Declare` (`Event` is left out —
-event names are not in the completion pool). Find references wants the caret **inside a name** (or
-right after it), and lists every **whole-word** hit in the **active project**, current module first.
-When a jump is not possible the window stays open and says why in red underneath.
-
-⚠️ **The window never closes itself** — it stays put after a jump so you can click the next hit.
-Three ways out: `Esc`, the window's close button, or pressing the same shortcut again.
-
-Three honest notes: ① references are **textual** — two different variables that happen to share a
-name are listed together, and it cannot tell a `Call` from an assignment; it answers "where do these
-characters appear". ② Hits inside **strings and comments do not count**. ③ COM can only jump into
-code panes that **have already been opened**; modules that were never opened are marked in the list —
-double-click that module in the VBE once and press the key again.
 
 **Three line-wise editing keys (`Ctrl+Shift+Enter` / `Ctrl+D` / `Ctrl+K`)** all work the same way:
 **the selected lines when there is a selection, otherwise the caret's line** — the IDEA / VS Code
