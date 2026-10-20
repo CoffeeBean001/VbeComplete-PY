@@ -1837,7 +1837,7 @@ v120 的做法是：第一次启动时在**项目文件夹**生成一份 `settin
 7. **`settings.py` 是项目最底层的模块**：只依赖标准库、**不 import 任何项目模块**
    （`log.py` 依赖它，不能反过来）。
 
-顺手修掉一个老 bug：`log.py` 的日志路径原来**写死**成 `D:\codes\VbeComplete-V587\VbeComplete.log`，
+顺手修掉一个老 bug：`log.py` 的日志路径原来**写死**成 `D:\codes\VbeComplete-PY\VbeComplete.log`，
 换机器 / 换盘符就写不进去（而且失败是静默的）。现在默认落在项目文件夹，`LOG_FILE` 可覆盖。
 
 **怎么看现在的实际值**：在项目文件夹执行 `py -3 settings.py`，逐项打印生效值与来源；
@@ -2331,7 +2331,7 @@ A/B 两条：去掉缓存分支 ⇒ 只红 121.2；把 `verify=False` 改回 `ve
 把 `run.bat` 放进命令行（不是双击）跑一次，错误立刻停在屏幕上，不再"闪"：
 
 ```
-D:\codes\VbeComplete-V587>py -3 -c "import pynput, win32gui"  1>nul 2>nul
+D:\codes\VbeComplete-PY>py -3 -c "import pynput, win32gui"  1>nul 2>nul
 此时不应有 ...。
 ```
 
@@ -2407,7 +2407,6 @@ v129 是括号，这次是换行 —— 两种错法都能让 cmd 在**解析阶
 | 122.2 | 没有一个 `.bat` 是 LF-only |
 | 122.3 | `.gitattributes` 钉住 `*.bat` 为 CRLF |
 | 122.4 | `run.bat` 用 `watchdog.py` 起（崩溃自愈），且不用 `find` |
-| 122.5 | 本仓库里不再出现另一种语言实现的目录与启动脚本（防止两版又混回一个仓库） |
 
 ## 与 IntelliJ IDEA 的对照
 

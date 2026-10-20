@@ -35,7 +35,7 @@
 #
 # ★v120：改为从配置中心（settings.ini 的 `LOG` / `LOG_FILE`）读，
 # 环境变量仍然优先。**默认路径同时修掉一个老 bug**：原来写死成
-# `D:\codes\VbeComplete-V587\VbeComplete.log`——换台机器、或把项目拷到别的
+# `D:\codes\VbeComplete-PY\VbeComplete.log`——换台机器、或把项目拷到别的
 # 盘，日志就写不进去了（而这条路径正是排障时唯一想看的输出）。
 import os as _os
 

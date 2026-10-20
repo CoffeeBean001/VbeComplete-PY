@@ -427,8 +427,14 @@ class SnippetWindow(object):
             self._show(title)
             self._status("已新增「%s」" % title)
         else:
-            self._status("标题「%s」已存在 —— 想改它请用「保存修改」" % title,
-                         err=True)
+            # ★区分"重名"和"写不进去"：库打不开 / 只读 / 磁盘满时 add 也返回
+            #   False，一律说成"标题已存在"会让用户改半天标题还是存不上。
+            if self.store.exists(title):
+                self._status("标题「%s」已存在 —— 想改它请用「保存修改」" % title,
+                             err=True)
+            else:
+                self._status("新增失败：片段库写不进去（只读或路径不可用）",
+                             err=True)
 
     def _save(self):
         cur = self._shown_title
@@ -447,7 +453,14 @@ class SnippetWindow(object):
             if not self.store.rename(cur, title):
                 self._status("改标题失败", err=True)
                 return
-            self.store.update(title, code)
+            # ★改标题和改内容要一起成功才算保存：rename 成功、update 失败时
+            #   标题已经变了但正文还是旧的，绝不能报"已保存"。
+            if not self.store.update(title, code):
+                self.reload(keep=title)
+                self._show(title)
+                self._status("标题已改，但代码没写进库（只读或路径不可用）",
+                             err=True)
+                return
             self.reload(keep=title)
             self._show(title)          # 认到新标题上（见 _add 里的说明）
             self._status("已保存（标题改为「%s」）" % title)

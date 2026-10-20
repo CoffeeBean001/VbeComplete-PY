@@ -2504,6 +2504,16 @@ def main():
             except Exception:
                 pass
         state[key] = None
+        # ★卸载钩子时把"按键状态"一起清干净：按住 Ctrl 时 Alt+Tab 走开、再松手，
+        #   on_release 收不到；不清的话 state["ctrl"] 会永久为真 —— 之后按空格
+        #   走手动唤出分支、按 j/i 直接把候选收起。swallowed 里的 vk 残留还会
+        #   让下一次挂载后【已放行】的 keydown 对应的 keyup 被吞掉。
+        try:
+            state["swallowed"].clear()
+        except Exception:
+            pass
+        state["ctrl"] = False
+        state["alt"] = False
 
     def _reconcile_once():
         """reconcile 的【单轮】实现（★v109 从 reconcile 里拆出来）。

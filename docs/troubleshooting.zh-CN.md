@@ -1075,7 +1075,7 @@ if errorlevel 1 (
 **怎么自己看出来**：在命令行里（不是双击）跑一次，错误就停在屏幕上，不会闪：
 
 ```bat
-cd /d D:\codes\VbeComplete-V587
+cd /d D:\codes\VbeComplete-PY
 run.bat
 ```
 

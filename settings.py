@@ -253,7 +253,11 @@ def load_ini():
         # strict=False：同一个键写两遍时**后写的赢**，而不是整份配置作废
         #   （⚠️ 必须走构造参数 —— `cp.strict = False` 赋值是无效的：
         #    configparser 在 __init__ 里把它存成 `_strict`，属性赋值不影响解析）。
-        cp = configparser.ConfigParser(interpolation=None, strict=False)
+        # ★inline_comment_prefixes：`AUTO_SPACE = 0  ; 关掉` 这种行内注释要能认。
+        #   不设的话 `;` 会留在值里，`_parse_flag` 解析失败 → 静默回落到默认值，
+        #   用户改了配置却不知道有没有生效 —— 正是这份 ini 要消灭的问题。
+        cp = configparser.ConfigParser(interpolation=None, strict=False,
+                                       inline_comment_prefixes=(";", "#"))
         # utf-8-sig：Windows 记事本存 UTF-8 时爱加 BOM，不加这个会把第一个键
         # 读成 "\ufeffAUTO_SPACE"。
         with open(p, encoding="utf-8-sig", errors="replace") as f:

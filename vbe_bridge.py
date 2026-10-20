@@ -5116,8 +5116,12 @@ class VbeBackend:
                 # 右半边已经在光标右边：只把光标挪过去，一个字符都不写
                 actual = line_text
                 caret_off = min(caret_off, len(actual))
-            if sem == "disp":
-                col = _disp_width(actual, tabw, wide2, upto=caret_off) + 1
+            # ★列口径必须按【写入后的行】重判：原本纯半角的行，插进全角 `（）` /
+            #   `“”` 之后 VBE 报的就是显示列了。沿用写前的 sem=="char" 会少算
+            #   1~2 格，光标落进括号里偏左，用户接着打的字就跑到括号外面去。
+            w2 = wide2 or any(_is_wide(c) for c in actual)
+            if sem == "disp" or w2:
+                col = _disp_width(actual, tabw, w2, upto=caret_off) + 1
             else:
                 col = caret_off + 1
             # ★代码复查修（2026-10-18）：落光标单独 try。文本已经写进去了
@@ -5188,8 +5192,11 @@ class VbeBackend:
                      " (写入=%r 实际=%r 定位=%r)" % (new_line, actual, off))
             else:
                 off = tgt
-            if sem == "disp":
-                col = _disp_width(actual, tabw, wide2, upto=off) + 1
+            # ★同上：包裹用的可能是全角 `（）`/`“”`，写完后行内就有了全角字符，
+            #   列语义随之变成显示列 —— 按 actual 重判，别沿用写前的 sem。
+            w2 = wide2 or any(_is_wide(c) for c in actual)
+            if sem == "disp" or w2:
+                col = _disp_width(actual, tabw, w2, upto=off) + 1
             else:
                 col = off + 1
             # ★代码复查修（2026-10-18）：同上 —— 包裹已经写进去了，
@@ -5455,11 +5462,13 @@ class VbeBackend:
 
             had_sel = ((sl, sc) != (el, ec))
             ok_all = True
+            wrote = False              # ★只有真写进去过才算"代为输入"
             for i, new in plan:
-                if not self._write_line(cm, sl + i, new):
+                if self._write_line(cm, sl + i, new):
+                    wrote = True
+                else:
                     ok_all = False
                     _log("comment: 写入失败 行=%d（已写的行不回退）" % (sl + i))
-            wrote = True
             _log("comment: %s %d 行 -> 行 %d..%d 成功=%s"
                  % ("取消注释" if action == "remove" else "加注释",
                     len(plan), sl, el, ok_all))
@@ -5475,7 +5484,10 @@ class VbeBackend:
                     cp.SetSelection(sl, max(1, int(sc)), sl, max(1, int(sc)))
             except Exception:
                 pass
-            return True
+            # ★一行都没写成 ⇒ 返回 False，让调用方把 Ctrl+/ 原样还给 VBE
+            #   （否则就是"吞了键、文档一个字没动"）。部分成功仍算 True：
+            #   再还键会让已经改过的行被反过来再切一次。
+            return wrote
         except Exception:
             _log("comment: toggle_comment 异常")
             return False
@@ -6138,7 +6150,12 @@ class VbeBackend:
             if closer_text:
                 # 收尾插在"新起的空行"下面：块头下面留出缩进好了的一行给用户写
                 # 内容，收尾再往下、缩进回到块头同级。原有行整体再下移一行。
-                cm.InsertLines(anchor + 2, closer_text)
+                # ★单独 try：缩进行已经插进去了，这一步失败绝不能判成 False
+                #   —— 调用方看到 False 会再注入一个回车，用户按一下多出两行。
+                try:
+                    cm.InsertLines(anchor + 2, closer_text)
+                except Exception:
+                    _log("newline: 缩进行已插入、补收尾失败（按成功返回）")
             # ★代码复查修（2026-10-18）：新行**已经插进去了** —— 下面这一段
             # （重新探测行语义 + 摆光标）再出任何异常都不能返回 False。
             # 原先它整段在同一个 try 里，抛异常就 return False ⇒ 调用方

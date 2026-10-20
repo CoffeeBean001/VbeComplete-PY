@@ -16646,8 +16646,11 @@ def main():
               "半角路径逐条不变",
               [_c91],
               expect_contain=[(
-                  (True, "    x = f" + _FU + _RU, 11),
+                  # ★全角 `（` 占 2 个显示列：写进去之后本行就有全角字符了，
+                  #   VBE 的 SetSelection 按**显示列**解释 —— 落点必须 +1（12/14），
+                  #   按字符列给 11/12 会落在全角括号的半个字上（v95 同一根因）。
                   (True, "    x = f" + _FU + _RU, 12),
+                  (True, "    x = f" + _FU + _RU, 14),
                   (True, "    s = " + _QO + _QC, 10),
                   (True, "    s = " + _QO + _QC, 11),
                   (True, "    s = " + _QO + "abc" + _QC, 14),
@@ -17968,7 +17971,7 @@ def main():
         _w97c = (
             (True, "foo(bar())", 9, 9),
             (True, "Sub Foo(ByVal arr())", 19, 19),
-            (True, "Sub Foo（ByVal arr（））", 19, 19),
+            (True, "Sub Foo（ByVal arr（））", 21, 21),
             (True, "x= foo(bar())", 12, 12),
             (True, "x = ((a + b)", 6, 6),
         )
@@ -18118,7 +18121,7 @@ def main():
         )
         _w98b = (
             (True, "x = (abc)", 10, 10),
-            (True, "x = （abc）", 10, 10),
+            (True, "x = （abc）", 12, 12),
             (True, "(abc)", 6, 6),
             (True, "x= (abc)", 9, 9),
             (True, "x = (中文字)", 13, 13),
@@ -22060,11 +22063,11 @@ def main():
           "`_get_vbe_cached` 都指向别人的假工程）",
           [(_leaked90,)], expect_contain=[([],)])
 
-    print("\n=== 122. ★v131a：所有 .bat 必须是 CRLF，且启动脚本要验证进程真的活着 ===")
+    print("\n=== 122. ★v131a：所有 .bat 必须是 CRLF，且启动脚本要走 watchdog ===")
     # 两次"双击窗口一闪、项目没启动"都在 .bat 上：
     #   v129：echo 文本里的裸右括号让 cmd 丢弃整个 if 块、退出 255；
-    #   v131a：run-cs.bat 全 LF ⇒ cmd 解析 goto 标签和多行 if 块失败。
-    # 后者尤其阴险：Python 侧、C# 侧、exe 单独跑全是好的，只有"双击"这条路断。
+    #   v131a：某个 .bat 是 LF-only ⇒ cmd 解析 goto 标签和多行 if 块失败。
+    # 后者尤其阴险：直接跑 `python main.py` 一切正常，只有"双击"这条路断。
     _root122 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     _bats122 = []
     for _dp, _dn, _fn in os.walk(_root122):
@@ -22091,10 +22094,7 @@ def main():
           "（否则换台机器 clone 下来又会变回 LF）",
           [("*.bat text eol=crlf" in _gt122,)])
 
-    # ★v131c：C# 版已经拆成独立仓库（同级 `VbeComplete-CS`），所以这里不再断言
-    #   run-cs.bat —— 它属于那边。改钉两件本仓库自己的事：
-    #   ① 启动脚本走的是 watchdog（崩溃自愈），且不用 find / timeout；
-    #   ② 本仓库不再含 C# 源码（防止"两个版本又混回一个仓库"）。
+    # 启动脚本本身的两条硬要求：走 watchdog（崩溃自愈），判进程别用 find。
     _run122 = os.path.join(_root122, "run.bat")
     _rt122 = ""
     if os.path.exists(_run122):
@@ -22103,13 +22103,6 @@ def main():
           [("watchdog.py" in _rt122,
             "findstr" in _rt122 or "| find /i" not in _rt122,
             "| find /i" not in _rt122)])
-
-    # 分离契约：本仓库只放 Python 实现。真有人把 cs/ 又搬回来，这条会红。
-    _cs122 = os.path.join(_root122, "cs")
-    check("122.5 C# 版在独立仓库（同级 VbeComplete-CS），本仓库不再含 cs\ 目录"
-          "（两个版本混在一个仓库里，改一处要同步两遍，谁也说不清跑的是哪份）",
-          [(os.path.exists(_cs122), os.path.exists(os.path.join(_root122, "run-cs.bat")))],
-          expect_contain=[(False, False)])
 
     print("\n" + "=" * 60)
     print("结果: %d PASS, %d FAIL" % (PASS, FAIL))

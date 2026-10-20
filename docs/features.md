@@ -180,7 +180,7 @@
   constructor argument** (`cp.strict = False` is a no-op) and `utf-8-sig` (Notepad's BOM otherwise turns
   the first key into `\ufeffAUTO_SPACE`). `settings.py` sits at the bottom of the dependency graph and
   imports nothing from the project. An old bug fell out of this: the log path was hard-coded to
-  `D:\codes\VbeComplete-V587\VbeComplete.log`, so it silently stopped working on any other machine.
+  `D:\codes\VbeComplete-PY\VbeComplete.log`, so it silently stopped working on any other machine.
   *(b) `Ctrl+/` toggles line comments* over the selection, or over the caret's line when there is none,
   with IDEA's rule: it **removes** only when **every non-blank line is already commented**, otherwise it
   adds. Blank lines are skipped, the `'` lands **after the indentation** (putting it at column 1 comments

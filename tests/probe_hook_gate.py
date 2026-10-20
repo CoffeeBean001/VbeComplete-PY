@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 
-PROBE_LOG = r"D:\codes\VbeComplete-V587\.workbuddy\hook_probe2.log"
+PROBE_LOG = r"D:\codes\VbeComplete-PY\.workbuddy\hook_probe2.log"
 T0 = time.time()
 
 
@@ -114,8 +114,8 @@ _pk.Listener, _pm.Listener = _K, _M
 
 os.environ["VBECOMPLETE_LOG"] = "1"
 os.environ.setdefault("VBECOMPLETE_LOG_FILE",
-                      r"D:\codes\VbeComplete-V587\.workbuddy\probe_main2.log")
-sys.path.insert(0, r"D:\codes\VbeComplete-V587")
+                      r"D:\codes\VbeComplete-PY\.workbuddy\probe_main2.log")
+sys.path.insert(0, r"D:\codes\VbeComplete-PY")
 import main as MN                                        # noqa: E402
 
 MN.acquire_single_instance = lambda: True
