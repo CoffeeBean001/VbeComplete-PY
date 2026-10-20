@@ -2380,62 +2380,34 @@ cmd 解析 `if (...)` 块时是**先找配对的右括号**。`echo` 文本里 `
 
 A/B：把括号原样放回 `run.bat` ⇒ 只有 120.1 红（1189 PASS / 1 FAIL），还原后 1190 全绿。
 
-### v131a：C# 版"双击闪退"的两个真因 —— 以及它到底省了多少 CPU
+### v131a：所有 `.bat` 必须是 CRLF —— 以及 §122 的五条契约
 
-用户报"运行 `run-cs.bat` 窗口闪退、项目没启动"。实测结论有点意外：**exe 一次都没崩**。
-
-#### 真因（两个，叠在一起才像"崩了"）
+v129 是括号，这次是换行 —— 两种错法都能让 cmd 在**解析阶段**就放弃，不报错、不退出。
 
 1. **`.bat` 是 LF-only**。cmd 只按 CRLF 认行；LF-only 的批处理里 `goto` 标签和多行
-   `if (...)` 块会**静默失效** —— 不报错、不退出，就是那几行没执行。旧
-   `run-cs.bat` 第一句就是 `if not exist ... goto nobuild`，启动链在解析阶段就断了。
-   同一批还有 `stop-cs.bat` / `cs/build.bat` / `stop.bat` / `uninstall_autostart.bat`。
-   Python 版 `run.bat` 一直是 CRLF，所以那边从没炸过 —— 这也是为什么一直没发现。
-2. **启动了没有任何可见反馈**。C# 版没有主窗口、只有托盘图标，而 Win11 默认把它
-   折叠进 `^` 溢出区。旧脚本 `start` 完立刻 `exit /b 0` ⇒ 窗口一闪就关、屏幕上
-   又什么都没出现 ⇒ 看起来就是"没启动"。
+   `if (...)` 块会**静默失效**，就是那几行没执行。现象是"双击窗口一闪、项目没启动"，
+   而直接 `python main.py` 一切正常 —— 所以很容易误判成程序崩了。
+2. **启动了没有任何可见反馈**。后台程序只有托盘图标，Win11 默认把它折叠进 `^` 溢出区，
+   脚本又 `start` 完立刻 `exit /b 0` ⇒ 窗口一闪就关、屏幕上什么都没有。
 
 #### 修法
 
 - 所有 `.bat` 统一 **CRLF**，并加 `.gitattributes`（`*.bat text eol=crlf`）钉死，
-  不再依赖每台机器的 `core.autocrlf`。
-- `run-cs.bat` 启动后等 2 秒，用 `tasklist` **证明**进程活着：活着就打印一行确认
-  并停 3 秒；死了就把 `crash.log` / `VbeComplete.log` 尾部打出来并 `pause`。
-  GUI 程序**再也不许静默失败**。
+  不再依赖每台机器的 `core.autocrlf`（否则换台机器 clone 下来又会变回 LF）。
+- `run.bat` 起的是 `watchdog.py`（v128 起的入口），启动后 `ping -n 3` 停一下再收尾；
+  `timeout` 在 stdin 被重定向时直接拒绝执行，不能拿来等待。
 - 判进程用 `findstr` 不用 `find`：Git for Windows 自带 GNU `find` 会抢 PATH，把
   `/i` 当路径然后报 `find: '/i': No such file`，存活检查永远失败。
-- 入口挂三个崩溃兜底（`AppDomain.UnhandledException` /
-  `Application.ThreadException` / `Main` 的 `try`），无条件写 `crash.log` ——
-  **不受 `LOG` 开关控制**：崩溃恰恰是没开日志时最需要留下的东西。
-- 启动弹托盘气泡说明"图标在溢出区"；重复启动时新进程用命名事件叫醒已有实例，
-  让它弹"已经在运行"，而不是静默 `return 0`。
 
-#### 契约（§122 五条 + C# 自检 6 条）
+#### 契约（§122 五条）
 
 | 用例 | 钉什么 |
 | --- | --- |
-| 122.1 | 找得到启动脚本（run / stop / install / uninstall / build） |
+| 122.1 | 找得到启动脚本（run / stop / install / uninstall） |
 | 122.2 | 没有一个 `.bat` 是 LF-only |
 | 122.3 | `.gitattributes` 钉住 `*.bat` 为 CRLF |
-| 122.4 | `run-cs.bat` 会 `tasklist` 验证存活，失败时把 `crash.log` 打给用户 |
-| 122.5 | `run-cs.bat` 不依赖 `find`（改用 `findstr`） |
-
-A/B：`run-cs.bat` 改回 LF ⇒ 只红 122.2（C# 自检只红 `bat/必须是 CRLF 换行`）；
-删掉 `if errorlevel 1 goto died` ⇒ 只红 122.4。两次都只点一条。
-
-#### CPU：到底低多少（实测，不是估算）
-
-两版**串行**各跑 60 秒，都不在 VBE 代码窗里（本机 12 核）：
-
-| | CPU（占一个核） | 工作集 | 私有内存 |
-| --- | --- | --- | --- |
-| Python 版 | 1.33 % | 49.2 MB | 28.7 MB |
-| C# 版 | **0.13 %** | 47.7 MB | 11.7 MB |
-
-差的这 10 倍全在"不在 VBE 就一个 COM 都不发"这一条上：Python 版每 100ms 至少
-`ActiveCodePane` + `GetSelection`（约 0.75ms），C# 版只读两个窗口类名（0.02ms）。
-**在 VBE 里打字时两版都要付 COM 的钱**，差距会小得多；上面这组代表的是
-"你没在写 VBA"时的常驻开销，也就是一天里绝大部分时间。
+| 122.4 | `run.bat` 用 `watchdog.py` 起（崩溃自愈），且不用 `find` |
+| 122.5 | 本仓库里不再出现另一种语言实现的目录与启动脚本（防止两版又混回一个仓库） |
 
 ## 与 IntelliJ IDEA 的对照
 

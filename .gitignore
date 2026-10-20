@@ -56,12 +56,5 @@ _o.txt
 Thumbs.db
 desktop.ini
 
-# ---- C# 版已拆到独立仓库（同级 VbeComplete-CS），本仓库不再有它的产物 ----
-
-# ---- 自检产物 ----
-selftest.log
-writetest.log
-uitest.log
-
 # ---- 备份快照（本地留一份，不进版本库；源码本身 git 里全有） ----
 backup/

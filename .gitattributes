@@ -6,6 +6,5 @@
 
 # 源码统一 LF（与项目既有约定一致）
 *.py text eol=lf
-*.cs text eol=lf
 *.md text eol=lf
 *.ini text eol=lf
