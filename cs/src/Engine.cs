@@ -122,7 +122,9 @@ namespace VbeComplete
             if (snap == null) { Hide(); return false; }
 
             string line = snap.Text ?? "";
-            int caret = snap.CaretCol;
+            // ★v131b：GetSelection 给的是**显示列**，后面所有取词/判据都按字符列算
+            //   —— 含中文/全角的行不换算就会取到空词，连弹窗都不出现。
+            int caret = Rules.CharColFromDisp(line, snap.CaretCol);
 
             if (!manual)
             {
@@ -348,8 +350,10 @@ namespace VbeComplete
             if (snap == null) { Hide(); return false; }
 
             int wordStart;
-            Rules.WordBefore(snap.Text ?? "", snap.CaretCol, out wordStart);
-            int endCol = snap.CaretCol;
+            string acceptLine = snap.Text ?? "";
+            int acceptCaret = Rules.CharColFromDisp(acceptLine, snap.CaretCol);
+            Rules.WordBefore(acceptLine, acceptCaret, out wordStart);
+            int endCol = acceptCaret;
             if (wordStart > endCol) wordStart = endCol;
 
             string enclosing = null;

@@ -62,6 +62,10 @@ namespace VbeComplete
             {
                 return UiTest();
             }
+            if (args.Length > 0 && args[0] == "--carettest")
+            {
+                return CaretTest();
+            }
 
             // 单实例：同名互斥体已经存在就说明有一份在跑。
             bool created;
@@ -177,6 +181,145 @@ namespace VbeComplete
 
             File.WriteAllText(Path.Combine(Settings.Home, "writetest.log"), sb.ToString(), Encoding.UTF8);
             return ok && restored ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 光标落点验证（真机）：模拟"打到一半 + Tab 补全"，读回 VBE 真实光标列，
+        /// 跟"按读回来的真行算出来的列"对数，并把光标左右两截文本打出来。
+        /// ★只在 `--carettest` 时执行；动的是模块末尾的临时行，finally 里删干净
+        /// 并逐字节比对原文。
+        /// </summary>
+        private static int CaretTest()
+        {
+            var sb = new StringBuilder();
+            var be = new VbeBackend();
+            string orig = be.ModuleText();
+            int count = be.LineCount();
+            bool allOk = true;
+
+            sb.AppendLine("=== caret test ===");
+            sb.AppendLine("module lines = " + count + "  text len = " + (orig == null ? -1 : orig.Length));
+            if (count <= 0)
+            {
+                sb.AppendLine("no code module, skip");
+                File.WriteAllText(Path.Combine(Settings.Home, "carettest.log"), sb.ToString(), Encoding.UTF8);
+                return 1;
+            }
+
+            // (标签, 插入的行, 已输入的词, 候选)
+            // ⚠️ InsertLines 自己也会触发 VBE 的行格式化（`student=spl` 读回是
+            //   `student = spl`），所以列**必须按读回来的真行**算 —— 这正是
+            //   真机与离线用例的差别，也是这个 bug 之前没被发现的原因。
+            var cases = new[]
+            {
+                ("顶格无缩进",        "student=spl",  "spl", "Split"),
+                ("4 空格缩进",        "    student=spl", "spl", "Split"),
+                ("Tab 缩进",          "\tstudent=spl", "spl", "Split"),
+                ("Tab 缩进 + 全角名",  "\t学生=spl",   "spl", "Split"),
+                ("右边还有同名子串",   "    abc=spl+Splitter", "spl", "Split"),
+            };
+
+            try
+            {
+                foreach (var c in cases)
+                {
+                    int line = count + 1;
+                    if (!be.InsertLines(line, c.Item2))
+                    {
+                        sb.AppendLine(c.Item1 + ": InsertLines FAILED");
+                        allOk = false;
+                        continue;
+                    }
+                    string inserted = be.LineAt(line) ?? "";
+                    int at0 = WholeWordIndex(inserted, c.Item3);
+                    if (at0 < 0)
+                    {
+                        sb.AppendLine(c.Item1 + ": 读回行里找不到已输入的词 [" + inserted + "]");
+                        allOk = false;
+                        be.DeleteLines(line, 1);
+                        continue;
+                    }
+                    int wordStart = at0 + 1;                  // 1-based 字符列
+                    int endCol = at0 + 1 + c.Item3.Length;
+
+                    bool w = be.ApplyCompletion(line, wordStart, endCol, c.Item4, true, false, null);
+                    string actual = be.LineAt(line) ?? "";
+                    var snap = be.Snapshot();
+                    int got = snap == null ? -1 : snap.CaretCol;
+
+                    // 期望列：补出来的括号在，光标就该停在 `(` 之前
+                    int idx = actual.IndexOf('(');
+                    int want = idx >= 0
+                        ? Rules.DispCol(actual, idx, 4)
+                        : Rules.DispCol(actual, at0 + c.Item4.Length, 4);
+
+                    int at = CharIndexAtCol(actual, got, 4);
+                    string left = at < 0 ? "?" : actual.Substring(0, at);
+                    string right = at < 0 ? "?" : actual.Substring(at);
+
+                    // 光标落在补全词后 ⇒ 按"显示列 -> 字符列"换算后取词，应当就是候选词。
+                    // 含全角/缩进的行不换算会取到空词（= 这一行根本不弹候选）。
+                    int ws;
+                    string wordAtCaret = Rules.WordBefore(actual, Rules.CharColFromDisp(actual, got), out ws);
+                    bool okWord = string.Equals(wordAtCaret, c.Item4, StringComparison.OrdinalIgnoreCase);
+
+                    bool ok = w && got == want && okWord;
+                    if (!ok) allOk = false;
+
+                    sb.AppendLine("--- " + c.Item1 + " ---");
+                    sb.AppendLine("  inserted  = [" + inserted.Replace("\t", "\\t") + "]");
+                    sb.AppendLine("  actual    = [" + actual.Replace("\t", "\\t") + "]");
+                    sb.AppendLine("  apply ok  = " + w + "   (wordStart=" + wordStart + " endCol=" + endCol + ")");
+                    sb.AppendLine("  caret col = " + got + "   want = " + want + "   " + (got == want ? "OK" : "MISMATCH"));
+                    sb.AppendLine("  word@caret= [" + wordAtCaret + "]  " + (okWord ? "OK" : "MISMATCH"));
+                    sb.AppendLine("  left      = [" + left.Replace("\t", "\\t") + "]");
+                    sb.AppendLine("  right     = [" + right.Replace("\t", "\\t") + "]");
+
+                    be.DeleteLines(line, 1);
+                }
+            }
+            finally
+            {
+                for (int i = 0; i < 3; i++)
+                {
+                    int c2 = be.LineCount();
+                    if (c2 <= count) break;
+                    be.DeleteLines(count + 1, c2 - count);
+                }
+            }
+
+            string now = be.ModuleText();
+            bool restored = now == orig;
+            sb.AppendLine("restored = " + restored);
+            if (!restored) allOk = false;
+            sb.AppendLine(allOk ? "RESULT: PASS" : "RESULT: FAIL");
+            File.WriteAllText(Path.Combine(Settings.Home, "carettest.log"), sb.ToString(), Encoding.UTF8);
+            return allOk ? 0 : 1;
+        }
+
+        /// <summary>把"显示列"换回字符下标（找不到返回 -1）。测试用，只在 ASCII/全角混合行上够用。</summary>
+        private static int CharIndexAtCol(string text, int col, int tabw)
+        {
+            for (int i = 0; i <= text.Length; i++)
+                if (Rules.DispCol(text, i, tabw) == col) return i;
+            return -1;
+        }
+
+        /// <summary>整词查找（前后都不是标识符字符），找不到返回 -1。测试用。</summary>
+        private static int WholeWordIndex(string text, string word)
+        {
+            if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(word)) return -1;
+            int i = 0;
+            while (i <= text.Length - word.Length)
+            {
+                int hit = text.IndexOf(word, i, StringComparison.OrdinalIgnoreCase);
+                if (hit < 0) return -1;
+                bool okL = hit == 0 || !Rules.IsIdentChar(text[hit - 1]);
+                bool okR = hit + word.Length >= text.Length || !Rules.IsIdentChar(text[hit + word.Length]);
+                if (okL && okR) return hit;
+                i = hit + 1;
+            }
+            return -1;
         }
 
         /// <summary>

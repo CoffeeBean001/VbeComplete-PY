@@ -15,6 +15,7 @@ goto end
 :fail
 echo.
 echo [build] FAILED - see the errors above
+echo [build] if it says Access denied, stop-cs.bat first and run again
 :end
 endlocal
 pause

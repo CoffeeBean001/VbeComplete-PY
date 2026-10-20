@@ -209,7 +209,6 @@ namespace VbeComplete
                 string lineText = Convert.ToString(cm.Lines(lineNo, 1)) ?? "";
                 string newLine = Rules.ReplaceWord(lineText, wordStartCol, endCol, completion);
 
-                bool addedParens = false;
                 if (wantParens && AutoParen && Rules.IsCallSite(lineText, wordStartCol)
                     && !InCallStatement(lineText))
                 {
@@ -219,10 +218,9 @@ namespace VbeComplete
                     int j = k;
                     while (j < newLine.Length && (newLine[j] == ' ' || newLine[j] == '\t')) j++;
                     if (!(j < newLine.Length && newLine[j] == '('))
-                    {
+                        // 插在词尾 ⇒ 下面的 end0 正好指向这个新 `(`，
+                        // 光标按它算就自然落进括号中间，不必另写分支。
                         newLine = newLine.Substring(0, k) + "()" + newLine.Substring(k);
-                        addedParens = true;
-                    }
                 }
 
                 int start0 = Math.Max(0, wordStartCol - 1);
@@ -239,8 +237,11 @@ namespace VbeComplete
                 if (end0 > actual.Length) end0 = actual.Length;
 
                 int col = Rules.DispCol(actual, end0, 4);
-                // 括号补上了：光标要落在括号【中间】
-                int caretCol = addedParens ? col - 1 : col;
+                // ★v131b：光标就停在 col 这一列 —— 补括号时 end0 指向那个 `(`，
+                //   而 DispCol 给的已经是"这个字符之前"的 1-based 列，所以
+                //   **不能再减 1**。减了就会跑到词尾字符之前（`Spli|t`），
+                //   用户报的"落在 Split 中间"就是这么来的。
+                int caretCol = col;
                 if (caretCol < 0) caretCol = 0;
 
                 cp.SetSelection(lineNo, 1, lineNo, 1);

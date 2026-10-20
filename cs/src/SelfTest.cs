@@ -78,6 +78,24 @@ namespace VbeComplete
 
             Eq("find-end/同位置", Rules.FindCompletionEnd("    abc = 1", "abc", 7, 7), 7);
             Eq("find-end/被重排后", Rules.FindCompletionEnd("MsgBox \"已\", vbEx: Exit Sub", "Sub", 24, 22), 26);
+            // ★v131b：整词匹配 —— 右边还出现同名子串时，旧实现（±12 窗口 +
+            //   LastIndexOf）会取到右边那个，把光标甩到词尾之后。
+            Eq("find-end/右边同名整词", Rules.FindCompletionEnd("Split=Split(x)", "Split", 0, 0), 5);
+            // ★v131b：`=` 补空格后词起点右移（用户报的 "student=spl" 就是这个）。
+            Eq("find-end/等号补空格", Rules.FindCompletionEnd("student = Split()", "Split", 8, 13), 15);
+            // 落点列 = `(` 的 1-based 显示列。**不能减 1** —— 减了就落进词中间
+            // （`Spli|t`，用户截图那个 bug）。
+            Eq("caret-col/括号前", Rules.DispCol("student = Split()", 15), 16);
+
+            // ★v131b：VBE 给的是显示列。纯 ASCII 行两种语义数值相同（所以这个坑
+            //   只在有中文/全角的行上暴露）；全角行必须换算，否则取词会落空。
+            Eq("char-col/纯ascii 恒等", Rules.CharColFromDisp("student = Split()", 16), 16);
+            Eq("char-col/全角缩进", Rules.CharColFromDisp("    学生 = Split()", 17), 15);
+            Eq("char-col/行尾", Rules.CharColFromDisp("abc", 4), 4);
+            Eq("char-col/超出钳到行尾", Rules.CharColFromDisp("abc", 99), 4);
+            // 换算之后再取词 —— 这一对是"含中文的行到底弹不弹"的判据
+            Eq("char-col/全角行取词", Rules.WordBefore("    学生 = Split()",
+                Rules.CharColFromDisp("    学生 = Split()", 17), out _), "Split");
 
             int pos, span;
             Ok("match/前缀", Rules.Match("MsgBox", "msg", out pos, out span) && pos == 0);

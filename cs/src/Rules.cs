@@ -45,18 +45,30 @@ namespace VbeComplete
 
         /// <summary>
         /// VBE 重排过整行之后，找回补全词真正的结束下标（0-based 排他）。
-        /// 在 near0 附近 ±12 个字符里找 completion 的出现位置；找不到就用 fallback0。
+        /// 只认【整词】出现（前后都不是标识符字符），多处出现取起点最接近 near0 的；
+        /// 找不到就用 fallback0。
+        /// ★v131b：原来用 LastIndexOf 且不校验词边界 —— 行里出现两次同名
+        ///   （`Split = Split(x)`）时会取到最后一个，光标就跑到别的词后面去。
+        ///   判据与 Python 版 `_find_completion_end` 同一份语义。
         /// </summary>
         public static int FindCompletionEnd(string actual, string completion, int near0, int fallback0)
         {
-            if (string.IsNullOrEmpty(actual) || string.IsNullOrEmpty(completion)) return fallback0;
-            int from = Math.Max(0, near0 - 12);
-            int to = Math.Min(actual.Length, near0 + 12);
-            if (from > to) return fallback0;
-            string window = actual.Substring(from, to - from);
-            int idx = window.LastIndexOf(completion, StringComparison.OrdinalIgnoreCase);
-            if (idx >= 0) return from + idx + completion.Length;
-            return Math.Max(0, Math.Min(actual.Length, fallback0));
+            int clamped = Math.Max(0, Math.Min(actual == null ? 0 : actual.Length, fallback0));
+            if (string.IsNullOrEmpty(actual) || string.IsNullOrEmpty(completion)) return clamped;
+            int L = completion.Length;
+            int best = -1;
+            int i = 0;
+            while (i <= actual.Length - L)
+            {
+                int hit = actual.IndexOf(completion, i, StringComparison.OrdinalIgnoreCase);
+                if (hit < 0) break;
+                bool okL = hit == 0 || !IsIdentChar(actual[hit - 1]);
+                bool okR = hit + L >= actual.Length || !IsIdentChar(actual[hit + L]);
+                if (okL && okR && (best < 0 || Math.Abs(hit - near0) < Math.Abs(best - near0))) best = hit;
+                i = hit + L;
+            }
+            if (best >= 0) return best + L;
+            return clamped;
         }
 
         /// <summary>
@@ -85,6 +97,28 @@ namespace VbeComplete
             (c >= 0xAC00 && c <= 0xD7A3) || (c >= 0xF900 && c <= 0xFAFF) ||
             (c >= 0xFE30 && c <= 0xFE6F) || (c >= 0xFF00 && c <= 0xFF60) ||
             (c >= 0xFFE0 && c <= 0xFFE6);
+
+        /// <summary>
+        /// 反向换算：VBE 给的"显示列"（1-based）-> 1-based 字符列。
+        /// ★v131b：`CodePane.GetSelection` 返回的列是**显示列**（真机实测：
+        ///   `    学生 = Split()` 里 `(` 前是 17 列，按字符数是 15）。把它直接
+        ///   当字符列去取词，含中文/全角的行会取错位置甚至取到空词 ——
+        ///   症状是"这一行根本不弹候选"。凡是吃 `snap.CaretCol` 的判据，
+        ///   都必须先过这一道。
+        /// </summary>
+        public static int CharColFromDisp(string text, int dispCol, int tabw = 4)
+        {
+            if (string.IsNullOrEmpty(text) || dispCol <= 1) return 1;
+            int col = 0;
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                int w = c == '\t' ? tabw - (col % tabw) : (IsWide(c) ? 2 : 1);
+                if (col + w >= dispCol) return i + 1;
+                col += w;
+            }
+            return text.Length + 1;
+        }
 
         // ------------------------------------------------------------------
         // 位置判据：这个位置该不该弹

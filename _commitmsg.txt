@@ -1,0 +1,38 @@
+fix(cs): 按 Tab 后光标落进 Split 中间 —— 三个「显示列当字符列」的错
+
+用户报：输入 student=spl 按 Tab，补成 Split() 后光标落在 Split 单词中间（截图）。
+
+先复现再动手：新增 --carettest（模块末尾插 5 种行 -> 调一次补全 -> 读回真实
+光标列 -> 与按真行算出的列对数 -> 删干净并逐字节比对原文）。第一次跑红 4/5，
+偏差恒为 -1 格，与缩进/全角无关 —— 元凶是自己写的 caretCol = col - 1：
+
+  DispCol 返回的已经是"第 N 个字符之前"的 1-based 列，再减一就落到词尾字符
+  之前 => Spli|t。改成 caretCol = col。
+
+顺着这条线还查出同一类的另外两处（全是"显示列 vs 字符列"）：
+
+  * Engine.Trigger / AcceptName 把 snap.CaretCol（GetSelection 给的**显示列**）
+    直接当**字符列**传给 Rules.WordBefore。纯 ASCII 行两种语义数值相同，所以一直
+    没暴露；含中文/全角的行会切出空词 => 整行根本不弹候选。新增
+    Rules.CharColFromDisp（DispCol 的逆运算），在这两处换算。
+  * Rules.FindCompletionEnd 用 ±12 窗口 + LastIndexOf、不校验词边界 => 行右边还有
+    Splitter 时会取到那里的 Split。改成整词匹配 + 取最近（与 Python 版
+    _find_completion_end 同一语义）。
+
+A/B 三次，各只红对应的一条：
+  * caretCol = col - 1      => carettest 5 条全红（都差 1 格）
+  * LastIndexOf 版 find-end => selftest 只红 find-end/右边同名整词（got=11 want=5）
+  * CharColFromDisp 不换算 => carettest 只红全角那条（word@caret= []）
+
+验证：
+  * C# 自检 99 PASS / 0 FAIL（91 -> 99：5 条列语义 + 3 条 find-end）
+  * --carettest 5 条全绿（顶格 / 4 空格 / Tab / 全角变量名 / 右侧同名子串）
+  * Python 测试网 1198 PASS / 0 FAIL（Python 版本来就对：_set_caret 没有 -1、
+    _find_completion_end 是整词匹配、列语义由 _vbe_measure 实测）
+
+顺手：cs/build.bat 失败分支多打一行提示（Access denied 时先停掉正在跑的实例）
+—— 发布时 exe 正在运行就替换不了，实测报 MSB4018。
+
+教训（已写进 cs/README 的坑列表）：mv/cp 还原 .cs 后必须 touch 再 build，
+否则 MSBuild 按 mtime 跳过编译，自检跑的是上一版二进制 —— 这次因此两次得出
+"还原后仍红"的假结论。

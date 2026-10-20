@@ -66,6 +66,7 @@ cs/src/*.user
 selftest.log
 writetest.log
 uitest.log
+carettest.log
 probe-cs.log
 popup-preview.png
 

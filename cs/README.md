@@ -94,7 +94,7 @@ dotnet publish cs\src -c Release -r win-x64 --self-contained true -p:PublishSing
 - `Ctrl+Shift+Enter` 上方插行 / `Ctrl+D` 复制行 / `Ctrl+K` 删行（光标落到上一行行尾）
 - `Ctrl+Shift+↑/↓` 跳到最后一条声明 / 过程收尾空白行
 - 托盘图标（打开日志 / 退出）、单实例
-- 自检 91 条（含 6 条启动脚本契约）
+- 自检 99 条（含 6 条启动脚本契约、5 条列语义契约）
 
 ## 还没实现（相对 Python 版）
 
@@ -111,14 +111,20 @@ dotnet publish cs\src -c Release -r win-x64 --self-contained true -p:PublishSing
 ## 自检与诊断
 
 ```bat
-cs\dist\VbeComplete.exe --selftest    :: 91 条纯逻辑判据，结果写 selftest.log
+cs\dist\VbeComplete.exe --selftest    :: 99 条纯逻辑判据，结果写 selftest.log
 cs\dist\VbeComplete.exe --probe       :: 能不能连上 VBE、光标在哪、模块多长
 cs\dist\VbeComplete.exe --writetest   :: 写入链路验证（末尾插一行再删掉，最后逐字节校验原文）
+cs\dist\VbeComplete.exe --carettest   :: 光标落点验证（5 种缩进/全角，末尾插行再删掉）
 cs\dist\VbeComplete.exe --uitest      :: 把候选窗离屏渲染成 popup-preview.png
 ```
 
 `--writetest` 会真的往当前模块末尾插一行 `    Dim abc` 再改成 `    Dim abcd`，
 然后删掉并**逐字节比对原文**。只在你想验证写入链路时手动跑，正常启动不会碰你的代码。
+
+`--carettest`（v131b 为"光标落点"加的）往模块末尾插 5 种行 —— 顶格 / 4 空格 /
+Tab / 全角变量名 / 右侧还有同名子串 —— 各调一次补全，然后读回**真实光标列**，
+跟"按真行算出来的列"对数，最后删干净并逐字节校验原文。它比纯函数用例强的地方
+只有一点：**`SetSelection` 的列语义只有真 VBE 说了算**。
 
 开日志：`set VBECOMPLETE_LOG=1` 后再启动，日志写到 `VbeComplete.log`
 （C# 版的条目带 `[cs]` 前缀，和 Python 版区分得开）。
@@ -148,7 +154,7 @@ try），任何一条路崩了都会把完整堆栈落进 `crash.log`。
 | `Native.cs` | Win32：钩子、按键注入、插入符矩形、窗口类名 |
 | `BuiltinTables.g.cs` | 内建名字表（由 Python 版的数据源自动导出，两边逐字一致） |
 
-### 五个踩过的坑（改代码前值得看一眼）
+### 七个踩过的坑（改代码前值得看一眼）
 
 1. **`dynamic` 变量不能直接 `== null`** —— 会走动态绑定去找 `operator ==`，
    对 `__ComObject` 直接抛异常。全部用 `ReferenceEquals(x, null)`。
@@ -165,7 +171,17 @@ try），任何一条路崩了都会把完整堆栈落进 `crash.log`。
 5. **别在 `.bat` 里用 `find` 判断进程**。Git for Windows 自带一个 GNU `find`，
    它会在 PATH 上抢先，把 `/i` 当成路径然后报 `find: '/i': No such file`，
    于是存活检查永远失败。用 `findstr`（Windows 独有，没人抢）。
+6. **`GetSelection` 给的是「显示列」，不是字符列**（v131b）。纯 ASCII 行上两者
+   数值相同，所以这个坑只在有中文/全角（占 2 格）或 Tab（展开到 4 格）的行上
+   暴露 —— 症状是"这一行根本不弹候选"（拿显示列去切字符下标，切出个空词）。
+   凡是吃 `snap.CaretCol` 的判据，先过 `Rules.CharColFromDisp`；要摆光标时反过来
+   用 `Rules.DispCol`。真机实测：`    学生 = Split()` 里 `(` 前是**显示列 17、
+   字符列 15**。
+7. **落点列就是 `DispCol(...)` 的返回值，别再 `- 1`**（v131b）。它给的已经是
+   "第 N 个字符之前"的 1-based 列；减一就落到词尾那个字符之前 —— 补完括号光标
+   停在 `Spli|t`，正是用户报的"落在 Split 中间"。字符列 ↔ 显示列是一对**互逆
+   换算**，不是简单的"下标 + 1"。
 
-外加一条不是坑但很容易被误判的：**这个程序启动后屏幕上不会有任何窗口。**
+外加一条不算坑但很容易被误判的：**这个程序启动后屏幕上不会有任何窗口。**
 如果哪天又出现"启动了但好像没反应"，先 `tasklist | findstr VbeComplete`
 确认进程在不在，再看托盘溢出区，别急着判定它崩了。
