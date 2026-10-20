@@ -21,7 +21,11 @@ if (-not $pyw) {
     exit 1
 }
 
-$target = Join-Path $proj 'main.py'
+# v128: point the shortcut at watchdog.py (the supervisor), not main.py.
+# The supervisor keeps the main program alive and restarts it after a crash or
+# a COM hang -- otherwise a hang leaves the single-instance mutex held and the
+# next launch silently does nothing until the machine is rebooted.
+$target = Join-Path $proj 'watchdog.py'
 $startup = [System.Environment]::GetFolderPath('Startup')
 $lnkPath = Join-Path $startup 'VbeComplete.lnk'
 
@@ -31,7 +35,7 @@ $lnk.TargetPath = $pyw
 $lnk.Arguments = "`"$target`""
 $lnk.WorkingDirectory = $proj
 $lnk.WindowStyle = 7
-$lnk.Description = 'VbeComplete - VBE auto-complete'
+$lnk.Description = 'VbeComplete - VBE auto-complete (with watchdog)'
 $lnk.Save()
 
 Write-Host ("Created startup shortcut: " + $lnkPath)

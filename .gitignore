@@ -40,6 +40,11 @@ wordbank.db-wal
 wordbank.db-shm
 wordbank.db.bak-*
 
+# ---- 运行期心跳（★v128）----
+# 主线程每秒写一次，给 watchdog.py 判断"还活着 / 卡死了"用的。纯本机状态。
+runtime.json
+runtime.json.tmp
+
 # ---- 调试输出 ----
 _dbg.txt
 _o.txt

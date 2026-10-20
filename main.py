@@ -55,12 +55,20 @@ VbeComplete 主入口（修复版）
   （窗口类 VbaWindow，见 vbe_bridge.vbe_code_pane_focused）。焦点不在代码窗格
   时：不弹候选、并收起已挂着的候选窗；自动配对 / Shift+Enter / Ctrl+Space
   一律不接管（免得把字符写进代码窗格）。判不出来时退回老判据，绝不"拿不准就拦"。
+
+  v128：加了【自动重启】。主线程一旦被一次没有超时参数的 COM 调用堵死，进程
+  还活着、单实例互斥体还占着 —— 于是"再双击 run.bat 什么也不会发生，只能重启
+  电脑"。现在：① 本进程用 daemon 线程盯主循环心跳，超过 HANG_SEC 没动就硬
+  退出（互斥体与钩子随之释放）；② `watchdog.py` 作为独立进程看心跳，发现
+  "没有实例 / 心跳过期"就先杀干净再拉一个新的。想关掉：`AUTO_RESTART = 0`。
 """
 
+import os
 import sys
 import time
 import ctypes
 import queue
+import threading
 import tkinter as tk
 
 try:
@@ -83,6 +91,8 @@ import snippets
 import snippet_ui
 import vba_builtins
 import wordbank
+import heartbeat
+import watchdog
 from vbe_bridge import VbeBackend, com_backoff_remaining
 from ui import Popup, MAX_VISIBLE_ROWS, caret_screen_rect
 from log import log as _log, log_boot as _log_boot
@@ -897,6 +907,99 @@ CODE_AREA_GATE = not settings.flag("NO_CODE_AREA_GATE", False)
 # 想关掉：set VBECOMPLETE_NO_AUTOPAIR=1
 AUTO_PAIR = not settings.flag("NO_AUTOPAIR", False)
 
+# ★v128：自动重启（守护进程 + 主线程自守）。
+#
+# 用户报的现象（原话）："我用 workbuddy 做其他的 vba 代码，会搞崩这个项目，
+# 而且无法启动，只有重启电脑，项目才会生效。"
+#
+# 根因不是"崩"，而是**卡死**：主线程在轮询里要打 COM，而 COM 调用没有超时
+# 参数 —— 宿主 Excel 被别的自动化占着主线程时，那一行会无限期阻塞。主线程一
+# 堵，tkinter 不再转、钩子没人服务，看起来就是"工具死了"；更糟的是进程还活着，
+# 单实例互斥体还占着 ⇒ 再双击 run.bat 会直接 return，**什么都不会发生**，
+# 只有重启电脑（或手动杀进程）才能恢复。
+#
+# 所以这里加两道保险：
+#   ① **自守**：一个 daemon 线程盯着主循环的心跳，超过 HANG_SEC 没动就
+#      `os._exit()` —— 进程一死，互斥体与全局钩子就都释放了；
+#   ② **守护**：`watchdog.py`（另一个进程，不碰 COM）发现"没有实例"或
+#      "心跳过期"，先杀干净再拉起一个新的。
+# 两道保险都要，少一道都有死角：只有守护进程 ⇒ 它自己被误杀就没救了；
+# 只有自守 ⇒ 进程被硬崩（缺 DLL、驱动冲突）时没人重启它。
+#
+# 想关掉（回到 v127 的行为：卡死就卡死，用户自己重启电脑）：
+#   settings.ini 里 `AUTO_RESTART = 0`
+AUTO_RESTART = settings.flag("AUTO_RESTART", True)
+
+# 主循环多久没动就判定卡死（秒）。**刻意给得宽**：一次合法的 COM 操作也可能
+# 花几百毫秒（大模块全量重解析 ~90ms、批量注释要逐行写），把门槛压到 5 秒会
+# 出现"打字打到一半工具自己重启"的荒唐事。20 秒以上才是真的没救 —— 那时用户
+# 已经在想"这破工具又死了"。守护进程用的是 HANG_SEC + 10（更宽），避免两边
+# 抢着杀同一个进程。
+HANG_SEC = max(10, settings.int_value("HANG_SEC", 30))
+
+# 自守退出时用的退出码（只是给日志留个记号，不影响任何逻辑）。
+EXIT_CODE_HANG = 39
+
+# 心跳刻度：主循环每转一轮盖一次时间戳。用 monotonic（不受系统对时影响）。
+# `poll` 单独记一条：轮询是补全的命根子，它死了（而 reconcile 还在跑）时，
+# 程序"看起来活着、其实一个提示都不会弹"，与卡死一样该重启。
+_HB = {"mono": 0.0, "poll": 0.0}
+
+
+def _start_hang_guard(beat, limit_sec, exit_code=EXIT_CODE_HANG):
+    """起一个 daemon 线程盯主循环（★v128）。返回线程对象（关掉时返回 None）。
+
+    【这个线程绝不碰 COM / tkinter】—— 它只读两个 float 和睡觉。主线程被 COM
+    堵死时它恰恰是唯一还能跑的东西，所以它的代码路径越短越好。
+
+    判据（任一成立就退出）：
+      * `mono`（主循环任意一轮的时间戳）超过 limit_sec 没更新 —— 主线程堵了；
+      * `poll`（轮询完整跑完一轮的时间戳）超过 limit_sec 没更新 —— 轮询自己
+        死了（异常没被兜住、`root.after` 链断了），程序还在但补全永远不会弹。
+
+    ⚠️ `os._exit` 是**故意**的：这时候 tkinter 已经不可信，`sys.exit()` 只会
+    卡在 `mainloop` 里出不来（那正是我们要逃的那一步）。硬退是安全的 ——
+    我们所有落盘都是"当场写完就关"，没有待 flush 的缓冲；`recent.json` 最多
+    丢最后 2 秒的确认（见 poll_editor 里那句 flush_recent）。
+    """
+    if not AUTO_RESTART:
+        return None
+
+    def _run():
+        last = time.monotonic()
+        last_poll = last
+        while True:
+            try:
+                time.sleep(1.0)
+                now = time.monotonic()
+                cur = float(beat.get("mono") or 0.0)
+                pol = float(beat.get("poll") or 0.0)
+                if cur > last:
+                    last = cur
+                if pol > last_poll:
+                    last_poll = pol
+                elif pol <= 0.0:
+                    # 还没跑过第一轮（启动阶段：import / 建词库 / tk 初始化）。
+                    # 这段时间**不判**：冷启动在带杀软的机械盘上偶尔要十几秒，
+                    # 按 30 秒卡死门槛去杀它，会变成"越开越慢、越慢越被杀"的死
+                    # 循环。真启动不起来时，另外两道防线还在：守护进程看到
+                    # `runtime.json` 不再更新照样会收拾。
+                    last_poll = now
+                stuck_main = (now - last) > limit_sec
+                stuck_poll = (now - last_poll) > limit_sec
+                if stuck_main or stuck_poll:
+                    _log("hang-guard: 主循环已 %.0fs 没动（轮询 %.0fs）-> "
+                         "硬退出，交给 watchdog 重启"
+                         % (now - last, now - last_poll))
+                    os._exit(exit_code)
+            except Exception:
+                # 这个线程绝不能死：它死了就没人自救了。
+                pass
+
+    t = threading.Thread(target=_run, name="vbe-hang-guard", daemon=True)
+    t.start()
+    return t
+
 # 文本变化后，标识符缓存最快多久允许重解析一次（秒）。
 # 太小会每敲一个键都全量解析所有模块（大工程会卡），太大则新声明的变量
 # 迟迟不进候选。0.4s 兼顾：连打时最多 2.5 次/秒。
@@ -1171,7 +1274,35 @@ def main():
         pass
 
     if not acquire_single_instance():
+        # ★v128：这里原来是静默 `return` —— 正是用户那句"无法启动，只有重启
+        # 电脑"的来历：僵尸实例还占着互斥体，新实例拿到 ERROR_ALREADY_EXISTS
+        # 就安安静静退了，双击 run.bat 什么都不会发生。现在至少留一行日志
+        # （`LOG=1` 时可见），并把"救命"这件事交给 watchdog：它看到心跳过期会
+        # 先杀掉那只僵尸，再重新拉起。
+        _log("boot: 已有实例占着单实例互斥体 -> 本实例退出（若是卡死的僵尸，"
+             "watchdog 会在心跳过期后接管）")
         return
+
+    # ★v128：心跳**必须尽早写**，在第一行可能永远卡住的代码（tk / COM）之前。
+    # 否则"启动途中就卡死"的进程既没有心跳、也没有可杀的 pid 记录，watchdog
+    # 只能干看着单实例互斥体被占住 —— 又回到"只能重启电脑"。
+    try:
+        _HB["mono"] = time.monotonic()
+        _HB["poll"] = 0.0     # 0 = 还没跑过第一轮（自守线程据此跳过启动阶段）
+        heartbeat.tick(force=True, note="boot")
+    except Exception:
+        pass
+    # ★v128：确保守护进程在跑（它自己也有单实例互斥体，重复调用只是空转）。
+    # 放在这里而不是 `if __name__` 里：用户可能直接用 `py main.py` 调试，
+    # 那条路也得有守护。
+    try:
+        watchdog.ensure_running()
+    except Exception:
+        pass
+    try:
+        _start_hang_guard(_HB, HANG_SEC)
+    except Exception:
+        pass
 
     # ★v123：词库（`wordbank.db`）—— VBA 关键字 / 内建函数 / 内建类型 / 常用常量
     # 从代码常量搬进了**可手改的 SQLite**。这里只做两件事：
@@ -2496,6 +2627,9 @@ def main():
         "无条件"是重点：这个循环是「离开 VBE 就卸载全局钩子」的唯一执行者，
         它停摆一次，钩子就可能一直挂在别的程序退出流程上（v27 的老坑）。
         """
+        # ★v128：这也是"主线程还在转"的一个证据（挂/卸钩子都在主线程）。
+        # 与 poll_editor 共用同一个时间戳：谁转都能算数，卡住的时候两个都不转。
+        _HB["mono"] = time.monotonic()
         _safe_tick(_reconcile_once, tag="reconcile")
         root.after(300, reconcile)
 
@@ -2513,6 +2647,15 @@ def main():
         （不是全局低层钩子），不会像键盘钩子那样干扰其它程序，可以常开。
         VBE 不可用时 snapshot() 返回 None，自然退化为空转。
         """
+        # ★v128：心跳**放在所有 COM 调用之前**。这一行证明的是"主线程还能转"；
+        # 下面那一整段（snapshot / Lines / GetSelection）里任何一处被宿主拖住，
+        # 心跳就停 —— 这正是自守线程要看的信号。写盘由 heartbeat.tick 自己限流
+        # （1 秒一次），100ms 一轮里绝大多数调用只是一次浮点比较。
+        try:
+            _HB["mono"] = time.monotonic()
+            heartbeat.tick()
+        except Exception:
+            pass
         try:
             # ★v119：把"最近使用"表定期写回磁盘（跨会话累计）。
             # **绝不能放在 accept 的按键路径上**（那里只置脏标记），这里每 2 秒
@@ -2795,6 +2938,10 @@ def main():
             interval = POLL_INTERVAL_IDLE_MS
         else:
             interval = POLL_INTERVAL_MS
+        # ★v128：这一轮**完整**跑完了（包括那些 COM 读取）。自守线程拿它判
+        # "轮询自己有没有死"—— 与 mono 分开记，是因为 mono 在函数入口就盖了
+        # 章，只能证明"调度还在"，不能证明"这一轮真的走完"。
+        _HB["poll"] = time.monotonic()
         root.after(interval, poll_editor)
 
     root.after(10, drain_actions)

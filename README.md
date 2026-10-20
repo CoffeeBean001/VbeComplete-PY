@@ -24,6 +24,14 @@ Works in the VBE shared by **Microsoft Office** (Excel, Word, PowerPoint, Access
    the macro security level, and without it the tool can read no code. (WPS Office has the same
    switch under its own options.)
 4. Changed the code? **`stop.bat` → overwrite → `run.bat`** — Python loads the `.py` files at startup.
+5. **It restarts itself (v128).** When another automation keeps the host busy, the main thread can
+   block inside a COM call — the process is still there, but the UI and the completion popup stop
+   responding. After 30 seconds of that the tool exits and restarts itself; if the process is killed
+   outright, the supervisor `watchdog.py` brings it back within seconds. **No more rebooting.**
+   What it did is written to `watchdog.log` in the project folder; to turn it off completely set
+   `AUTO_RESTART = 0` in `settings.ini`.
+   ⚠️ Stop it with `stop.bat` (that stops the supervisor too). Killing `pythonw.exe` in Task Manager
+   only gets it restarted a few seconds later — that is by design, not a stuck kill.
 
 ## Usage
 

@@ -19825,11 +19825,12 @@ def main():
         _keys108 = [k for (k, _d, _s) in _ST108.KNOWN]
         # ★v126：KNOWN 总数 55 -> 57（+ HIDE_ON_COMPLETE / REQUIRE_KEY_TRIGGER）；
         # ★v127：删掉 NO_OUTLINE / NO_USAGES 后回到 55
+        # ★v128：+ AUTO_RESTART / HANG_SEC -> 57
         check("108.16 三个开关都进了 `settings.KNOWN`（各自独立，误触哪个关哪个）",
               [(_keys108.count("NO_INSERT_ABOVE"),
                 _keys108.count("NO_DUP_LINE"),
                 _keys108.count("NO_DEL_LINE"), len(_keys108))],
-              expect_contain=[(1, 1, 1, 55)])
+              expect_contain=[(1, 1, 1, 57)])
     finally:
         VB106._get_vbe_cached = _o_vbe108
 
@@ -20134,7 +20135,7 @@ def main():
               "`WORD_BANK`（库路径）",
               [(_keys109s.count("NO_WORDBANK"), _keys109s.count("WORD_BANK"),
                 len(_keys109s))],
-              expect_contain=[(1, 1, 55)])
+              expect_contain=[(1, 1, 57)])
 
         check("109.14 启动接线在 `main()` 里、且**先建库再加载**"
               "（顺序反了就会先读到「没有库」、退回种子，然后建了库却不生效）",
@@ -21130,7 +21131,7 @@ def main():
               [(_rows114.get("HIDE_ON_COMPLETE"),
                 _rows114.get("REQUIRE_KEY_TRIGGER"),
                 len(S102.KNOWN))],
-              expect_contain=[("1", "1", 55)])
+              expect_contain=[("1", "1", 57)])
 
         # ---- 114.14 模块里读开关时给的**默认值**也必须是开 ----
         # 为什么还要这一条：`KNOWN` 与 `flag(...)` 是两处默认值，§114.13 只钉住
@@ -21604,12 +21605,12 @@ def main():
     _ini118 = _io118.open(os.path.join(ROOT, "settings.example.ini"),
                           encoding="utf-8").read()
     check("118.3 两个开关也从配置中心撤掉了：`settings.KNOWN` 里没有 "
-          "`NO_OUTLINE` / `NO_USAGES`（总数回到 55），模板 "
+          "`NO_OUTLINE` / `NO_USAGES`（总数回到 55；★v128 加了自动重启两项后是 57），模板 "
           "`settings.example.ini` 里也不再有这两行 —— 留着的话"
           "「改一下键名、按着模板关功能」的老用户会以为自己关掉的是个还在的东西",
           [(_keys118.count("NO_OUTLINE"), _keys118.count("NO_USAGES"),
             len(_keys118), "NO_OUTLINE" in _ini118, "NO_USAGES" in _ini118)],
-          expect_contain=[(0, 0, 55, False, False)])
+          expect_contain=[(0, 0, 57, False, False)])
 
     _docs118 = ("README.md", "README.zh-CN.md", "docs/troubleshooting.zh-CN.md")
     _doc_hits118 = []
@@ -21628,6 +21629,169 @@ def main():
           "`docs/review-2026-10-18.zh-CN.md` 是当时那次代码评审的快照，属于历史"
           "记录，同样不算",
           [(_doc_hits118,)], expect_contain=[([],)])
+
+    # ------------------------------------------------------------------
+    # 119. ★v128：自动重启 —— 心跳 / 决策表 / 接线 / 不碰 GUI
+    #
+    # 起因（用户原话）："我用 workbuddy 做其他的 vba 代码，会搞崩这个项目，而且
+    # 无法启动，只有重启电脑，项目才会生效。"
+    #
+    # 这一节钉的是"**判定逻辑**与**接线**"，不钉"真的能重启"：后者要起进程、
+    # 杀进程、等 20 秒，放进回归网会让整网又慢又脆（本轮已手工端到端验过：
+    # 杀进程 -> 6 秒内换新 pid；挂起全部线程 -> 心跳停 -> 被强杀 -> 换新 pid）。
+    # ------------------------------------------------------------------
+    print("\n=== 119. ★v128：自动重启（心跳 + 守护进程）===")
+    import tempfile as _tf119
+    import heartbeat as _HB119
+    import watchdog as _WD119
+
+    _now119 = 1000000.0
+    _hb119 = {"ver": _HB119.FORMAT, "pid": 1234, "ts": _now119 - 2.0,
+              "ctime": 1}
+    check("119.1 心跳的「新鲜」判定：门槛内 True、门槛外 False；**时钟被往回拨时"
+          "按 0 秒算**（一次系统对时就把还在干活的主程序判成卡死、拉去重杀，"
+          "是这功能最容易造成的误伤）；版本号认不出 / 内容不是字典一律 False ——"
+          "宁可多重启一次，也别把一份看不懂的文件当成\"还活着\"然后永远不救",
+          [(_HB119.is_fresh(_hb119, _now119, 20),
+            _HB119.is_fresh(_hb119, _now119 + 17.0, 20),
+            _HB119.is_fresh(_hb119, _now119 + 21.0, 20),
+            _HB119.age(_hb119, _now119 - 100.0),
+            _HB119.is_fresh({"ver": 1, "ts": _now119}, _now119, 20),
+            _HB119.is_fresh({"ts": _now119}, _now119, 20),
+            _HB119.is_fresh(None, _now119, 20))],
+          expect_contain=[(True, True, False, 0.0, False, False, False)])
+
+    _d119 = _tf119.mkdtemp()
+    _p119 = os.path.join(_d119, "runtime.json")
+    _ok119 = _HB119.write(path=_p119, pid=os.getpid(), now=_now119)
+    _back119 = _HB119.read(_p119) or {}
+    _tmp119 = os.path.exists(_p119 + ".tmp")
+    check("119.2 心跳写读往返：写好能读回同一个 pid，`ctime` 有值（防 pid 复用"
+          "误杀的依据），**临时文件不残留**（写盘是 tmp -> os.replace 的原子替换，"
+          "读的一侧永远看不到半截 JSON）；坏文件读出来是 None 而不是抛异常",
+          [(_ok119, _back119.get("pid"), _back119.get("ver"),
+            bool(_back119.get("ctime")), _tmp119,
+            _HB119.read(os.path.join(_d119, "nope.json")),
+            _HB119.read(os.path.join(_d119, "runtime.json")) is not None)],
+          expect_contain=[(True, os.getpid(), _HB119.FORMAT, True, False,
+                           None, True)])
+    # 坏 JSON：不能抛，只能 None
+    with io.open(_p119, "w", encoding="utf-8") as _f119:
+        _f119.write('{"pid": 1, "ts"')
+    check("119.2b 半截 JSON（写盘中途断电 / 手改坏了）读出来必须是 None —— "
+          "守护进程靠\"读不出来 ⇒ 当作该救\"来兜底，这里抛异常它就整轮崩了",
+          [(_HB119.read(_p119),)], expect_contain=[(None,)])
+
+    _stale119 = {"ver": _HB119.FORMAT, "pid": 1, "ts": _now119 - 200.0,
+                 "ctime": 1}
+    _old25 = {"ver": _HB119.FORMAT, "pid": 1, "ts": _now119 - 25.0, "ctime": 1}
+    check("119.3 守护进程的决策表：新鲜 -> `ok`；活着但心跳过期 -> `kill`；"
+          "没有实例 -> `start`；**刚拉起、还在启动窗口内 -> `wait`**（既不重复"
+          "拉起撞互斥体，也不误杀正在 import 的新进程）；启动窗口过了仍然没有"
+          "心跳 -> `start`（说明那次拉起根本没起来）",
+          [(_WD119.decide(_hb119, _now119, True, False, 0.0),
+            _WD119.decide(_stale119, _now119, True, False, 0.0),
+            _WD119.decide(None, _now119, False, False, 0.0),
+            _WD119.decide(None, _now119, False, True, _now119 - 3.0),
+            _WD119.decide(None, _now119, False, True, _now119 - 60.0),
+            _WD119.decide(_stale119, _now119, True, True, _now119 - 60.0),
+            # 健康实例绝不会被"顺手重启"：child 还在跑也必须判 ok
+            _WD119.decide(_hb119, _now119, True, True, _now119 - 1.0))],
+          expect_contain=[("ok", "kill", "start", "wait", "start", "kill",
+                           "ok")])
+
+    check("119.3b 守护进程判卡死的门槛**必须比主程序自守更宽**（hang_sec + "
+          "slack）：两边同时动手只会抢着杀同一个进程；主程序自己的 daemon "
+          "线程到点先退，守护进程晚 10 秒收拾\"连自守线程都没了\"的残局",
+          [(_WD119.decide(_old25, _now119, True, False, 0.0, hang_sec=20,
+                          slack=10),
+            _WD119.decide(_old25, _now119, True, False, 0.0, hang_sec=20,
+                          slack=2))],
+          expect_contain=[("ok", "kill")])
+
+    import settings as _ST119
+    _rows119 = dict((k, d) for k, d, _s in _ST119.KNOWN)
+    _ini119 = io.open(os.path.join(ROOT, "settings.example.ini"),
+                      encoding="utf-8").read()
+    check("119.4 两个新开关登记了、默认都是「开」：`AUTO_RESTART=1`（装上去就该"
+          "有自动重启 —— 要回到 v127「卡死只能自己重启电脑」得用户主动关）、"
+          "`HANG_SEC=30`（门槛**刻意给宽**：合法的 COM 操作也可能几百毫秒，"
+          "压到 5 秒会出现\"打字打到一半工具自己重启\"）；`KNOWN` 总数 55 -> 57，"
+          "模板 `settings.example.ini` 里也有这两行",
+          [(_rows119.get("AUTO_RESTART"), _rows119.get("HANG_SEC"),
+            len(_ST119.KNOWN), "AUTO_RESTART =" in _ini119,
+            "HANG_SEC =" in _ini119)],
+          expect_contain=[("1", "30", 57, True, True)])
+
+    _main119 = io.open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+    _i_beat119 = _main119.find('note="boot"')
+    _i_tk119 = _main119.find("tk.Tk()")
+    check("119.5 `main.py` 的接线：① 开机心跳写在 `tk.Tk()` **之前**（启动途中"
+          "就卡死的进程也得留下可杀的 pid 记录，否则又回到\"只能重启电脑\"）；"
+          "② 轮询里每轮盖心跳；③ 自守线程到点 `os._exit`（这时候 tkinter 已经"
+          "不可信，`sys.exit()` 只会卡在 mainloop 里出不来）；④ 启动时确保守护"
+          "进程在跑；⑤ 读开关时给的默认值是 True/30（`KNOWN` 与代码是两处默认值，"
+          "只钉前者测不出笔误）",
+          [(_i_beat119 > 0, _i_tk119 > 0, _i_beat119 < _i_tk119,
+            "heartbeat.tick(" in _main119,
+            "_start_hang_guard(_HB, HANG_SEC)" in _main119,
+            "watchdog.ensure_running()" in _main119,
+            'settings.flag("AUTO_RESTART", True)' in _main119,
+            'settings.int_value("HANG_SEC", 30)' in _main119)],
+          expect_contain=[(True, True, True, True, True, True, True, True)])
+
+    _src119 = io.open(os.path.join(ROOT, "watchdog.py"), encoding="utf-8").read()
+    _forbid119 = [w for w in ("tkinter", "pynput", "win32com", "pythoncom",
+                              "pywintypes", "vbe_bridge", "engine")
+                  if w in _src119]
+    check("119.6 守护进程**不许依赖任何 GUI / COM 模块**（tkinter / pynput / "
+          "win32com / pythoncom / pywintypes / vbe_bridge / engine 一个都不许 "
+          "import）—— 它的存在意义就是\"主程序怎么崩都带不走它\"；一旦它自己也"
+          "import 了 pythoncom，宿主一卡它就跟着卡，救命的反倒先死了",
+          [(_forbid119,), ("VbeComplete_Watchdog_Mutex" in _src119,)],
+          expect_contain=[([],), (True,)])
+
+    _bat119 = io.open(os.path.join(ROOT, "run.bat"), encoding="utf-8").read()
+    _inst119 = io.open(os.path.join(ROOT, "install_autostart.ps1"),
+                       encoding="utf-8").read()
+    _stop119s = io.open(os.path.join(ROOT, "stop.ps1"), encoding="utf-8").read()
+    check("119.7 启动链路上都是守护进程：`run.bat` 起 `watchdog.py`（不再直接 "
+          "`start main.py`）、开机自启快捷方式指向 `watchdog.py`、`stop.ps1` "
+          "**先杀守护再杀主程序**（否则它 3 秒内又把主程序拉回来，\"停止\"看起来"
+          "像没生效）",
+          [("watchdog.py" in _bat119,
+            'start "" %PYW% "%HERE%main.py"' in _bat119,
+            "watchdog.py" in _inst119,
+            "watchdog.py" in _stop119s,
+            "for ($round" in _stop119s)],
+          expect_contain=[(True, False, True, True, True)])
+
+    _self119 = _HB119.process_alive(os.getpid())
+    _bogus119 = _HB119.process_alive(0x7FFFFFF0)
+    _ct1219 = _HB119.process_ctime(os.getpid())
+    _ct2219 = _HB119.process_ctime(os.getpid())
+    check("119.8 真机实测两个底层探针：进程探活对本进程 True、对不存在的 pid "
+          "False（这道判据错了的两个方向都很糟：错判\"死了\"会重复拉起、错判"
+          "\"活着\"则永远不救）；进程创建时间读得出来且两次一致 —— pid 会被"
+          "系统复用，只有它才能保证\"绝不误杀无关进程\"",
+          [(_self119, _bogus119, bool(_ct1219), _ct1219 == _ct2219)],
+          expect_contain=[(True, False, True, True)])
+
+    # ★v128 的真机回归：这一条是被**实测**抓出来的 ——
+    # `watchdog_running()` 里把参数类型写成了 `ctypes.DWORD`（ctypes 里没有
+    # 这个名字），每次调用都抛 AttributeError，被 `except` 吞成 True，于是
+    # `ensure_running()` 永远认为"守护进程已经在跑"，一个都不起 —— 而且**不会
+    # 有任何报错**，只是永远不生效。所以这里直接问一个不存在的名字：判据要是
+    # 再被写坏（抛异常 / 恒 True），这一条立刻红。
+    _nodummy119 = "VbeComplete_NoSuchMutex_%d_119" % os.getpid()
+    check("119.9 互斥体探测（`watchdog.mutex_exists`）：一个绝不存在的名字必须"
+          "返回 False（不是 None、更不是 True）。这个函数是"
+          "`ensure_running()` 判断\"要不要拉起守护进程\"的唯一依据 —— 它一旦"
+          "恒真，自动重启就是**静默失效**：主程序照样跑、日志里什么都不多，"
+          "只有出事那天才会发现没人救",
+          [(_WD119.mutex_exists(_nodummy119),
+            isinstance(_WD119.watchdog_running(), bool))],
+          expect_contain=[(False, True)])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原

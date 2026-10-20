@@ -322,6 +322,30 @@
   contracts (functions, constants, switches, files and docs), so a future change cannot quietly
   reintroduce half of it.
 
+- **v128 — it restarts itself, because "crashed" was really "hung".** The user's report was
+  blunt: *"when I use WorkBuddy on other VBA code it takes this project down, and then it will not
+  start — only a reboot brings it back."* The root cause is not a crash. Every 100 ms the main
+  thread issues COM calls (`GetSelection`, `Lines`, `InsertLines`), and **COM calls are
+  cross-process and synchronous with no timeout**: while another automation keeps the host's main
+  thread busy (writing VBA, running a macro, showing a modal dialog) that one line blocks
+  indefinitely. The process is still alive, so the single-instance mutex is still held — the next
+  `run.bat` gets `ERROR_ALREADY_EXISTS` and returns silently, i.e. **double-clicking does nothing
+  at all**. Windows only releases a mutex when the process terminates, hence "only a reboot".
+  Two guards now exist, and both are needed. ① A daemon thread in `main.py` watches the main
+  loop's heartbeat and calls `os._exit()` after `HANG_SEC` (default 30 s) without movement —
+  `sys.exit()` would just stay stuck in `mainloop`, which is the very thing to escape.
+  ② `watchdog.py`, a **separate process that never touches COM and imports no GUI module**, reads
+  `runtime.json` every 3 s and, when there is no instance or the heartbeat is stale
+  (`HANG_SEC + 10`), kills the body and starts a fresh one — killing it is what releases the
+  mutex. The heartbeat is written by the main thread once a second with an atomic replace, and it
+  carries the process creation time (`ctime`) so a recycled pid can never get an unrelated process
+  killed. Restart storms are tamed with 10 s → 20 s → 40 s … backoff (capped at 5 minutes) logged
+  to `watchdog.log`. `AUTO_RESTART = 0` turns the whole thing off; stop with `stop.bat`, which
+  kills the supervisor first — ending `pythonw.exe` in Task Manager only gets it restarted a few
+  seconds later, by design. Honest limits: the heartbeat proves the main thread turns, it cannot
+  prove the COM link is up (the tool backs off and reconnects on its own), and a legitimate
+  single COM call longer than 30 s would be treated as a hang.
+
 **Coexistence**
 
 - After `object.`, VbeComplete steps aside and lets the VBE's own, type-aware member list take over.
@@ -417,13 +441,17 @@ different ini file (portable installs and tests).
 | `VBECOMPLETE_WORD_BANK` | *(project folder)* | Path to the vocabulary bank. Empty = `wordbank.db` next to the program. |
 | `VBECOMPLETE_SETTINGS` | `<project folder>\settings.ini` | Which ini file to read (portable installs / tests). |
 | `VBECOMPLETE_SNIPPET_DB` | `<project folder>\snippets.db` | Where the snippet database lives (portable installs / tests point it elsewhere). |
+| `VBECOMPLETE_AUTO_RESTART` | **on** | `0` disables the v128 self-healing: no in-process hang guard and no supervisor. Back to "a hang means reboot the machine". |
+| `VBECOMPLETE_HANG_SEC` | `30` | Seconds without a main-loop heartbeat before the tool declares itself hung (minimum 10). Raise it if a legitimate COM call ever takes longer. |
 | `VBECOMPLETE_NO_MOD_CACHE` | off | `1` goes back to re-parsing every module on each refresh (v117 behaviour). Only useful for A/B timing; the per-module cache is what keeps a refresh at ~27 ms instead of ~224 ms. |
 
 ## Project structure
 
 | File | Role |
 | --- | --- |
-| `main.py` | Entry point: global keyboard hook, event loop, wiring |
+| `main.py` | Entry point: global keyboard hook, event loop, wiring, heartbeat |
+| `heartbeat.py` | v128: the main thread writes `runtime.json` once a second so another process can tell "still ticking" from "hung". Standard library only |
+| `watchdog.py` | v128: the supervisor — reads the heartbeat, kills a hung instance (which releases the single-instance mutex) and starts a fresh one. No COM, no tkinter |
 | `engine.py` | Completion engine: scoring, ranking, filtering, popup lifecycle |
 | `vbe_bridge.py` | VBE COM bridge: read code, read caret, write back, caret placement |
 | `parser.py` | VBA text parsing (statements, scope, comments and strings) |
@@ -436,7 +464,7 @@ different ini file (portable installs and tests).
 | `settings.py` | The configuration centre (v120): `settings.ini` parsing, the three-layer lookup, the `KNOWN` table and the commented-out template. Imports nothing from the project — `log.py` depends on it, not the other way round. `py -3 settings.py` dumps every value with its source. |
 | `settings.example.ini` | The template that `settings.py` generates, checked in so you can read it without running anything (every line commented out). |
 | `log.py` | Optional diagnostic log (off by default, zero overhead) |
-| `tests/` | Regression suite (`test_real_project.py`, 1172 checks) and the sample project it runs against. Six one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand), `probe_lineops.py` verifies v122 on the same setup (`Ctrl+Shift+Enter` above, `Ctrl+D`, `Ctrl+K`): it appends **one temporary procedure to the end of a module**, deletes it afterwards, and byte-compares the module with the backup taken beforehand. `probe_wordbank.py` verifies v123 on a real Excel + VBE: it builds a **temporary** bank (never your own `wordbank.db`), adds a word and disables a built-in function, then checks that after `load_active()` the added word is in the pool and the disabled one is gone, and that `reset_active()` restores the baseline exactly. |
+| `tests/` | Regression suite (`test_real_project.py`, 1187 checks) and the sample project it runs against. Six one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand), `probe_lineops.py` verifies v122 on the same setup (`Ctrl+Shift+Enter` above, `Ctrl+D`, `Ctrl+K`): it appends **one temporary procedure to the end of a module**, deletes it afterwards, and byte-compares the module with the backup taken beforehand. `probe_wordbank.py` verifies v123 on a real Excel + VBE: it builds a **temporary** bank (never your own `wordbank.db`), adds a word and disables a built-in function, then checks that after `load_active()` the added word is in the pool and the disabled one is gone, and that `reset_active()` restores the baseline exactly. |
 
 ## Credits
 
