@@ -345,6 +345,28 @@
   seconds later, by design. Honest limits: the heartbeat proves the main thread turns, it cannot
   prove the COM link is up (the tool backs off and reconnects on its own), and a legitimate
   single COM call longer than 30 s would be treated as a hang.
+- **v129 — v128 broke `run.bat` itself: one pair of parentheses.** The report was *"it will not
+  start at all now — `stop.bat` says 'No VbeComplete process is running', and `run.bat` flashes a
+  window and dies."* Python was fine; the batch file never ran. v128 had rewritten `run.bat` with
+
+  ```bat
+  if errorlevel 1 (
+    echo Installing dependencies (first run only)...
+  ```
+
+  and cmd, when it parses an `if (...)` block, treats the **closing paren inside the echo text** as
+  the end of the block — the leftover `...` is then an unexpected token, so cmd prints
+  *"… was unexpected at this time"*, **discards the whole block**, keeps going, and the script
+  exits with 255. Note the three things that make this hard to diagnose: the error happens while
+  *parsing* the block, so it fires even when `errorlevel` is 0; `start … watchdog.py` sits after
+  the error point, which is why `watchdog.log` stayed empty; and `@echo off` plus an immediate exit
+  means the message vanishes with the window — you must run the file from a console to see it.
+  Fixed by dropping the parentheses from the echo text (all three occurrences, including the one in
+  `install_autostart.bat`), and `timeout /t 2` became `ping -n 3 127.0.0.1` (`timeout` fails under
+  redirected stdin, and on some machines git's `timeout` shadows it). §120 now pins it: no
+  unescaped parentheses in any `.bat` `echo` line, `run.bat` must start `watchdog.py`, and the
+  checker itself is tested against the v128 text. A/B: putting the parentheses back turns only
+  120.1 red.
 
 **Coexistence**
 
@@ -464,7 +486,7 @@ different ini file (portable installs and tests).
 | `settings.py` | The configuration centre (v120): `settings.ini` parsing, the three-layer lookup, the `KNOWN` table and the commented-out template. Imports nothing from the project — `log.py` depends on it, not the other way round. `py -3 settings.py` dumps every value with its source. |
 | `settings.example.ini` | The template that `settings.py` generates, checked in so you can read it without running anything (every line commented out). |
 | `log.py` | Optional diagnostic log (off by default, zero overhead) |
-| `tests/` | Regression suite (`test_real_project.py`, 1187 checks) and the sample project it runs against. Six one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand), `probe_lineops.py` verifies v122 on the same setup (`Ctrl+Shift+Enter` above, `Ctrl+D`, `Ctrl+K`): it appends **one temporary procedure to the end of a module**, deletes it afterwards, and byte-compares the module with the backup taken beforehand. `probe_wordbank.py` verifies v123 on a real Excel + VBE: it builds a **temporary** bank (never your own `wordbank.db`), adds a word and disables a built-in function, then checks that after `load_active()` the added word is in the pool and the disabled one is gone, and that `reset_active()` restores the baseline exactly. |
+| `tests/` | Regression suite (`test_real_project.py`, 1190 checks) and the sample project it runs against. Six one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand), `probe_lineops.py` verifies v122 on the same setup (`Ctrl+Shift+Enter` above, `Ctrl+D`, `Ctrl+K`): it appends **one temporary procedure to the end of a module**, deletes it afterwards, and byte-compares the module with the backup taken beforehand. `probe_wordbank.py` verifies v123 on a real Excel + VBE: it builds a **temporary** bank (never your own `wordbank.db`), adds a word and disables a built-in function, then checks that after `load_active()` the added word is in the pool and the disabled one is gone, and that `reset_active()` restores the baseline exactly. |
 
 ## Credits
 

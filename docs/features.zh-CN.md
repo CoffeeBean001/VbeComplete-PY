@@ -2209,6 +2209,68 @@ COM 是**跨进程的同步调用，没有超时参数**：宿主 Excel 被别�
 换新 pid。A/B：把 `heartbeat.tick()` 从 `poll_editor` 里去掉 ⇒ 守护进程会把健康实例
 判成卡死并反复重启（§119.5 的红就是这个的离线版本）。
 
+### v129：修 v128 把 `run.bat` 写坏 —— 双击闪退，一行括号
+
+**用户口径**（原话）：
+
+> 哇，又出bug了，这次更严重，启动都不能启动了，我双击stop.bat，提示No VbeComplete
+> process is running.双击run.bat，窗口闪退，项目也没启动。
+
+#### 现场：Python 一切正常，坏的是批处理
+
+`py -3 main.py` 手工跑得起来、连得上宿主、心跳也在写 —— 说明 v128 加的守护逻辑没问题。
+把 `run.bat` 放进命令行（不是双击）跑一次，错误立刻停在屏幕上，不再"闪"：
+
+```
+D:\codes\VbeComplete-V587>py -3 -c "import pynput, win32gui"  1>nul 2>nul
+此时不应有 ...。
+```
+
+#### 原因：cmd 把 echo 文本里的右括号当成了 `if` 块的结束符
+
+v128 把入口从 `main.py` 换成 `watchdog.py` 时，顺手重写了 `run.bat`，里面新加了一段：
+
+```bat
+if errorlevel 1 (
+  echo Installing dependencies (first run only)...
+  %PY% -m pip install -q -r "%HERE%requirements.txt"
+  ...
+)
+```
+
+cmd 解析 `if (...)` 块时是**先找配对的右括号**。`echo` 文本里 `(first run only)` 的那个
+右括号被当成了块的结束符 ⇒ 块在那里就闭合了，剩下的 `...` 成了多余的词 ⇒
+报"此时不应有 ...。"、**整块被丢弃**，批处理一路往下跑，最后以退出码 255 结束。
+
+三条关键事实，少知道一条都会判错方向：
+
+1. **不是"依赖没装好"** —— 报错发生在 `if errorlevel 1 (` 的**解析阶段**，`errorlevel`
+   是 0 也照报，因为 cmd 要先解析整个块才决定要不要执行；
+2. **守护进程压根没起来** —— `start "" %PYW% watchdog.py` 在报错点之后，`watchdog.log`
+   里一个字都没有，所以 `stop.bat` 才说 "No VbeComplete process is running"；
+3. **双击只能看到"闪一下"** —— `@echo off` 加上脚本立刻退出，错误信息在窗口关掉之前
+   就没了；必须从命令行跑才看得见。
+
+#### 修法
+
+- 三处 `echo` 文本里的括号改成连字符（`- first run only...` / `- runs in background...`）。
+  同一句在 `install_autostart.bat` 里也有，一并改掉（它在块外，以前侥幸没炸）。
+- `timeout /t 2 >nul` 换成 `ping -n 3 127.0.0.1 >nul`：`timeout` 在 stdin 被重定向时
+  会直接失败，而且某些机器 PATH 里排在前面的是 git 的 `timeout`（报
+  `invalid time interval`）。`ping` 到处都有、行为一致。
+
+#### 契约（§120）
+
+新增三条，钉的不是"功能"而是"**启动脚本本身能跑**"：
+
+| 用例 | 钉什么 |
+| --- | --- |
+| 120.1 | 所有 `.bat` 的 `echo` 行**不许出现未用 `^` 转义的括号** |
+| 120.2 | `run.bat` 的 `start` 目标必须是 `watchdog.py`（v128 起的入口） |
+| 120.3 | 上面那个判据自己能抓住 v128 的原样写法（假样本里第 3 / 6 行被点名，`rem` 里的括号与 `^(` 转义不算） |
+
+A/B：把括号原样放回 `run.bat` ⇒ 只有 120.1 红（1189 PASS / 1 FAIL），还原后 1190 全绿。
+
 ## 与 IntelliJ IDEA 的对照
 
 这个项目的目标就是**把 IDEA 那套"聪明补全"搬进 VBE**。VBE 原生只对 `对象.成员`
@@ -2346,7 +2408,7 @@ IDEA 的这些能力**都建立在一个前提上：IDE 手里有整个工程的
 | `requirements.txt`                                              | 依赖（`pywin32` / `pynput`）             |
 | `run.bat` / `stop.bat` / `stop.ps1`                             | 启停                                   |
 | `install_autostart.ps1` / `uninstall_autostart.ps1`（及对应 `.bat`） | 开机自启的安装与卸载                           |
-| `tests/` + `run_tests.bat`                                      | **回归测试**（1187 条），见下；另有六个手工探针：`probe_ime_mode.py`（问输入法转换模式）、`probe_hook_gate.py`（实证钩子门控 / 前台窗口卡死对主线程的影响）、`probe_perf.py`（量弹窗链路的耗时：`get_context` / 全量重解析 / 打分曲线）、`probe_comment.py`（真 Excel + VBE 验 `Ctrl+/`：只在模块末尾追加 4 行、跑完删掉并与开工前备份逐字比对）、`probe_lineops.py`（真机验 v122：`Ctrl+Shift+Enter` 上方插行 / `Ctrl+D` 复制行 / `Ctrl+K` 删行 —— **只在模块末尾追加一个临时过程**，跑完删掉并与开工前备份**逐字比对**）、`probe_wordbank.py`（真机验 v123：临时库里加一个词、禁用一个内建函数，`load_active()` 之后**前者进池子、后者消失**，`reset_active()` 后与基线完全一致；**只用临时库，不碰你自己的 `wordbank.db`**） |
+| `tests/` + `run_tests.bat`                                      | **回归测试**（1190 条），见下；另有六个手工探针：`probe_ime_mode.py`（问输入法转换模式）、`probe_hook_gate.py`（实证钩子门控 / 前台窗口卡死对主线程的影响）、`probe_perf.py`（量弹窗链路的耗时：`get_context` / 全量重解析 / 打分曲线）、`probe_comment.py`（真 Excel + VBE 验 `Ctrl+/`：只在模块末尾追加 4 行、跑完删掉并与开工前备份逐字比对）、`probe_lineops.py`（真机验 v122：`Ctrl+Shift+Enter` 上方插行 / `Ctrl+D` 复制行 / `Ctrl+K` 删行 —— **只在模块末尾追加一个临时过程**，跑完删掉并与开工前备份**逐字比对**）、`probe_wordbank.py`（真机验 v123：临时库里加一个词、禁用一个内建函数，`load_active()` 之后**前者进池子、后者消失**，`reset_active()` 后与基线完全一致；**只用临时库，不碰你自己的 `wordbank.db`**） |
 
 ## 附：跑回归测试与 log.py 说明（原文）
 

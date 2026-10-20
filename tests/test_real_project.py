@@ -21794,6 +21794,97 @@ def main():
           expect_contain=[(False, True)])
 
     # ------------------------------------------------------------------
+    # 120. ★v129：启动脚本的语法契约 —— `run.bat` 曾经整个跑不通
+    #
+    #   用户症状（原话）："双击stop.bat，提示No VbeComplete process is
+    #   running。双击run.bat，窗口闪退，项目也没启动。"
+    #
+    #   根因不在 Python，而在 **cmd 的块解析**：v128 把入口换成 `watchdog.py`
+    #   时新加了一行
+    #       if errorlevel 1 (
+    #         echo Installing dependencies (first run only)...
+    #   cmd 解析 `if (...)` 块时，把 echo 文本里 `(first run only)` 的**右括号**
+    #   当成块的结束符，剩下的 `...` 就成了多余 token ⇒ 报"此时不应有 ...。"，
+    #   然后**丢弃整个块**、继续往下走，最后整个 bat 以 255 退出。于是：窗口
+    #   一闪而过、watchdog 压根没起来、项目当然也没启动。而守护进程 / 主程序
+    #   本身完全正常（手工 `py -3 main.py` 跑得好好的）—— 所以 Python 侧的任何
+    #   测试都抓不到，只能靠"真跑一次脚本"或这条静态契约。
+    #
+    #   契约：**任何 `.bat` 的 `echo` 行都不许出现裸括号**。cmd 何时处于块内
+    #   极难预测（同一行在块内 / 块外行为不同），一律不许最省心；真要写括号
+    #   就 `^( ^)` 转义。
+    # ------------------------------------------------------------------
+    print("\n=== 120. ★v129：.bat 的 echo 行不许出现裸括号 ===")
+
+    def _bat_echo_issues120(text):
+        """返回 [(行号, 行内容)]：`echo` 行里有未用 `^` 转义的括号。纯函数。
+
+        跳过空行、`rem` / `::` 注释行、以及光秃秃的 `echo`（打印空行）。
+        转义写法 `^(` / `^)` 不算问题 —— 那是 cmd 里唯一安全的写法。
+        """
+        out = []
+        for _i, _raw in enumerate(text.splitlines(), 1):
+            _line = _raw.strip()
+            if not _line:
+                continue
+            _low = _line.lower()
+            if _low.startswith("rem") or _low.startswith("::"):
+                continue
+            if not _low.startswith("echo "):
+                continue
+            _body = _line[5:].replace("^(", "").replace("^)", "")
+            if "(" in _body or ")" in _body:
+                out.append((_i, _line))
+        return out
+
+    _bats120 = sorted([f for f in os.listdir(ROOT)
+                       if f.lower().endswith(".bat")])
+    _bad120 = []
+    for _b120 in _bats120:
+        try:
+            _t120 = io.open(os.path.join(ROOT, _b120), encoding="utf-8",
+                            errors="replace").read()
+        except Exception:
+            _t120 = ""
+        _iss120 = _bat_echo_issues120(_t120)
+        if _iss120:
+            _bad120.append((_b120, _iss120[0][0]))
+    check("120.1 所有 .bat 的 `echo` 行都不含未转义的括号"
+          "（v129 实测：`if errorlevel 1 (` 块里的 "
+          "`echo ... (first run only)...` 会让 cmd 把 echo 里的右括号当成块"
+          "结束符，后面剩一个 `...` ⇒ 报\"此时不应有 ...。\"、整块被丢弃、"
+          "批处理以 255 退出 —— 双击 run.bat 窗口一闪，项目一点没起来）",
+          [(_bad120,)], expect_contain=[([], )])
+
+    _run120 = io.open(os.path.join(ROOT, "run.bat"), encoding="utf-8",
+                      errors="replace").read()
+    _start120 = [_l.strip() for _l in _run120.splitlines()
+                 if _l.strip().lower().startswith("start ")]
+    check("120.2 `run.bat` 的启动目标必须是 `watchdog.py`（v128 起入口是守护"
+          "进程，不是 main.py）—— 只写 `start` 不写对目标，等于双击之后"
+          "\"什么都没发生\"，而用户无从判断是脚本坏了还是程序坏了",
+          [(len(_start120),
+            any("watchdog.py" in _l for _l in _start120))],
+          expect_contain=[(1, True)])
+
+    # A/B：这个判据自己得能抓住 v128 那个写法 —— 否则 120.1 只是"永远绿"。
+    # 第 3 行 = v128 的原样，第 6 行 = 块外的同类写法，第 7 行是转义后的
+    # 正确写法（必须**不算**问题）。
+    _probe120 = _bat_echo_issues120(
+        "echo plain\r\n"
+        "if errorlevel 1 (\r\n"
+        "  echo Installing dependencies (first run only)...\r\n"
+        ")\r\n"
+        "rem a (comment) with parens\r\n"
+        "echo Starting VbeComplete (runs in background)...\r\n"
+        "echo escaped ^(ok^)\r\n")
+    check("120.3 上面的判据确实能抓住 v128 那个写法：假样本里两行带裸括号的"
+          "echo 都被点名（第 3 / 6 行），而 `rem` 注释里的括号和 `^(` 转义"
+          "写法都不算 —— 少了这条，120.1 绿了也说明不了任何事",
+          [(len(_probe120), [_r[0] for _r in _probe120])],
+          expect_contain=[(2, [3, 6])])
+
+    # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原
     #     这不是在测产品代码，而是在测【测试网自己】：一节忘了还原，后面每一节
     #     都会悄悄跑在别人的假对象上，而**不会有任何一条用例变红**。

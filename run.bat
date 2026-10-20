@@ -22,7 +22,7 @@ rem Skip pip when the dependencies are already importable -- running it on every
 rem launch used to hit the network and made startup look like "nothing happens".
 %PY% -c "import pynput, win32gui" >nul 2>nul
 if errorlevel 1 (
-  echo Installing dependencies (first run only)...
+  echo Installing dependencies - first run only...
   %PY% -m pip install -q -r "%HERE%requirements.txt"
   if errorlevel 1 (
     echo pip install failed. Please run "python main.py" in a console to see errors.
@@ -31,8 +31,11 @@ if errorlevel 1 (
   )
 )
 
-echo Starting VbeComplete (runs in background)...
+echo Starting VbeComplete - runs in background...
 start "" %PYW% "%HERE%watchdog.py"
 echo Done. You can close this window. The tool stays running.
-timeout /t 2 >nul
+rem v129: ping instead of `timeout` -- `timeout` refuses to run when stdin is
+rem redirected and some setups have a *different* `timeout` earlier in PATH
+rem (git's coreutils), which printed "invalid time interval".
+ping -n 3 127.0.0.1 >nul 2>nul
 endlocal
