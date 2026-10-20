@@ -5,7 +5,7 @@ __pycache__/
 *.pyo
 *.egg-info/
 build/
-dist/
+/dist/
 venv/
 .venv/
 
@@ -55,3 +55,19 @@ _o.txt
 .idea/
 Thumbs.db
 desktop.ini
+
+# ---- C# 版：只忽略构建中间产物 ----
+# dist\VbeComplete.exe 是交付物（单文件、约 270KB），要提交
+cs/src/bin/
+cs/src/obj/
+cs/src/*.user
+
+# ---- 自检产物 ----
+selftest.log
+writetest.log
+uitest.log
+probe-cs.log
+popup-preview.png
+
+# ---- 备份快照（本地留一份，不进版本库；源码本身 git 里全有） ----
+backup/

@@ -1,0 +1,1830 @@
+{
+"version": 1,
+"words": [
+{
+"name": "CBool",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CByte",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CCur",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CDate",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CDbl",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CDec",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CInt",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CLng",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CLngLng",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CLngPtr",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CSng",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CStr",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CVar",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CVErr",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "IsArray",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "IsDate",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "IsEmpty",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "IsError",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "IsMissing",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "IsNull",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "IsNumeric",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "IsObject",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "TypeName",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "VarType",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Asc",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "AscB",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "AscW",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Chr",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "ChrB",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "ChrW",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Format",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "FormatCurrency",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "FormatDateTime",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "FormatNumber",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "FormatPercent",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Hex",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Oct",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "InStr",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "InStrRev",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Join",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "LCase",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Left",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "LeftB",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Len",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "LenB",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "LTrim",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Mid",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "MidB",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Replace",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Right",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "RightB",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "RTrim",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Space",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Split",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Str",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "StrComp",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "StrConv",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "String",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "StrReverse",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Trim",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "UCase",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Val",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Filter",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Abs",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Atn",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Cos",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Exp",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Fix",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Int",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Log",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Rnd",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Round",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Sgn",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Sin",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Sqr",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Tan",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Date",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "DateAdd",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "DateDiff",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "DatePart",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "DateSerial",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "DateValue",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Day",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Hour",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Minute",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Month",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "MonthName",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Now",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Second",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Time",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Timer",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "TimeSerial",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "TimeValue",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Weekday",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "WeekdayName",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Year",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Array",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "LBound",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "UBound",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "MsgBox",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "InputBox",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "DoEvents",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Shell",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "AppActivate",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "SendKeys",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Command",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Environ",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CurDir",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CallByName",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Choose",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "CreateObject",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "GetObject",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "IIf",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Partition",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "QBColor",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "RGB",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Switch",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Error",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Dir",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "EOF",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "FileAttr",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "FileDateTime",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "FileLen",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "FreeFile",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "GetAttr",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "SetAttr",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "FileCopy",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Kill",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "MkDir",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "RmDir",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "ChDir",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "ChDrive",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Open",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Close",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Get",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Put",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Input",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Seek",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Lock",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Unlock",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Loc",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "LOF",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Print",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Write",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Reset",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "LSet",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "RSet",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "LoadPicture",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "SavePicture",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "SaveSetting",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "GetSetting",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "GetAllSettings",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "DeleteSetting",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "DDB",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "FV",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "IPmt",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "IRR",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "MIRR",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "NPer",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "NPV",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Pmt",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "PPmt",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "PV",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Rate",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "SLN",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "SYD",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Load",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Unload",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Beep",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Erase",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "Randomize",
+"kind": "function",
+"enabled": true
+},
+{
+"name": "vbCr",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbCrLf",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbLf",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbNewLine",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbNullChar",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbNullString",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbTab",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbBack",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbFormFeed",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbVerticalTab",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbOKOnly",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbOKCancel",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbAbortRetryIgnore",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbYesNoCancel",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbYesNo",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbRetryCancel",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbCritical",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbQuestion",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbExclamation",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbInformation",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbDefaultButton1",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbDefaultButton2",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbDefaultButton3",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbDefaultButton4",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbApplicationModal",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbSystemModal",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbMsgBoxHelpButton",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbMsgBoxSetForeground",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbMsgBoxRight",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbMsgBoxRtlReading",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbOK",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbCancel",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbAbort",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbRetry",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbIgnore",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbYes",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbNo",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbBinaryCompare",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbTextCompare",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbDatabaseCompare",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbUpperCase",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbLowerCase",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbProperCase",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbWide",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbNarrow",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbKatakana",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbHiragana",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbUnicode",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbFromUnicode",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbGeneralDate",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbLongDate",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbShortDate",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbLongTime",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbShortTime",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbSunday",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbMonday",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbTuesday",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbWednesday",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbThursday",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbFriday",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbSaturday",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbUseSystemDayOfWeek",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbUseSystem",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbFirstJan1",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbFirstFourDays",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbFirstFullWeek",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbEmpty",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbNull",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbInteger",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbLong",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbSingle",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbDouble",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbCurrency",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbDate",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbString",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbObject",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbError",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbBoolean",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbVariant",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbDataObject",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbDecimal",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbByte",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbLongLong",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbUserDefinedType",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbArray",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbNormal",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbReadOnly",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbHidden",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbSystem",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbVolume",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbDirectory",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbArchive",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbAlias",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbBlack",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbRed",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbGreen",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbYellow",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbBlue",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbMagenta",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbCyan",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbWhite",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "vbObjectError",
+"kind": "constant",
+"enabled": true
+},
+{
+"name": "Boolean",
+"kind": "type",
+"enabled": true
+},
+{
+"name": "Byte",
+"kind": "type",
+"enabled": true
+},
+{
+"name": "Currency",
+"kind": "type",
+"enabled": true
+},
+{
+"name": "Date",
+"kind": "type",
+"enabled": true
+},
+{
+"name": "Double",
+"kind": "type",
+"enabled": true
+},
+{
+"name": "Integer",
+"kind": "type",
+"enabled": true
+},
+{
+"name": "Long",
+"kind": "type",
+"enabled": true
+},
+{
+"name": "LongLong",
+"kind": "type",
+"enabled": true
+},
+{
+"name": "LongPtr",
+"kind": "type",
+"enabled": true
+},
+{
+"name": "Object",
+"kind": "type",
+"enabled": true
+},
+{
+"name": "Single",
+"kind": "type",
+"enabled": true
+},
+{
+"name": "String",
+"kind": "type",
+"enabled": true
+},
+{
+"name": "Variant",
+"kind": "type",
+"enabled": true
+},
+{
+"name": "Sub",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Function",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Property",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Declare",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "PtrSafe",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Alias",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Lib",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Public",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Private",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Friend",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Global",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Static",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Const",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Dim",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "ReDim",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Preserve",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Implements",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Event",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "WithEvents",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "RaiseEvent",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Optional",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "ParamArray",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "ByVal",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "ByRef",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Attribute",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Option",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Explicit",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Enum",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Type",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "As",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "New",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Me",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Is",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Like",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Set",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Let",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Call",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "If",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Then",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Else",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "ElseIf",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "End",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Select",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Case",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "For",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Each",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "In",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "To",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Step",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Next",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Do",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Loop",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "While",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Wend",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Until",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Exit",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "GoTo",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "GoSub",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Return",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "On",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Resume",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Stop",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "With",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "TypeOf",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Rem",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Debug",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "True",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "False",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Nothing",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Empty",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Null",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "And",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Or",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Not",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Xor",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Eqv",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Imp",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "Mod",
+"kind": "keyword",
+"enabled": true
+},
+{
+"name": "AddressOf",
+"kind": "keyword",
+"enabled": true
+}
+]
+}
