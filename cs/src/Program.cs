@@ -13,8 +13,36 @@ namespace VbeComplete
     {
         private static Mutex _mutex;
 
+        /// <summary>已经有一份在跑时，用它叫那一份把托盘图标提示出来。</summary>
+        public const string ShowEventName = @"Local\VbeComplete_CSharp_v1_show";
+
         [STAThread]
         private static int Main(string[] args)
+        {
+            // 崩溃必须留下痕迹。WinExe 没有控制台，CLR 把异常吞掉之后用户只看到
+            // "窗口闪退、项目没启动"，我们手里连一行线索都没有。
+            AppDomain.CurrentDomain.UnhandledException +=
+                (s, e) => Log.Crash("AppDomain.UnhandledException", e.ExceptionObject as Exception);
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException +=
+                (s, e) => Log.Crash("Application.ThreadException", e.Exception);
+
+            try { return RunMain(args); }
+            catch (Exception e)
+            {
+                Log.Crash("Main", e);
+                try
+                {
+                    MessageBox.Show(
+                        "启动失败：" + e.Message + "\r\n\r\n详情见程序目录下的 crash.log",
+                        "VbeComplete", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                catch { }
+                return 1;
+            }
+        }
+
+        private static int RunMain(string[] args)
         {
             Settings.Load();
 
@@ -35,12 +63,15 @@ namespace VbeComplete
                 return UiTest();
             }
 
-            // 单实例：同名互斥体已经存在就说明有一份在跑（不是错误，直接退出）
+            // 单实例：同名互斥体已经存在就说明有一份在跑。
             bool created;
             _mutex = new Mutex(true, "VbeComplete_CSharp_v1", out created);
             if (!created)
             {
-                Log.Write("已有一份在运行，本次退出");
+                // 只写日志是不够的 —— 用户看到的就是"双击了，什么都没发生"。
+                // 叫已经在跑的那一份弹个气泡，把托盘图标指出来。
+                SignalExisting();
+                Log.Write("已有一份在运行，本次退出（已提示已有实例）");
                 return 0;
             }
 
@@ -57,6 +88,16 @@ namespace VbeComplete
             app.Shutdown();
             try { _mutex.ReleaseMutex(); } catch { }
             return 0;
+        }
+
+        private static void SignalExisting()
+        {
+            EventWaitHandle h;
+            if (EventWaitHandle.TryOpenExisting(ShowEventName, out h))
+            {
+                try { h.Set(); } catch { }
+                h.Dispose();
+            }
         }
 
         /// <summary>

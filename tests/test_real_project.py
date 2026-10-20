@@ -22060,6 +22060,50 @@ def main():
           "`_get_vbe_cached` 都指向别人的假工程）",
           [(_leaked90,)], expect_contain=[([],)])
 
+    print("\n=== 122. ★v131a：所有 .bat 必须是 CRLF，且启动脚本要验证进程真的活着 ===")
+    # 两次"双击窗口一闪、项目没启动"都在 .bat 上：
+    #   v129：echo 文本里的裸右括号让 cmd 丢弃整个 if 块、退出 255；
+    #   v131a：run-cs.bat 全 LF ⇒ cmd 解析 goto 标签和多行 if 块失败。
+    # 后者尤其阴险：Python 侧、C# 侧、exe 单独跑全是好的，只有"双击"这条路断。
+    _root122 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _bats122 = []
+    for _dp, _dn, _fn in os.walk(_root122):
+        _dn[:] = [d for d in _dn if d not in (".git", "obj", "bin", "__pycache__", "backup")]
+        for _f in _fn:
+            if _f.lower().endswith(".bat"):
+                _bats122.append(os.path.join(_dp, _f))
+    check("122.1 找得到启动脚本（run / stop / install / uninstall / build…）",
+          [(len(_bats122) >= 4,)])
+
+    _bad122 = []
+    for _p in _bats122:
+        _b = open(_p, "rb").read()
+        _lf = _b.count(b"\n") - _b.count(b"\r\n")
+        if _lf:
+            _bad122.append("%s(LF=%d)" % (os.path.basename(_p), _lf))
+    check("122.2 没有一个 .bat 是 LF-only（cmd 只按 CRLF 认行，"
+          "LF-only 会让 goto 标签与多行 if 块静默失效）",
+          [(_bad122,)], expect_contain=[([],)])
+
+    _ga122 = os.path.join(_root122, ".gitattributes")
+    _gt122 = open(_ga122, encoding="utf-8").read() if os.path.exists(_ga122) else ""
+    check("122.3 `.gitattributes` 钉住 `*.bat` 为 CRLF"
+          "（否则换台机器 clone 下来又会变回 LF）",
+          [("*.bat text eol=crlf" in _gt122,)])
+
+    _rc122 = os.path.join(_root122, "run-cs.bat")
+    _rt122 = ""
+    if os.path.exists(_rc122):
+        _rt122 = open(_rc122, encoding="utf-8", errors="replace").read()
+    check("122.4 run-cs.bat 启动后会 tasklist 验证进程存活，失败时把 crash.log / "
+          "VbeComplete.log 打给用户看（否则\"真崩了\"和\"正常在跑\"长得一模一样）",
+          [("goto died" in _rt122,
+            "tasklist" in _rt122,
+            "crash.log" in _rt122,
+            "| find /i" not in _rt122)])
+    check("122.5 run-cs.bat 不依赖 `find`：Git for Windows 自带一个同名程序会抢走 /i 开关",
+          [("findstr" in _rt122,)])
+
     print("\n" + "=" * 60)
     print("结果: %d PASS, %d FAIL" % (PASS, FAIL))
     if FAILURES:

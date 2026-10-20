@@ -40,5 +40,29 @@ namespace VbeComplete
             if (!Enabled) return;
             try { Write(string.Format(fmt, args)); } catch { }
         }
+
+        /// <summary>
+        /// 崩溃记录：**不受 LOG 开关控制**，永远落盘。
+        /// 原因很直接 —— WinExe 没有控制台，异常被 CLR 吞掉时用户只看到
+        /// "双击没反应"，而我们手里一点线索都没有。崩溃恰恰是没开日志时最需要留下的东西。
+        /// </summary>
+        public static void Crash(string where, Exception e)
+        {
+            try
+            {
+                var sb = new StringBuilder();
+                sb.AppendFormat("==== {0:yyyy-MM-dd HH:mm:ss.fff} {1} ====\r\n", DateTime.Now, where);
+                for (var cur = e; cur != null; cur = cur.InnerException)
+                {
+                    sb.AppendFormat("{0}: {1}\r\n{2}\r\n", cur.GetType().FullName, cur.Message, cur.StackTrace);
+                }
+                lock (_lock)
+                {
+                    File.AppendAllText(System.IO.Path.Combine(Settings.Home, "crash.log"),
+                        sb.ToString(), Encoding.UTF8);
+                }
+            }
+            catch { }
+        }
     }
 }

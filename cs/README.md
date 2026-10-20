@@ -22,7 +22,18 @@ cs\
 | 空闲时的事件循环 | Tk `mainloop` 是地板，实测占掉 97% 的空闲 CPU | WinForms 阻塞在 `GetMessage`，空闲≈0 |
 | 前台不是 VBE 时 | 仍按节奏读状态 | **一个 COM 都不发**，纯 Win32 判断（0.02ms）后直接返回 |
 | 轮询频率 | 固定 | 自适应：刚敲过键 50ms，停手 150ms，不在 VBE 250ms |
-| 常驻内存 | 46 MB | 约 35 MB（无 Python 解释器） |
+
+### 实测（本机，2026-10-20，两版串行各跑 60 秒，都不在 VBE 代码窗里）
+
+| | CPU（占一个核） | 工作集 | 私有内存 |
+|---|---|---|---|
+| Python 版 | **1.33 %** | 49.2 MB | 28.7 MB |
+| C# 版 | **0.13 %** | 47.7 MB | 11.7 MB |
+
+差距全在"不在 VBE 就一个 COM 都不发"这一条上 —— Python 版每 100ms 至少要发
+`ActiveCodePane` + `GetSelection`（约 0.75ms），C# 版只读两个窗口类名（0.02ms）。
+**在 VBE 里打字时两版都要付 COM 的钱**，那个差距会小得多；上面这组数字代表的是
+"你没在写 VBA"时的常驻开销，也就是一天里绝大部分时间。
 
 ## 快速开始
 
@@ -36,6 +47,12 @@ run-cs.bat
 :: 3. 停止（也可以右键托盘图标 -> 退出）
 stop-cs.bat
 ```
+
+> **启动之后看不到窗口是正常的。** 这个程序没有主窗口，只在通知区域（托盘）
+> 留一个图标。Win11 默认把托盘图标折叠进时钟旁边的 `^` 里 —— 第一次用时
+> 请点开那个小箭头找它。启动时会弹一个气泡提示，`run-cs.bat` 也会明确打印
+> `VbeComplete C# is running.`；**如果进程真的没起来，脚本会把日志尾部打出来
+> 并停住窗口**，不会再一闪而过。
 
 需要 **.NET 10 桌面运行时**（本机已装 SDK 10.0.401，所以直接能跑）。
 换一台没装 .NET 的机器时，用自包含方式发布：
@@ -77,7 +94,7 @@ dotnet publish cs\src -c Release -r win-x64 --self-contained true -p:PublishSing
 - `Ctrl+Shift+Enter` 上方插行 / `Ctrl+D` 复制行 / `Ctrl+K` 删行（光标落到上一行行尾）
 - `Ctrl+Shift+↑/↓` 跳到最后一条声明 / 过程收尾空白行
 - 托盘图标（打开日志 / 退出）、单实例
-- 自检 85 条
+- 自检 91 条（含 6 条启动脚本契约）
 
 ## 还没实现（相对 Python 版）
 
@@ -94,7 +111,7 @@ dotnet publish cs\src -c Release -r win-x64 --self-contained true -p:PublishSing
 ## 自检与诊断
 
 ```bat
-cs\dist\VbeComplete.exe --selftest    :: 85 条纯逻辑判据，结果写 selftest.log
+cs\dist\VbeComplete.exe --selftest    :: 91 条纯逻辑判据，结果写 selftest.log
 cs\dist\VbeComplete.exe --probe       :: 能不能连上 VBE、光标在哪、模块多长
 cs\dist\VbeComplete.exe --writetest   :: 写入链路验证（末尾插一行再删掉，最后逐字节校验原文）
 cs\dist\VbeComplete.exe --uitest      :: 把候选窗离屏渲染成 popup-preview.png
@@ -105,6 +122,14 @@ cs\dist\VbeComplete.exe --uitest      :: 把候选窗离屏渲染成 popup-previ
 
 开日志：`set VBECOMPLETE_LOG=1` 后再启动，日志写到 `VbeComplete.log`
 （C# 版的条目带 `[cs]` 前缀，和 Python 版区分得开）。
+
+**崩溃日志 `crash.log` 不受开关控制，永远会写。** WinExe 没有控制台，异常被
+CLR 吞掉时用户只看到"双击没反应"；所以入口处挂了三个兜底
+（`AppDomain.UnhandledException` / `Application.ThreadException` / `Main` 自身的
+try），任何一条路崩了都会把完整堆栈落进 `crash.log`。
+
+**重复启动不会再"没反应"**：已经有一份在跑时，新进程会通过一个命名事件
+叫醒那一份，让它弹气泡告诉你"已经在运行，图标在托盘里"，然后自己安静退出。
 
 ## 源码结构
 
@@ -123,7 +148,7 @@ cs\dist\VbeComplete.exe --uitest      :: 把候选窗离屏渲染成 popup-previ
 | `Native.cs` | Win32：钩子、按键注入、插入符矩形、窗口类名 |
 | `BuiltinTables.g.cs` | 内建名字表（由 Python 版的数据源自动导出，两边逐字一致） |
 
-### 三个踩过的坑（改代码前值得看一眼）
+### 五个踩过的坑（改代码前值得看一眼）
 
 1. **`dynamic` 变量不能直接 `== null`** —— 会走动态绑定去找 `operator ==`，
    对 `__ComObject` 直接抛异常。全部用 `ReferenceEquals(x, null)`。
@@ -133,3 +158,14 @@ cs\dist\VbeComplete.exe --uitest      :: 把候选窗离屏渲染成 popup-previ
 3. **`ReplaceLine` 会重排整行**（`,` 后、`:` 后、`=` 两边补空格），所以落光标
    的位置必须按**读回来的真实行**算，不能拿写入前的下标（这是 v126e 那个
    "光标落进 Sub 中间"的根因）。
+4. **`.bat` 必须是 CRLF**。LF-only 的批处理里，`goto` 标签和多行 `if (...)` 块
+   会静默失效 —— 不报错、不退出，就是"那几行没执行"。表现正是"双击窗口一闪、
+   程序没启动"。`.gitattributes` 已经钉住 `*.bat text eol=crlf`，别再让编辑器
+   把它改回 LF。
+5. **别在 `.bat` 里用 `find` 判断进程**。Git for Windows 自带一个 GNU `find`，
+   它会在 PATH 上抢先，把 `/i` 当成路径然后报 `find: '/i': No such file`，
+   于是存活检查永远失败。用 `findstr`（Windows 独有，没人抢）。
+
+外加一条不是坑但很容易被误判的：**这个程序启动后屏幕上不会有任何窗口。**
+如果哪天又出现"启动了但好像没反应"，先 `tasklist | findstr VbeComplete`
+确认进程在不在，再看托盘溢出区，别急着判定它崩了。

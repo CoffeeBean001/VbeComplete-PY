@@ -40,11 +40,23 @@ Works in the VBE shared by **Microsoft Office** (Excel, Word, PowerPoint, Access
    275 KB `cs\dist\VbeComplete.exe`. It shares the very same `settings.ini` / `recent.json` /
    `wordbank.json`. The difference that matters: **it sends zero COM calls while you are not
    inside a VBE code pane**, and its idle event loop no longer pays Tk's 2% floor.
+
+   Measured back to back, 60 s each, neither inside a VBE code pane:
+
+   | | CPU (one core) | Working set | Private |
+   |---|---|---|---|
+   | Python build | 1.33 % | 49.2 MB | 28.7 MB |
+   | C# build | **0.13 %** | 47.7 MB | 11.7 MB |
+
    ```bat
    cs\build.bat   :: build once
    run-cs.bat     :: start
    stop-cs.bat    :: stop (or right-click the tray icon -> Exit)
    ```
+   **No window appearing is the expected behaviour**: there is no main window, only a tray icon
+   in the notification overflow area. A balloon tip pops up on start and `run-cs.bat` prints a
+   confirmation line. If it really failed to start, the script dumps `crash.log` /
+   `VbeComplete.log` and keeps the window open instead of vanishing.
    ⚠️ **Do not run both at once** — both install a global keyboard hook and will fight over keys.
    See [`cs/README.md`](cs/README.md) for what the C# build does and does not cover yet.
 

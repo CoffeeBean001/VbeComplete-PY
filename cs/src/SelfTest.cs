@@ -255,6 +255,52 @@ End Type
             var r1 = new Candidate { Name = "a", ScopeKind = 3, Pos = 0, Span = 1, RecentRank = 5 };
             var r2 = new Candidate { Name = "b", ScopeKind = 3, Pos = 0, Span = 1, RecentRank = 1 };
             Ok("sort/最近使用优先", Engine.Cmp(r1, r2) < 0);
+
+            // ---- 启动脚本契约（v131a）----
+            // "双击窗口一闪、项目没启动"出过两次，两次都在 .bat 上：
+            //   v129：echo 文本里一个裸右括号就让 cmd 丢弃整个 if 块并退出 255；
+            //   v131a：LF-only 换行让 goto 标签和多行 if 块失效；
+            //   还有更根本的一条：start 之后既不验证也不提示，程序真没起来用户也看不到。
+            // 这些是【文件形态】问题，只能查字节，别用源码字符串护栏（注释会喂饱它）。
+            var root = Settings.Home;
+            var bats = Directory.GetFiles(root, "*.bat", SearchOption.AllDirectories)
+                .Where(p => !p.Contains(@"\obj\") && !p.Contains(@"\bin\"))
+                .ToArray();
+            Ok("bat/找到启动脚本", bats.Length >= 4, bats.Length + " 个");
+
+            var badEol = new List<string>();
+            var badParen = new List<string>();
+            foreach (var f in bats)
+            {
+                var bytes = File.ReadAllBytes(f);
+                int lfOnly = 0;
+                for (int i = 0; i < bytes.Length; i++)
+                {
+                    if (bytes[i] != (byte)'\n') continue;
+                    if (i == 0 || bytes[i - 1] != (byte)'\r') lfOnly++;
+                }
+                if (lfOnly > 0) badEol.Add(Path.GetFileName(f) + "(LF=" + lfOnly + ")");
+
+                foreach (var line in File.ReadAllLines(f))
+                {
+                    var t = line.Trim();
+                    if (!t.StartsWith("echo", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (t.IndexOf(')') >= 0) badParen.Add(Path.GetFileName(f) + ": " + t);
+                }
+            }
+            Ok("bat/必须是 CRLF 换行", badEol.Count == 0, string.Join(", ", badEol));
+            Ok("bat/echo 不许有裸右括号", badParen.Count == 0, string.Join(" | ", badParen));
+
+            var runCs = Path.Combine(root, "run-cs.bat");
+            var runCsText = File.Exists(runCs) ? File.ReadAllText(runCs) : "";
+            Ok("bat/启动后验证进程存活", runCsText.Contains("goto died") && runCsText.Contains("tasklist"),
+                "缺存活校验");
+            Ok("bat/失败时打印日志尾部",
+                runCsText.Contains("crash.log") && runCsText.Contains("VbeComplete.log"),
+                "没有把日志给用户看");
+            Ok("bat/不用 find（Git 的同名程序会抢 /i）",
+                runCsText.Contains("findstr") && !runCsText.Contains("| find /i"),
+                "still uses find");
         }
     }
 }

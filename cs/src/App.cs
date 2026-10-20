@@ -36,6 +36,8 @@ namespace VbeComplete
 
         private System.Windows.Forms.Timer _timer;
         private NotifyIcon _tray;
+        private EventWaitHandle _showEvent;
+        private Thread _showThread;
 
         // ---- 跨线程共享的状态（钩子线程只读，UI 线程写） ----
         private volatile bool _codePaneFocused;
@@ -95,10 +97,66 @@ namespace VbeComplete
         {
             SetupTray();
             StartHook();
+            StartShowListener();
             _timer = new System.Windows.Forms.Timer { Interval = 200 };
             _timer.Tick += (s, e) => PollOnce();
             _timer.Start();
             Log.Write("C# 版已启动（Home={0}）", Settings.Home);
+
+            // 启动了就必须让用户看得见。这个程序没有主窗口，图标又默认折叠进
+            // Win11 的托盘溢出区 —— 不给提示的话，"双击了没反应"和"已经正常运行"
+            // 在屏幕上长得一模一样（用户就是这么报的 bug）。
+            ShowBalloon("VbeComplete 已启动",
+                "它没有主窗口，图标在右下角托盘的溢出区里。右键那个图标可以退出。");
+        }
+
+        private void ShowBalloon(string title, string text)
+        {
+            try
+            {
+                if (_tray == null) return;
+                _tray.BalloonTipTitle = title;
+                _tray.BalloonTipText = text;
+                _tray.BalloonTipIcon = ToolTipIcon.Info;
+                _tray.ShowBalloonTip(5000);
+            }
+            catch (Exception e) { Log.Write("气泡提示失败：{0}", e.Message); }
+        }
+
+        /// <summary>
+        /// 监听"又有人启动了第二个实例"。Program 那边发现互斥体已存在时会 Set
+        /// 这个事件，我们收到就把托盘图标的存在感刷一遍 —— 否则用户双击后的
+        /// 全部观感就是"什么都没发生"。
+        /// </summary>
+        private void StartShowListener()
+        {
+            try
+            {
+                _showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ShowEventName);
+                _showThread = new Thread(() =>
+                {
+                    while (_running)
+                    {
+                        try
+                        {
+                            if (!_showEvent.WaitOne(500)) continue;
+                            if (!_running) return;
+                            // 必须回 UI 线程碰 NotifyIcon
+                            if (_disp.InvokeRequired)
+                                _disp.BeginInvoke((Action)(() => ShowBalloon(
+                                    "VbeComplete 已经在运行",
+                                    "不用再启动一次。图标在右下角托盘的溢出区里，右键可以退出。")));
+                            else
+                                ShowBalloon("VbeComplete 已经在运行",
+                                    "不用再启动一次。图标在右下角托盘的溢出区里，右键可以退出。");
+                        }
+                        catch { return; }
+                    }
+                })
+                { IsBackground = true, Name = "show-listener" };
+                _showThread.Start();
+            }
+            catch (Exception e) { Log.Write("重复启动监听未装上：{0}", e.Message); }
         }
 
         /// <summary>
@@ -582,6 +640,7 @@ namespace VbeComplete
             }
             catch { }
             try { if (_hookHandle != IntPtr.Zero) Native.UnhookWindowsHookEx(_hookHandle); } catch { }
+            try { _showEvent?.Dispose(); } catch { }
             try { _popup.Hide(); _popup.Dispose(); } catch { }
             try
             {
