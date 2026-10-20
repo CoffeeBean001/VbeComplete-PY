@@ -36,6 +36,17 @@ Works in the VBE shared by **Microsoft Office** (Excel, Word, PowerPoint, Access
    (v129 was roughly 9% — it re-read the whole current line every 100 ms), about 3% while typing.
    Outside the VBE it is also ~2%, and that floor comes from Tk's own event loop, not from the
    completion logic. Memory settles at **46 MB** (29 MB private) and does not grow.
+7. **There is also a C# build (v131)** — same tool, second implementation, shipped as a single
+   275 KB `cs\dist\VbeComplete.exe`. It shares the very same `settings.ini` / `recent.json` /
+   `wordbank.json`. The difference that matters: **it sends zero COM calls while you are not
+   inside a VBE code pane**, and its idle event loop no longer pays Tk's 2% floor.
+   ```bat
+   cs\build.bat   :: build once
+   run-cs.bat     :: start
+   stop-cs.bat    :: stop (or right-click the tray icon -> Exit)
+   ```
+   ⚠️ **Do not run both at once** — both install a global keyboard hook and will fight over keys.
+   See [`cs/README.md`](cs/README.md) for what the C# build does and does not cover yet.
 
 ## Usage
 
