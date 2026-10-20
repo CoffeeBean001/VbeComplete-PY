@@ -32,6 +32,10 @@ Works in the VBE shared by **Microsoft Office** (Excel, Word, PowerPoint, Access
    `AUTO_RESTART = 0` in `settings.ini`.
    ⚠️ Stop it with `stop.bat` (that stops the supervisor too). Killing `pythonw.exe` in Task Manager
    only gets it restarted a few seconds later — that is by design, not a stuck kill.
+6. **How much does it cost (measured, v130)?** About **2% of one core** while idle inside the VBE
+   (v129 was roughly 9% — it re-read the whole current line every 100 ms), about 3% while typing.
+   Outside the VBE it is also ~2%, and that floor comes from Tk's own event loop, not from the
+   completion logic. Memory settles at **46 MB** (29 MB private) and does not grow.
 
 ## Usage
 

@@ -2209,6 +2209,115 @@ COM 是**跨进程的同步调用，没有超时参数**：宿主 Excel 被别�
 换新 pid。A/B：把 `heartbeat.tick()` 从 `poll_editor` 里去掉 ⇒ 守护进程会把健康实例
 判成卡死并反复重启（§119.5 的红就是这个的离线版本）。
 
+### v130：把常驻 COM 砍到四分之一 —— 以及为什么"完全不调 COM"不成立
+
+**用户口径**（原话）：
+
+> 我觉得这个项目现在占用的CPU资源会比较大，能不能有什么其他的精简方案，不要让
+> CPU资源和内存资源占用太大。有没有不调用COM的方案。
+
+#### 先量，再改
+
+隐形 Excel + 一个模块，每项 300 次平均（毫秒）：
+
+| 做什么 | 耗时 |
+| --- | --- |
+| `vbe.ActiveCodePane` | 0.62 |
+| `cp.GetSelection()` | **0.13** |
+| `cp.CodeModule` | 1.02 |
+| `cm.Name` | 1.81 |
+| `cm.Lines(sl, 1)` | 2.25 |
+| **`VbeBackend.snapshot()` 合计** | **8.7** |
+| 纯 Win32（`vbe_code_pane_focused` / `vbe_popup_rects`） | 0.005 / 0.014 |
+
+轮询是每 100ms 一次 ⇒ **8.7ms × 10 = 常驻约 9% 的一个核**，而且用户什么都不干也
+一样。这就是"占用比较大"的全部来历：它跟"候选窗弹得对不对"无关，是每 100ms
+准时发生的一次跨进程全文读取。
+
+#### 为什么"完全不调 COM"做不到（三条实测，都否掉了）
+
+用户问得非常对 —— 如果能不调 COM，这 9% 就直接归零了。我把三条非 COM 的路都试了：
+
+1. **`WM_GETTEXT` 读代码窗** —— 枚举 VBE 主窗口的整棵窗口树（`wndclass_desked_gsk`
+   → `MDIClient` → `VbaWindow` → `ScrollBar` × 4 / `ObtbarWndClass` / `ComboBox` × 2），
+   代码编辑区是**自绘的 `VbaWindow`，里面没有任何 `Edit` / `RichEdit` / `Scintilla`
+   子控件**（整棵树里唯一的 `Edit` 是 Excel 的工作表标签）。`WM_GETTEXT` 无从下手。
+2. **WinEventHook 事件驱动** —— 挂了 `EVENT_OBJECT_VALUECHANGE` /
+   `EVENT_OBJECT_TEXTSELECTIONCHANGED` / `EVENT_OBJECT_CONTENTSCROLLED` 等十来个事件，
+   然后分别用 COM 改文本、改一行、移动光标，**只统计 VBE 窗口树内的事件**：
+   改文本只收到 `HIDE` / `SHOW` / `LOCATIONCHANGE`，**一次文本事件都没有**。
+   没有"文本变了"的信号，事件驱动就无从谈起。
+3. **UI Automation / MSAA** —— 前提是控件实现了文本模式；第 1 条已经说明它是自绘窗口，
+   UIA 拿到的最多是个空壳。
+
+所以结论是硬的：**要读 VBA 代码文本，VBE 只给了 COM 这一个入口**。任何"完全不调
+COM"的方案，本质上都是"不再读文本，改靠键盘钩子猜用户打了什么"——光标移动、鼠标
+点击、VBE 自己的自动格式化、别的程序通过 COM 写 VBA，全都会让那份猜出来的影子文本
+失真，补全就开始说谎。**不值得。**
+
+能做的不是"不调"，是"**少调、且在不需要的时候一次都不调**"。
+
+#### 改法：快照的两级读取（v130）
+
+关键洞察：**"文本变了"和"光标动了"在我们的判据里是同一件事**。打字、删字、粘贴、
+撤销、VBE 的自动格式化，全都会把插入符推走；连 `ReplaceLine` 补出来的空格也会。
+
+所以 `snapshot()` 拆成两步：
+
+1. 每轮只 `GetSelection()`（**0.13ms，比全量便宜 60 倍**）；
+2. 行号与光标列都没动 ⇒ 直接返回上一轮那份（行文本、模块名原样复用），不碰
+   `CodeModule` / `Name` / `Lines`；
+3. **但最多复用 `SNAP_MAX_AGE`（默认 1 秒）** —— 这一条专门兜"文本变了、光标却没动"：
+   Find & Replace 的等长替换、另一个程序（WorkBuddy 让 AI 写 VBA）直接改模块，插入符
+   一动不动。没有它，那种改动永远看不见；有了它，最坏只是晚 1 秒。
+
+另外两刀：
+
+- **`_get_vbe_cached(verify=False)`**：原来每次取代理都要先访问一次 `ActiveCodePane`
+  做验证，而 `snapshot()` 的**下一行**就是 `ActiveCodePane` —— 那一次验证是纯浪费
+  （0.6~1ms × 每秒 10 次）。现在这一步由调用方顺手完成，失败照样走同一条
+  `_release_vbe_proxy()` + `_com_fail()`。
+- **`invalidate_snapshot()`**：我们自己写了文本就作废缓存。调用点只有一处 ——
+  `drain_actions` 执行完动作之后。补全、`Ctrl+K` 删行、`Ctrl+D` 复制、`Ctrl+/` 注释
+  全部从那条队列进来，一处不漏。
+
+#### 结果
+
+| 场景 | v129 | v130 |
+| --- | --- | --- |
+| 在 VBE 里静止（每 100ms 一拍） | 8.7ms/拍 ≈ **9%** 一个核 | 1.9ms/拍 ≈ **1.9%** |
+| 光标在动（打字） | 8.7ms/拍 ≈ 9% | 3.0ms/拍 ≈ 3.0% |
+| 不在 VBE 里 | ~2% | ~2% |
+| 内存 | 46MB WS / 29MB 私有 | 同左，不随时间增长 |
+
+**4 倍**。剩下的那 1.9% 里，0.6ms 是 `ActiveCodePane`、0.13ms 是 `GetSelection`，
+其余是取代理与宿主探活 —— 再往下压就得牺牲"换模块/外部改文本"的灵敏度了，不值。
+
+**不在 VBE 里那 ~2% 的底噪，与补全逻辑无关**：我对准运行中的进程做了 5ms 一次的栈
+采样，97.4% 的样本落在 `tkinter.mainloop` 内部（Python 侧热点只有心跳写盘 0.8% 和
+焦点判定 0.5%）。那是 Tk 事件循环自己的开销。我试过把动作队列的轮询间隔从 10ms
+退到 40ms「空闲降频」—— **实测没有可测的差别**（1.93% vs 1.93%），代价却是每个动作
+最多晚 40ms，所以**没有保留**。
+
+**开关**：`NO_SNAP_CACHE = 1` 关掉两级读取（回到每 100ms 全读，只在排查"补全看不到
+刚改的代码"时用）；`SNAP_MAX_AGE` 调大写更省（发现"别的程序改了代码"更晚），
+`0` 等于关掉缓存。
+
+#### 契约（§121）
+
+| 用例 | 钉什么 |
+| --- | --- |
+| 121.1 | `snap_cache_hit` 纯函数：行号+列都没动且没过期才命中；行变/列变/过期/`max_age<=0`/首轮 一律不命中 |
+| 121.2 | 假 VBE 实测：两轮不动只读一次文本；**光标一挪必读、作废后必读、过期必读、关掉缓存每轮都读**（只测省不测读 = 省错了也看不出来） |
+| 121.3 | AST 契约：`snapshot` 真的调用 `snap_cache_hit`、取代理那次调用带 `verify=False`、`drain_actions` 真的调用 `invalidate_snapshot` |
+
+A/B 两条：去掉缓存分支 ⇒ 只红 121.2；把 `verify=False` 改回 `verify=True` ⇒ 只红 121.3。
+
+⚠️ 121.3 第一版是查**源码字符串**，A/B 直接失效 —— `snapshot()` 的注释里也写着
+`verify=False`，字符串判据被注释喂饱。改成 AST 之后又踩第二个坑：`False` 在 AST 里是
+`Constant(value=False)` 而不是 `Name(id="False")`，写成后者会让判据恒假、正常代码也红。
+两个坑都写进用例的说明里了。
+
 ### v129：修 v128 把 `run.bat` 写坏 —— 双击闪退，一行括号
 
 **用户口径**（原话）：
@@ -2408,7 +2517,7 @@ IDEA 的这些能力**都建立在一个前提上：IDE 手里有整个工程的
 | `requirements.txt`                                              | 依赖（`pywin32` / `pynput`）             |
 | `run.bat` / `stop.bat` / `stop.ps1`                             | 启停                                   |
 | `install_autostart.ps1` / `uninstall_autostart.ps1`（及对应 `.bat`） | 开机自启的安装与卸载                           |
-| `tests/` + `run_tests.bat`                                      | **回归测试**（1190 条），见下；另有六个手工探针：`probe_ime_mode.py`（问输入法转换模式）、`probe_hook_gate.py`（实证钩子门控 / 前台窗口卡死对主线程的影响）、`probe_perf.py`（量弹窗链路的耗时：`get_context` / 全量重解析 / 打分曲线）、`probe_comment.py`（真 Excel + VBE 验 `Ctrl+/`：只在模块末尾追加 4 行、跑完删掉并与开工前备份逐字比对）、`probe_lineops.py`（真机验 v122：`Ctrl+Shift+Enter` 上方插行 / `Ctrl+D` 复制行 / `Ctrl+K` 删行 —— **只在模块末尾追加一个临时过程**，跑完删掉并与开工前备份**逐字比对**）、`probe_wordbank.py`（真机验 v123：临时库里加一个词、禁用一个内建函数，`load_active()` 之后**前者进池子、后者消失**，`reset_active()` 后与基线完全一致；**只用临时库，不碰你自己的 `wordbank.db`**） |
+| `tests/` + `run_tests.bat`                                      | **回归测试**（1193 条），见下；另有六个手工探针：`probe_ime_mode.py`（问输入法转换模式）、`probe_hook_gate.py`（实证钩子门控 / 前台窗口卡死对主线程的影响）、`probe_perf.py`（量弹窗链路的耗时：`get_context` / 全量重解析 / 打分曲线）、`probe_comment.py`（真 Excel + VBE 验 `Ctrl+/`：只在模块末尾追加 4 行、跑完删掉并与开工前备份逐字比对）、`probe_lineops.py`（真机验 v122：`Ctrl+Shift+Enter` 上方插行 / `Ctrl+D` 复制行 / `Ctrl+K` 删行 —— **只在模块末尾追加一个临时过程**，跑完删掉并与开工前备份**逐字比对**）、`probe_wordbank.py`（真机验 v123：临时库里加一个词、禁用一个内建函数，`load_active()` 之后**前者进池子、后者消失**，`reset_active()` 后与基线完全一致；**只用临时库，不碰你自己的 `wordbank.db`**） |
 
 ## 附：跑回归测试与 log.py 说明（原文）
 

@@ -367,6 +367,42 @@
   unescaped parentheses in any `.bat` `echo` line, `run.bat` must start `watchdog.py`, and the
   checker itself is tested against the v128 text. A/B: putting the parentheses back turns only
   120.1 red.
+- **v130 — the resident COM cost cut to a quarter, and why "no COM at all" is impossible.** The
+  complaint: *"CPU usage seems high — is there a leaner design? Can we avoid COM entirely?"*
+  Measured on a hidden Excel with one module (300 runs each): `ActiveCodePane` 0.62 ms,
+  `GetSelection()` **0.13 ms**, `CodeModule` 1.02, `Name` 1.81, `Lines(sl,1)` 2.25 —
+  **`snapshot()` 8.7 ms total**, run every 100 ms, i.e. **a steady ~9% of one core** even when the
+  user does nothing.
+
+  Three non-COM routes were tested and all three are dead ends. ① `WM_GETTEXT`: the code editor is
+  a self-drawn `VbaWindow`; enumerating the whole VBE window tree (`wndclass_desked_gsk` →
+  `MDIClient` → `VbaWindow` → scrollbars / `ObtbarWndClass` / `ComboBox`) finds **no
+  `Edit`/`RichEdit`/`Scintilla` child at all** (the only `Edit` belongs to Excel's sheet tabs).
+  ② `WinEventHook`: with a dozen events hooked (`VALUECHANGE`, `TEXTSELECTIONCHANGED`,
+  `CONTENTSCROLLED`, …), changing text / a single line / the caret via COM produced only
+  `HIDE`/`SHOW`/`LOCATIONCHANGE` inside the VBE tree — **not one text event**. ③ UI Automation
+  needs a text pattern, which a self-drawn window does not expose. Reading VBA text therefore has
+  exactly one entrance: COM. Any design that "avoids COM" has to *guess* what was typed from
+  keyboard hooks — and caret moves, clicks, VBE's own auto-formatting and another program writing
+  VBA through COM all make that shadow text lie.
+
+  So the fix is "call it less, and never when nothing can have changed": `snapshot()` now reads
+  **only `GetSelection()` (0.13 ms, 60× cheaper)** and reuses the previous line text when the line
+  number *and* caret column are unchanged — but for at most `SNAP_MAX_AGE` (1 s), which is what
+  catches "text changed while the caret stood still" (Find & Replace, another program writing the
+  module). Typing, deleting, pasting, undo and VBE's auto-formatting all move the caret, so the
+  cheap path is also the correct one. Two more cuts: `_get_vbe_cached(verify=False)` skips a
+  `ActiveCodePane` probe that the very next line duplicates (0.6–1 ms × 10/s), and
+  `invalidate_snapshot()` is called once after every queued action — completion, `Ctrl+K`, `Ctrl+D`,
+  `Ctrl+/` all arrive through that queue, so no write path is missed.
+
+  Result: **8.7 → 1.9 ms per tick, 9% → 1.9% of a core** when idle in the VBE (3.0 ms while typing),
+  with the same 1-second worst case for external edits. Memory is unchanged at 46 MB (29 MB
+  private) and does not grow. The remaining ~2% floor outside the VBE is **not** the completion
+  logic: 5 ms stack sampling of the live process put 97.4% of samples inside `tkinter.mainloop`.
+  An "idle: poll every 40 ms instead of 10 ms" experiment showed **no measurable difference**, so
+  it was reverted rather than kept for show. §121 pins all of it — including, deliberately, the
+  four cases where the text **must** be re-read.
 
 **Coexistence**
 
@@ -466,6 +502,8 @@ different ini file (portable installs and tests).
 | `VBECOMPLETE_AUTO_RESTART` | **on** | `0` disables the v128 self-healing: no in-process hang guard and no supervisor. Back to "a hang means reboot the machine". |
 | `VBECOMPLETE_HANG_SEC` | `30` | Seconds without a main-loop heartbeat before the tool declares itself hung (minimum 10). Raise it if a legitimate COM call ever takes longer. |
 | `VBECOMPLETE_NO_MOD_CACHE` | off | `1` goes back to re-parsing every module on each refresh (v117 behaviour). Only useful for A/B timing; the per-module cache is what keeps a refresh at ~27 ms instead of ~224 ms. |
+| `VBECOMPLETE_NO_SNAP_CACHE` | off | `1` disables the v130 two-level snapshot: the whole current line is read every 100 ms again (~9% of one core instead of ~2%). Only for diagnosing "completion misses code I just changed". |
+| `VBECOMPLETE_SNAP_MAX_AGE` | `1.0` | Seconds a snapshot may be reused while the caret has not moved. This is what catches text changed **by something else** (Find & Replace, another program writing the module). Lower = faster to notice, more CPU; `0` disables the cache. |
 
 ## Project structure
 
@@ -486,7 +524,7 @@ different ini file (portable installs and tests).
 | `settings.py` | The configuration centre (v120): `settings.ini` parsing, the three-layer lookup, the `KNOWN` table and the commented-out template. Imports nothing from the project — `log.py` depends on it, not the other way round. `py -3 settings.py` dumps every value with its source. |
 | `settings.example.ini` | The template that `settings.py` generates, checked in so you can read it without running anything (every line commented out). |
 | `log.py` | Optional diagnostic log (off by default, zero overhead) |
-| `tests/` | Regression suite (`test_real_project.py`, 1190 checks) and the sample project it runs against. Six one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand), `probe_lineops.py` verifies v122 on the same setup (`Ctrl+Shift+Enter` above, `Ctrl+D`, `Ctrl+K`): it appends **one temporary procedure to the end of a module**, deletes it afterwards, and byte-compares the module with the backup taken beforehand. `probe_wordbank.py` verifies v123 on a real Excel + VBE: it builds a **temporary** bank (never your own `wordbank.db`), adds a word and disables a built-in function, then checks that after `load_active()` the added word is in the pool and the disabled one is gone, and that `reset_active()` restores the baseline exactly. |
+| `tests/` | Regression suite (`test_real_project.py`, 1193 checks) and the sample project it runs against. Six one-shot probes ship with it: `probe_ime_mode.py` prints the current IME conversion mode (how the `IME_CMODE_SYMBOL` constant below was verified), `probe_hook_gate.py` drives the real hook lifecycle against fake windows to measure how an unresponsive foreground window affects the main thread, `probe_perf.py` times the popup path (`get_context`, a full re-parse, and the scoring curve), `probe_comment.py` exercises `Ctrl+/` against a real Excel + VBE instance (it appends four lines to the end of a module, runs the toggle, deletes them, and byte-compares the module with a backup taken beforehand), `probe_lineops.py` verifies v122 on the same setup (`Ctrl+Shift+Enter` above, `Ctrl+D`, `Ctrl+K`): it appends **one temporary procedure to the end of a module**, deletes it afterwards, and byte-compares the module with the backup taken beforehand. `probe_wordbank.py` verifies v123 on a real Excel + VBE: it builds a **temporary** bank (never your own `wordbank.db`), adds a word and disables a built-in function, then checks that after `load_active()` the added word is in the pool and the disabled one is gone, and that `reset_active()` restores the baseline exactly. |
 
 ## Credits
 

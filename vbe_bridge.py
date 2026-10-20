@@ -52,6 +52,26 @@ _CACHE_TTL = 2.0  # 标识符缓存刷新间隔（秒）
 _MOD_CACHE_TTL = 30.0
 MOD_CACHE_ENABLED = not _settings.flag("NO_MOD_CACHE", False)
 
+# ★v130：快照的【两级读取】—— 光标没挪窝就不读文本。
+#
+# 实测（隐形 Excel + 一个模块，300 次平均）：一轮 `snapshot()` 要 8.7ms，
+# 拆开是 ActiveCodePane 0.6 + GetSelection 0.13 + CodeModule 1.0 +
+# Name 1.8 + Lines 2.3（+ _get_vbe_cached 自己的探活 2 左右）。
+# 而轮询是每 100ms 一次 ⇒ **常驻约 9% 的一个核**，用户什么都不干也一样。
+#
+# 但其中只有 `Lines(sl, 1)` 那次是"读文本"。而"文本变了"和"光标动了"
+# 在我们的判据里是同一件事：打字、删字、粘贴、撤销、自动格式化，光标列
+# 都会跟着变；连 `ReplaceLine` 补出来的空格也会把光标推走。
+# 所以这一层这么走：
+#   ① 每轮只 `GetSelection()`（0.13ms，比全量便宜 60 倍）；
+#   ② 行号与列都没变 ⇒ 直接返回上一轮那份（行文本 / 模块名原样复用）；
+#   ③ 但**最多复用 SNAP_MAX_AGE 秒**：File & Replace、另一个程序（比如
+#      WorkBuddy 让 AI 写 VBA）改模块时，光标是一动不动的 —— 那种"文本变了
+#      光标没变"必须靠这个上限兜住，代价只是晚 ≤1 秒才发现。
+# 关掉（回到每轮全读）：`NO_SNAP_CACHE = 1`。
+SNAP_CACHE_ENABLED = not _settings.flag("NO_SNAP_CACHE", False)
+SNAP_MAX_AGE = max(0.0, _settings.float_value("SNAP_MAX_AGE", 1.0))
+
 
 def _env_flag(name, default):
     """三态开关（★v120 起转交配置中心）：`1/true/yes/on` -> True，
@@ -3149,7 +3169,7 @@ def _on_main_thread():
 _warned_thread = {"n": 0}
 
 
-def _get_vbe_cached():
+def _get_vbe_cached(verify=True):
     """取 VBE 对象（**短命**代理，TTL 到期主动放手）。
 
     v57 重大约束：**只允许主线程调用**。
@@ -3168,6 +3188,11 @@ def _get_vbe_cached():
 
     取到后先访问一次 ActiveCodePane 验证仍可用；宿主/VBE 已关闭会抛异常，
     此时丢弃缓存并返回 None。
+
+    ★v130：`verify=False` 跳过那次验证 —— 只给 `snapshot()` 用。它的下一步
+    就是访问 `ActiveCodePane` 和 `GetSelection()`，代理要是已经死了，那里会
+    抛异常、走同一条 `_release_vbe_proxy()` + `_com_fail()`。所以"验证"对它
+    是纯粹多出来的一次跨进程调用（实测约 0.6~1ms，而它每 100ms 跑一次）。
     """
     if not _on_main_thread():
         # 钩子线程（或其它后台线程）来要 COM：直接拒绝，且【不】计失败 ——
@@ -3214,6 +3239,11 @@ def _get_vbe_cached():
             _release_vbe_proxy()
             v = None
         else:
+            if not verify:
+                # ★v130：调用方下一步就会自己访问 ActiveCodePane，失败照样
+                # 会在它那里抛出来并走同一条释放路径 —— 这里不必再探一次。
+                _com_ok()
+                return v
             try:
                 v.ActiveCodePane
                 _com_ok()
@@ -3893,6 +3923,32 @@ def host_enum_constants():
     return out
 
 
+def snap_cache_hit(cache, line_no, caret_col, now, max_age):
+    """上一轮那份快照能不能直接用（★v130，纯函数，无 COM、无系统调用）。
+
+    `cache` = `(行号, 光标列, 模块名, 行文本, 时刻)`，首次为 None。
+    两条同时成立才复用：
+
+    ① **行号与光标列都没动** —— 打字 / 删字 / 粘贴 / 撤销 / VBE 自己的自动
+       格式化，全都会把插入符推走；连 `ReplaceLine` 补出来的空格也会。所以
+       "光标没动" 等价于 "这一行没被我们看得见地改过"。
+    ② **距上次读文本不超过 `max_age` 秒** —— 兜住"文本变了但光标没动"：
+       Find & Replace 的等长替换、另一个程序（WorkBuddy 让 AI 写 VBA）通过
+       COM 直接改模块，插入符一动不动。没有这一条，那种改动永远不会被看见；
+       有了它，最坏也只是晚 `max_age` 秒。
+
+    `max_age <= 0` = 不用缓存（回到每轮全读）。
+    """
+    if cache is None or max_age <= 0:
+        return False
+    try:
+        return (int(cache[0]) == int(line_no)
+                and int(cache[1]) == int(caret_col)
+                and float(now) - float(cache[4]) <= float(max_age))
+    except Exception:
+        return False
+
+
 class VbeBackend:
     def __init__(self, send_char=None, send_quick_info=None):
         # ★v103b：把字符"还给系统"的注入函数（main.send_char）。只在
@@ -3908,6 +3964,10 @@ class VbeBackend:
         # ★v110b/2：这里原先还有一个 `send_tab`（替用户按一下 Tab 补缩进），
         # 真机实测注入的 Tab 不生效（见文件顶部 v110b/2 注释）⇒ 改成直接把
         # 缩进写进新行，注入函数随之撤掉。
+        # ★v130：上一轮的快照 (行号, 光标列, 模块名, 行文本, 时刻)。
+        # 只为 `snapshot()` 的"两级读取"服务 —— 光标没挪动就复用它，
+        # 见 SNAP_CACHE_ENABLED 的说明。写完文本必须作废（invalidate_snapshot）。
+        self._snap_cache = None
         self._cache = None
         self._cache_time = 0
         self._declared_names = set()
@@ -4007,33 +4067,58 @@ class VbeBackend:
         这一下回车，而钩子线程不许碰 COM，只能读轮询留下的这份快照。
         ⚠️ 变更检测仍然只比前三个元素（行号/行文本/模块名）：光标的移动不算
         "内容变化"，否则点来点去都会弹候选窗（见 main._poll_mod_switch 附近）。
+
+        ★v130 两级读取：完整的读法要 8.7ms（实测），而它每 100ms 跑一次 ⇒
+        常驻 ~9% 的一个核。所以先只 `GetSelection()`（0.13ms），行号与光标列
+        都没动就直接返回上一轮那份，不再读文本（见 SNAP_CACHE_ENABLED）。
         """
         try:
-            vbe = _get_vbe_cached()
+            # ★v130：verify=False —— 下面两行就是验证，不必再探一次。
+            vbe = _get_vbe_cached(verify=False)
             if vbe is None:
                 return None
             cp = vbe.ActiveCodePane
             if cp is None:
+                self._snap_cache = None
                 return None
             sl, _sc, el, ec = cp.GetSelection()
             if sl != el:      # 多行选择：不参与补全
+                self._snap_cache = None
                 return None
+            try:
+                ec = int(ec)
+            except Exception:
+                ec = 0
+            if SNAP_CACHE_ENABLED and snap_cache_hit(
+                    self._snap_cache, sl, ec, time.monotonic(), SNAP_MAX_AGE):
+                c = self._snap_cache
+                _com_ok()
+                return (sl, c[3], c[2], ec)
             cm = cp.CodeModule
             try:
                 mod = str(cm.Name or "")
             except Exception:
                 mod = ""
-            try:
-                ec = int(ec)
-            except Exception:
-                ec = 0
-            snap = (sl, cm.Lines(sl, 1), mod, ec)
+            text = cm.Lines(sl, 1)
+            self._snap_cache = (sl, ec, mod, text, time.monotonic())
+            snap = (sl, text, mod, ec)
             _com_ok()
             return snap
         except Exception:
+            self._snap_cache = None
             _release_vbe_proxy()
             _com_fail()
             return None
+
+    def invalidate_snapshot(self):
+        """让【下一轮】必定重读文本（★v130）。
+
+        任何"我们把文本改了"的路径都要调一次。虽然插入/删除字符本身就会
+        把光标推走、靠 ec 变化也能自愈，但"改完再把光标摆回原位"的写法
+        （ReplaceLine + 等长替换）在数学上可以做到行列都不变 —— 那种情况
+        要是再信缓存，接下来最多 `SNAP_MAX_AGE` 秒里补全看到的都是旧代码。
+        """
+        self._snap_cache = None
 
     # ---- 标识符缓存 ----
     def invalidate_identifiers(self, modules=False):
@@ -5634,6 +5719,8 @@ class VbeBackend:
             end0 = start0 + len(completion)
 
             cm.ReplaceLine(line_no, new_line)
+            # ★v130：我们自己动了这一行 —— 下一轮快照必须重读，别信缓存。
+            self.invalidate_snapshot()
             # ★v102 诊断：ReplaceLine 到底有没有写进 VBE。
             # 真机实测（独立 Excel 实例）出现过"返回算好的新行、VBE 里却没变"
             # —— 必须看清是 ReplaceLine 静默失败，还是读回被缓存。

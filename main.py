@@ -1827,10 +1827,23 @@ def main():
             send_vk(VK_OEM_2, ctrl=True)
 
     def drain_actions():
-        """主线程循环消费动作队列。"""
+        """主线程循环消费动作队列。
+
+        ★v130：间隔**保持 10ms 不动** —— 试过"空闲时退到 40ms、有动作再回来"，
+        实测空闲 CPU 没有可测的差别（1.93% vs 1.93%，噪声比收益大），而代价是
+        每个动作最多晚 40ms 执行（补全、`Ctrl+K` 都要走这条队列）。没有收益的
+        复杂度就是净亏损，所以退回原样，只留下面那件有实际作用的事。
+
+        ★v130：动作执行完之后作废"快照缓存"—— 补全、`Ctrl+K` 删行、`Ctrl+D`
+        复制、`Ctrl+/` 注释，所有会改文本的动作都从这条队列进来。在这里统一
+        作废一次，就**不用**在七八个写方法里各记一笔（少一处就是一处"改了却
+        看不见"）。
+        """
+        n = 0
         try:
             while True:
                 fn, args = action_queue.get_nowait()
+                n += 1
                 try:
                     fn(*args)
                 except Exception:
@@ -1844,6 +1857,11 @@ def main():
                         pass
         except queue.Empty:
             pass
+        if n:
+            try:
+                backend.invalidate_snapshot()
+            except Exception:
+                pass
         root.after(10, drain_actions)
 
     def _enter_indent_key_ok(vk):

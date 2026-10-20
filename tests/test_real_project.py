@@ -19830,7 +19830,7 @@ def main():
               [(_keys108.count("NO_INSERT_ABOVE"),
                 _keys108.count("NO_DUP_LINE"),
                 _keys108.count("NO_DEL_LINE"), len(_keys108))],
-              expect_contain=[(1, 1, 1, 57)])
+              expect_contain=[(1, 1, 1, 59)])
     finally:
         VB106._get_vbe_cached = _o_vbe108
 
@@ -20135,7 +20135,7 @@ def main():
               "`WORD_BANK`（库路径）",
               [(_keys109s.count("NO_WORDBANK"), _keys109s.count("WORD_BANK"),
                 len(_keys109s))],
-              expect_contain=[(1, 1, 57)])
+              expect_contain=[(1, 1, 59)])
 
         check("109.14 启动接线在 `main()` 里、且**先建库再加载**"
               "（顺序反了就会先读到「没有库」、退回种子，然后建了库却不生效）",
@@ -21131,7 +21131,7 @@ def main():
               [(_rows114.get("HIDE_ON_COMPLETE"),
                 _rows114.get("REQUIRE_KEY_TRIGGER"),
                 len(S102.KNOWN))],
-              expect_contain=[("1", "1", 57)])
+              expect_contain=[("1", "1", 59)])
 
         # ---- 114.14 模块里读开关时给的**默认值**也必须是开 ----
         # 为什么还要这一条：`KNOWN` 与 `flag(...)` 是两处默认值，§114.13 只钉住
@@ -21605,12 +21605,13 @@ def main():
     _ini118 = _io118.open(os.path.join(ROOT, "settings.example.ini"),
                           encoding="utf-8").read()
     check("118.3 两个开关也从配置中心撤掉了：`settings.KNOWN` 里没有 "
-          "`NO_OUTLINE` / `NO_USAGES`（总数回到 55；★v128 加了自动重启两项后是 57），模板 "
+          "`NO_OUTLINE` / `NO_USAGES`（总数回到 55；★v128 加两项是 57；"
+          "★v130 再加 NO_SNAP_CACHE / SNAP_MAX_AGE 是 59），模板 "
           "`settings.example.ini` 里也不再有这两行 —— 留着的话"
           "「改一下键名、按着模板关功能」的老用户会以为自己关掉的是个还在的东西",
           [(_keys118.count("NO_OUTLINE"), _keys118.count("NO_USAGES"),
             len(_keys118), "NO_OUTLINE" in _ini118, "NO_USAGES" in _ini118)],
-          expect_contain=[(0, 0, 57, False, False)])
+          expect_contain=[(0, 0, 59, False, False)])
 
     _docs118 = ("README.md", "README.zh-CN.md", "docs/troubleshooting.zh-CN.md")
     _doc_hits118 = []
@@ -21716,12 +21717,12 @@ def main():
     check("119.4 两个新开关登记了、默认都是「开」：`AUTO_RESTART=1`（装上去就该"
           "有自动重启 —— 要回到 v127「卡死只能自己重启电脑」得用户主动关）、"
           "`HANG_SEC=30`（门槛**刻意给宽**：合法的 COM 操作也可能几百毫秒，"
-          "压到 5 秒会出现\"打字打到一半工具自己重启\"）；`KNOWN` 总数 55 -> 57，"
+          "压到 5 秒会出现\"打字打到一半工具自己重启\"）；`KNOWN` 总数 55 -> 59（v130 又加两项），"
           "模板 `settings.example.ini` 里也有这两行",
           [(_rows119.get("AUTO_RESTART"), _rows119.get("HANG_SEC"),
             len(_ST119.KNOWN), "AUTO_RESTART =" in _ini119,
             "HANG_SEC =" in _ini119)],
-          expect_contain=[("1", "30", 57, True, True)])
+          expect_contain=[("1", "30", 59, True, True)])
 
     _main119 = io.open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
     _i_beat119 = _main119.find('note="boot"')
@@ -21883,6 +21884,165 @@ def main():
           "写法都不算 —— 少了这条，120.1 绿了也说明不了任何事",
           [(len(_probe120), [_r[0] for _r in _probe120])],
           expect_contain=[(2, [3, 6])])
+
+    # ------------------------------------------------------------------
+    # 121. ★v130：快照的两级读取 —— 静止时不再每 100ms 读一次文本
+    #
+    #   实测（隐形 Excel + 一个模块，300 次平均）：一轮完整 `snapshot()` 要
+    #   8.7ms（ActiveCodePane 0.6 + GetSelection 0.13 + CodeModule 1.0 +
+    #   Name 1.8 + Lines 2.3 + 取代理时的探活 2），而它每 100ms 跑一次 ⇒
+    #   **常驻约 9% 的一个核**，用户什么都不干也一样。
+    #
+    #   改法只有一条：先花 0.13ms 看光标动没动，没动就复用上一轮的文本。
+    #   这一节要钉住的就是"省得掉"和"该读的时候一定读"两头 —— 后者更要紧，
+    #   省错了的表现是"补全看不到刚写的代码"，而那很难被当成性能问题。
+    # ------------------------------------------------------------------
+    print("\n=== 121. ★v130：快照两级读取（光标没动就不读文本）===")
+    import vbe_bridge as _VB121
+    import time as _T121
+
+    check("121.1 `snap_cache_hit` 纯函数：行号与光标列都没动、且没超过 "
+          "`max_age` 才算命中；行号变了 / 列变了 / 过期了 / `max_age<=0`"
+          "（等于关掉缓存）/ 首轮 cache 为 None —— 一律不命中",
+          [(
+              _VB121.snap_cache_hit((3, 5, "M1", "abc", 100.0), 3, 5, 100.5, 1.0),
+              _VB121.snap_cache_hit((3, 5, "M1", "abc", 100.0), 3, 6, 100.5, 1.0),
+              _VB121.snap_cache_hit((3, 5, "M1", "abc", 100.0), 4, 5, 100.5, 1.0),
+              _VB121.snap_cache_hit((3, 5, "M1", "abc", 100.0), 3, 5, 102.0, 1.0),
+              _VB121.snap_cache_hit((3, 5, "M1", "abc", 100.0), 3, 5, 100.5, 0.0),
+              _VB121.snap_cache_hit(None, 3, 5, 100.5, 1.0),
+          )],
+          expect_contain=[(True, False, False, False, False, False)])
+
+    class _Cm121:
+        def __init__(self):
+            self.lines_calls = 0
+            self.text = "    Dim abc As Long"
+
+        @property
+        def Name(self):
+            return "M1"
+
+        def Lines(self, n, c):
+            self.lines_calls += 1
+            return self.text
+
+    class _Cp121:
+        def __init__(self, line=3, col=5):
+            self.sel = (line, 1, line, col)
+            self.cm = _Cm121()
+
+        def GetSelection(self):
+            return self.sel
+
+        @property
+        def CodeModule(self):
+            return self.cm
+
+    class _Vbe121:
+        def __init__(self, cp):
+            self.cp = cp
+
+        @property
+        def ActiveCodePane(self):
+            return self.cp
+
+    _cp121 = _Cp121()
+    _vbe121 = _Vbe121(_cp121)
+    _bk121 = _VB121.VbeBackend()
+    _orig121 = _VB121._get_vbe_cached
+    try:
+        _VB121._get_vbe_cached = lambda verify=True: _vbe121
+        _s1 = _bk121.snapshot()
+        _s2 = _bk121.snapshot()                 # 位置没动 -> 复用，不读文本
+        _n_idle = _cp121.cm.lines_calls
+        _cp121.sel = (3, 1, 3, 9)               # 光标挪了 -> 必须读
+        _s3 = _bk121.snapshot()
+        _n_moved = _cp121.cm.lines_calls
+        _bk121.invalidate_snapshot()            # 我们刚写过文本 -> 必须重读
+        _bk121.snapshot()
+        _n_inv = _cp121.cm.lines_calls
+        _bk121._snap_cache = (3, 9, "M1", "old", _T121.monotonic() - 5.0)
+        _bk121.snapshot()                       # 过期 -> 必须重读
+        _n_stale = _cp121.cm.lines_calls
+        _VB121.SNAP_CACHE_ENABLED = False
+        _bk121.snapshot()
+        _bk121.snapshot()                       # 关掉缓存 -> 每轮都读
+        _n_off = _cp121.cm.lines_calls
+    finally:
+        _VB121._get_vbe_cached = _orig121
+        _VB121.SNAP_CACHE_ENABLED = True
+
+    check("121.2 假 VBE 实测 `VbeBackend.snapshot()`：连着两轮位置不动只读一次"
+          "文本（省掉了 Name/Lines 两次跨进程调用）；光标一挪必读；"
+          "`invalidate_snapshot()` 之后必读；缓存过期（文本被别的程序改了、"
+          "光标却没动）必读；`SNAP_CACHE_ENABLED=False` 时退回每轮都读。"
+          "⚠️ 后四种「必读」是这条用例的重点 —— 只测省不测读，省错了也看不出来",
+          [(_s1, _s2, _n_idle, _n_moved, _n_inv, _n_stale, _n_off,
+            _s3[3])],
+          expect_contain=[((3, "    Dim abc As Long", "M1", 5),
+                           (3, "    Dim abc As Long", "M1", 5),
+                           1, 2, 3, 4, 6, 9)])
+
+    import ast as _ast121
+    _src121 = io.open(_VB121.__file__, "r", encoding="utf-8").read()
+    _tree121 = _ast121.parse(_src121)
+    _snap_node121 = None
+    for _n121 in _ast121.walk(_tree121):
+        if isinstance(_n121, _ast121.FunctionDef) and _n121.name == "snapshot":
+            _snap_node121 = _n121
+            break
+    _main121 = io.open(os.path.join(ROOT, "main.py"), "r",
+                       encoding="utf-8").read()
+    _drain_node121 = None
+    for _n121 in _ast121.walk(_ast121.parse(_main121)):
+        if isinstance(_n121, _ast121.FunctionDef) and _n121.name == "drain_actions":
+            _drain_node121 = _n121
+            break
+
+    def _calls121(node, fname):
+        """node 里对 fname 的调用节点（★只认真的 Call —— 注释里出现这个词不算）。
+
+        两种写法都要认：`snap_cache_hit(...)`（Name）与
+        `backend.invalidate_snapshot()`（Attribute）。只认 Name 的话，
+        "main 里没调"会假红（v130 实测踩过一次）。
+        """
+        out = []
+        if node is None:
+            return out
+        for _c in _ast121.walk(node):
+            if isinstance(_c, _ast121.Call):
+                _f = _c.func
+                if isinstance(_f, _ast121.Name) and _f.id == fname:
+                    out.append(_c)
+                elif isinstance(_f, _ast121.Attribute) and _f.attr == fname:
+                    out.append(_c)
+        return out
+
+    # snapshot 里必须带 verify=False 这个关键字（省掉一次纯浪费的探活）
+    _verify_off121 = False
+    for _c121 in _calls121(_snap_node121, "_get_vbe_cached"):
+        for _kw121 in _c121.keywords:
+            # ⚠️ `False` 在 AST 里是 `Constant(value=False)`（3.8+），
+            # 不是 `Name(id="False")` —— 写成 Name 会让这条**恒为 False**，
+            # 于是"正常代码也红"（v130 实测踩过一次）。
+            if (_kw121.arg == "verify"
+                    and getattr(_kw121.value, "value", None) is False):
+                _verify_off121 = True
+
+    check("121.3 接线的三处契约（**用 AST 查，不查源码字符串** —— v130 的 A/B "
+          "就栽在这上面：`snapshot()` 的注释里也写着 `verify=False`，字符串判据"
+          "被注释喂饱，把 `verify=True` 放回去都不红）：① `snapshot()` 里真的"
+          "**调用**了 `snap_cache_hit`；② 取代理那次**调用**带关键字 "
+          "`verify=False`（那一次探活是纯浪费：下一行就是 ActiveCodePane）；"
+          "③ `VbeBackend` 上有 `invalidate_snapshot`；④ `drain_actions` 执行完"
+          "动作会**调用**它 —— 补全 / `Ctrl+K` / `Ctrl+D` / `Ctrl+/` 全都从那条"
+          "队列进来，那是唯一能一处不漏覆盖所有写路径的地方",
+          [(bool(_calls121(_snap_node121, "snap_cache_hit")),
+            _verify_off121,
+            hasattr(_VB121.VbeBackend, "invalidate_snapshot"),
+            bool(_calls121(_drain_node121, "invalidate_snapshot")))],
+          expect_contain=[(True, True, True, True)])
 
     # ------------------------------------------------------------------
     # 90. ★v107c：测试网自查 —— 猴补丁必须还原
