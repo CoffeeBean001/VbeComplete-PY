@@ -22091,18 +22091,25 @@ def main():
           "（否则换台机器 clone 下来又会变回 LF）",
           [("*.bat text eol=crlf" in _gt122,)])
 
-    _rc122 = os.path.join(_root122, "run-cs.bat")
+    # ★v131c：C# 版已经拆成独立仓库（同级 `VbeComplete-CS`），所以这里不再断言
+    #   run-cs.bat —— 它属于那边。改钉两件本仓库自己的事：
+    #   ① 启动脚本走的是 watchdog（崩溃自愈），且不用 find / timeout；
+    #   ② 本仓库不再含 C# 源码（防止"两个版本又混回一个仓库"）。
+    _run122 = os.path.join(_root122, "run.bat")
     _rt122 = ""
-    if os.path.exists(_rc122):
-        _rt122 = open(_rc122, encoding="utf-8", errors="replace").read()
-    check("122.4 run-cs.bat 启动后会 tasklist 验证进程存活，失败时把 crash.log / "
-          "VbeComplete.log 打给用户看（否则\"真崩了\"和\"正常在跑\"长得一模一样）",
-          [("goto died" in _rt122,
-            "tasklist" in _rt122,
-            "crash.log" in _rt122,
+    if os.path.exists(_run122):
+        _rt122 = open(_run122, encoding="utf-8", errors="replace").read()
+    check("122.4 run.bat 用 watchdog.py 起（崩溃自愈），且不用 `find`（Git 的同名程序会抢 /i）",
+          [("watchdog.py" in _rt122,
+            "findstr" in _rt122 or "| find /i" not in _rt122,
             "| find /i" not in _rt122)])
-    check("122.5 run-cs.bat 不依赖 `find`：Git for Windows 自带一个同名程序会抢走 /i 开关",
-          [("findstr" in _rt122,)])
+
+    # 分离契约：本仓库只放 Python 实现。真有人把 cs/ 又搬回来，这条会红。
+    _cs122 = os.path.join(_root122, "cs")
+    check("122.5 C# 版在独立仓库（同级 VbeComplete-CS），本仓库不再含 cs\ 目录"
+          "（两个版本混在一个仓库里，改一处要同步两遍，谁也说不清跑的是哪份）",
+          [(os.path.exists(_cs122), os.path.exists(os.path.join(_root122, "run-cs.bat")))],
+          expect_contain=[(False, False)])
 
     print("\n" + "=" * 60)
     print("结果: %d PASS, %d FAIL" % (PASS, FAIL))

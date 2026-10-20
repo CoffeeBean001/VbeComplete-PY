@@ -56,19 +56,12 @@ _o.txt
 Thumbs.db
 desktop.ini
 
-# ---- C# 版：只忽略构建中间产物 ----
-# dist\VbeComplete.exe 是交付物（单文件、约 270KB），要提交
-cs/src/bin/
-cs/src/obj/
-cs/src/*.user
+# ---- C# 版已拆到独立仓库（同级 VbeComplete-CS），本仓库不再有它的产物 ----
 
 # ---- 自检产物 ----
 selftest.log
 writetest.log
 uitest.log
-carettest.log
-probe-cs.log
-popup-preview.png
 
 # ---- 备份快照（本地留一份，不进版本库；源码本身 git 里全有） ----
 backup/
